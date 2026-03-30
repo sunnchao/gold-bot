@@ -68,6 +68,8 @@ class AccountStore:
                     "range": {"wins": 0, "losses": 0},
                 },
                 "connected": False,
+                # P3: 策略映射配置(从EA上报)
+                "strategy_mapping": {},  # magic -> strategy_name
                 # Broker info (pushed by EA on init)
                 "broker": "",
                 "server_name": "",
@@ -167,6 +169,12 @@ def api_register():
         acc["leverage"] = data.get("leverage", 0)
         acc["connected"] = True
         acc["last_heartbeat"] = time.time()
+        
+        # P3: 存储策略映射配置(EA上报)
+        strategy_mapping = data.get("strategy_mapping", {})
+        if strategy_mapping:
+            acc["strategy_mapping"] = strategy_mapping
+            logger.info(f"[{acc_id}] 策略映射更新: {strategy_mapping}")
     
     # Bind token to account (auto-persist)
     token_mgr.bind_account(token, acc_id)
@@ -784,16 +792,19 @@ def api_analysis_payload(account_id):
             comment = pos.get("comment", "")
             magic = int(pos.get("magic", 0))
 
-            # Magic ID → 策略类型
-            magic_to_strategy = {
-                20250231: "pullback",
-                20250232: "breakout_retest",
-                20250233: "divergence",
-                20250234: "breakout_pyramid",
-                20250235: "counter_pullback",
-                20250236: "range",
-            }
-            strategy = magic_to_strategy.get(magic, "unknown")
+            # P3: 使用动态策略映射
+            strategy_mapping = acc.get("strategy_mapping", {})
+            if not strategy_mapping:
+                # 默认映射
+                strategy_mapping = {
+                    "20250231": "pullback",
+                    "20250232": "breakout_retest",
+                    "20250233": "divergence",
+                    "20250234": "breakout_pyramid",
+                    "20250235": "counter_pullback",
+                    "20250236": "range",
+                }
+            strategy = strategy_mapping.get(str(magic), "unknown")
 
             # 计算持仓时长（秒）
             open_time = pos.get("open_time", 0)
@@ -884,6 +895,19 @@ def api_analysis_payload(account_id):
         "tradeable": acc.get("market_open", True) and acc.get("is_trade_allowed", True),
     }
 
+    # P3: 策略映射配置(EA上报)
+    strategy_mapping = acc.get("strategy_mapping", {})
+    # 如果EA没有上报，使用默认映射
+    if not strategy_mapping:
+        strategy_mapping = {
+            "20250231": "pullback",
+            "20250232": "breakout_retest",
+            "20250233": "divergence",
+            "20250234": "breakout_pyramid",
+            "20250235": "counter_pullback",
+            "20250236": "range",
+        }
+
     result = {
         "status": "OK",
         "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S+08:00"),
@@ -892,6 +916,7 @@ def api_analysis_payload(account_id):
         "positions": positions,
         "indicators": indicators,
         "market_status": market_status,
+        "strategy_mapping": strategy_mapping,  # P3: 策略映射
     }
 
     logger.info(f"[{account_id}] analysis_payload 请求 | {len(positions)}个持仓 | tick={market['bid']}/{market['ask']}")
