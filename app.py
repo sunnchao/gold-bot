@@ -17,8 +17,7 @@ from gold_bolt_server.config import SERVER, STRATEGY, SIGNAL, TRADING_HOURS, ADM
 from gold_bolt_server.data.manager import DataManager
 from gold_bolt_server.strategy.engine import StrategyEngine
 from gold_bolt_server.strategy.position_mgr import PositionManager
-from gold_bolt_server.utils.discord_notify import get_notifier as get_discord_notifier
-from gold_bolt_server.utils.feishu_notify import get_notifier as get_feishu_notifier
+
 from gold_bolt_server.token_manager import TokenManager
 from gold_bolt_server.utils import setup_logging
 
@@ -639,7 +638,7 @@ def analysis_loop():
                 
                 # === 技术面策略分析（不含AI） ===
                 try:
-                    signal, analysis_logs = strategy_engine.analyze(dm, acc, use_ai=False)
+                    signal, analysis_logs = strategy_engine.analyze(dm, acc)
                     log_count = len(analysis_logs) if analysis_logs else 0
                     logger.info(f"[{acc_id}] 📊 技术分析完成 | 日志:{log_count} | 信号:{signal is not None}")
                     
@@ -703,94 +702,7 @@ def analysis_loop():
             time.sleep(10)
 
 
-def ai_analysis_loop():
-    """整点AI智能分析（每小时0、15、30分钟触发）"""
-    logger.info("🤖 AI分析线程已启动 (整点触发: 0/15/30/45分)")
-    
-    def wait_until_next_trigger():
-        """等待到下一个触发点（0、15、30分钟）"""
-        now = datetime.now()
-        current_minute = now.minute
-        
-        # 触发点：0、15、30、45
-        trigger_minutes = [0, 15, 30, 45]
-        
-        # 找到下一个触发点
-        next_trigger = None
-        for m in trigger_minutes:
-            if m > current_minute:
-                next_trigger = m
-                break
-        
-        if next_trigger is None:
-            # 下一个小时的0分
-            next_trigger = 0
-            wait_seconds = (60 - current_minute) * 60 - now.second
-        else:
-            wait_seconds = (next_trigger - current_minute) * 60 - now.second
-        
-        if wait_seconds > 0:
-            logger.info(f"⏳ 等待 {wait_seconds}秒 到下一个触发点 ({next_trigger}分)")
-            time.sleep(wait_seconds)
-    
-    while True:
-        try:
-            wait_until_next_trigger()
-            
-            logger.info(f"🔔 整点触发 AI 分析 | {datetime.now().strftime('%H:%M:%S')}")
-            
-            all_ids = store.all_ids()
-            
-            for acc_id in all_ids:
-                acc = store.get(acc_id)
-                
-                if time.time() - acc["last_heartbeat"] > 120:
-                    continue
-                if acc_id not in data_managers:
-                    continue
-                dm = data_managers[acc_id]
-                if not acc["tick"] or not acc["bars"]:
-                    continue
-                
-                # 市场关闭时跳过
-                if not acc.get("market_open", True):
-                    logger.info(f"[{acc_id}] 市场关闭，跳过 AI 分析")
-                    continue
-                
-                try:
-                    ai_logs = strategy_engine.run_ai_only(dm, acc)
-                    if ai_logs:
-                        socketio.emit('analysis_log', {
-                            "account_id": acc_id,
-                            "time": datetime.now().strftime("%H:%M:%S"),
-                            "logs": ai_logs,
-                            "source": "ai",
-                        })
-                        logger.info(f"[{acc_id}] 🤖 AI分析完成 | {len(ai_logs)}条日志")
 
-                        # Discord 推送（整点触发，无需冷却检查）
-                        try:
-                            discord_notifier = get_discord_notifier()
-                            ai_result = getattr(strategy_engine.ai, '_last_full_result', None) or {}
-                            symbol = acc.get("tick", {}).get("symbol", "XAUUSD")
-                            discord_notifier.send_ai_analysis(ai_result, acc_id, symbol)
-                        except Exception as e:
-                            logger.error(f"[{acc_id}] Discord 推送失败: {e}")
-
-                        # 飞书推送
-                        try:
-                            feishu_notifier = get_feishu_notifier()
-                            ai_result = getattr(strategy_engine.ai, '_last_full_result', None) or {}
-                            symbol = acc.get("tick", {}).get("symbol", "XAUUSD")
-                            feishu_notifier.send_ai_analysis(ai_result, acc_id, symbol)
-                        except Exception as e:
-                            logger.error(f"[{acc_id}] 飞书推送失败: {e}")
-                except Exception as e:
-                    logger.error(f"[{acc_id}] AI分析异常: {e}", exc_info=True)
-                
-        except Exception as e:
-            logger.error(f"AI分析循环异常: {e}", exc_info=True)
-            time.sleep(60)
 
 
 # ============================================
@@ -800,50 +712,15 @@ def ai_analysis_loop():
 @app.route('/api/trigger_ai', methods=['POST'])
 @require_token
 def api_trigger_ai():
-    """立即触发一次 AI 分析并推送（手动触发）"""
-    results = []
-    
-    for acc_id in store.all_ids():
-        acc = store.get(acc_id)
-        
-        if time.time() - acc.get("last_heartbeat", 0) > 120:
-            continue
-        if acc_id not in data_managers:
-            continue
-        dm = data_managers[acc_id]
-        if not acc.get("tick") or not acc.get("bars"):
-            continue
-        if not acc.get("market_open", True):
-            continue
-        
-        try:
-            ai_logs = strategy_engine.run_ai_only(dm, acc)
-            if ai_logs:
-                logger.info(f"[{acc_id}] 🔔 手动触发 AI 分析完成")
-                
-                # Discord 推送
-                try:
-                    discord_notifier = get_discord_notifier()
-                    ai_result = getattr(strategy_engine.ai, '_last_full_result', None) or {}
-                    symbol = acc.get("tick", {}).get("symbol", "XAUUSD")
-                    discord_notifier.send_ai_analysis(ai_result, acc_id, symbol)
-                except Exception as e:
-                    logger.error(f"[{acc_id}] Discord 推送失败: {e}")
-                
-                # 飞书推送
-                try:
-                    feishu_notifier = get_feishu_notifier()
-                    ai_result = getattr(strategy_engine.ai, '_last_full_result', None) or {}
-                    symbol = acc.get("tick", {}).get("symbol", "XAUUSD")
-                    feishu_notifier.send_ai_analysis(ai_result, acc_id, symbol)
-                except Exception as e:
-                    logger.error(f"[{acc_id}] 飞书推送失败: {e}")
-                
-                results.append(acc_id)
-        except Exception as e:
-            logger.error(f"[{acc_id}] 手动触发 AI 异常: {e}")
-    
-    return jsonify({"status": "OK", "triggered_accounts": results})
+    """
+    [已废弃] AI 分析已迁移至 Gateway Cron 任务
+    此接口保留仅作兼容，返回提示信息
+    """
+    return jsonify({
+        "status": "OK",
+        "message": "AI analysis is now handled by Gateway Cron tasks. This endpoint is deprecated.",
+        "deprecated": True
+    })
 
 
 @app.route('/api/debug/dm/<account_id>')
@@ -1274,9 +1151,6 @@ def main():
     
     t1 = threading.Thread(target=analysis_loop, daemon=True)
     t1.start()
-    
-    t2 = threading.Thread(target=ai_analysis_loop, daemon=True)
-    t2.start()
     
     socketio.run(
         app,
