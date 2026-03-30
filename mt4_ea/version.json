@@ -1,0 +1,5 @@
+{
+  "version": "2.1.0",
+  "build": 1,
+  "changelog": "新增: /register 推送 broker 信息; 自动更新检查"
+}

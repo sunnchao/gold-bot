@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gold Bolt Server - 实时监控</title>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', 'SF Pro', -apple-system, sans-serif;
+            background: #0a0e17;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        
+        /* Auth Screen */
+        .auth-screen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .auth-box {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 12px;
+            padding: 32px;
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+        }
+        .auth-box h2 { color: #f0b90b; margin-bottom: 8px; font-size: 20px; }
+        .auth-box p { color: #8b949e; margin-bottom: 20px; font-size: 14px; }
+        .auth-input {
+            width: 100%;
+            padding: 12px 16px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 15px;
+            margin-bottom: 12px;
+            outline: none;
+        }
+        .auth-input:focus { border-color: #f0b90b; }
+        .auth-btn {
+            width: 100%;
+            padding: 12px;
+            background: #f0b90b;
+            color: #0a0e17;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .auth-btn:hover { background: #d4a30a; }
+        .auth-error { color: #f85149; font-size: 13px; margin-top: 8px; display: none; }
+        
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #1a1f2e 0%, #0d1117 100%);
+            border-bottom: 1px solid #21262d;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .header h1 { font-size: 16px; color: #f0b90b; font-weight: 600; }
+        .header h1 span { color: #8b949e; font-weight: 400; font-size: 12px; margin-left: 6px; }
+        .server-status { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; animation: pulse 2s infinite; }
+        .status-dot.offline { background: #f85149; animation: none; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        
+        /* Main */
+        .main-app { display: none; }
+        .main {
+            padding: 12px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        /* Cards */
+        .card {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .card-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #8b949e;
+            margin-bottom: 10px;
+        }
+        
+        /* Price */
+        .price-card { grid-column: 1 / -1; }
+        .price-main { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+        .price-value {
+            font-size: 36px;
+            font-weight: 700;
+            font-family: 'SF Mono', 'Consolas', monospace;
+            color: #f0b90b;
+        }
+        .price-spread { font-size: 13px; color: #8b949e; }
+        .price-time { font-size: 11px; color: #484f58; margin-top: 4px; }
+        
+        /* Account */
+        .account-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+        .account-item { background: #0d1117; border-radius: 6px; padding: 10px; }
+        .account-label { font-size: 10px; color: #8b949e; margin-bottom: 2px; }
+        .account-value {
+            font-size: 16px;
+            font-weight: 600;
+            font-family: 'SF Mono', 'Consolas', monospace;
+        }
+        .account-value.positive { color: #3fb950; }
+        .account-value.negative { color: #f85149; }
+        
+        /* Positions */
+        .positions-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .positions-table th { text-align: left; padding: 6px 4px; border-bottom: 1px solid #21262d; color: #8b949e; font-weight: 500; font-size: 11px; }
+        .positions-table td { padding: 6px 4px; border-bottom: 1px solid #161b22; font-family: 'SF Mono', 'Consolas', monospace; font-size: 11px; }
+        .buy-tag { color: #3fb950; background: rgba(63,185,80,0.1); padding: 2px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+        .sell-tag { color: #f85149; background: rgba(248,81,73,0.1); padding: 2px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+        
+        /* Logs */
+        .signal-log { grid-column: 1 / -1; max-height: 250px; overflow-y: auto; }
+        .log-entry { display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid #0d1117; font-size: 12px; font-family: 'SF Mono', 'Consolas', monospace; flex-wrap: wrap; }
+        .log-time { color: #484f58; min-width: 70px; }
+        .log-type { min-width: 60px; font-weight: 600; }
+        .log-type.signal { color: #f0b90b; }
+        .log-type.result-ok { color: #3fb950; }
+        .log-type.result-err { color: #f85149; }
+        .log-msg { color: #c9d1d9; flex: 1; min-width: 0; word-break: break-word; }
+        
+        /* Analysis Log */
+        .analysis-log { grid-column: 1 / -1; max-height: 500px; overflow-y: auto; }
+        .analysis-round { margin-bottom: 6px; border: 1px solid #21262d; border-radius: 6px; overflow: hidden; }
+        .analysis-header {
+            background: #0d1117;
+            padding: 8px 10px;
+            font-size: 12px;
+            color: #8b949e;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .analysis-header:hover { background: #161b22; }
+        .analysis-header .round-time { color: #f0b90b; font-weight: 600; }
+        .analysis-header .round-result { font-size: 11px; }
+        .analysis-body { padding: 0; }
+        .analysis-body.collapsed { display: none; }
+        .analysis-item {
+            display: flex;
+            gap: 6px;
+            padding: 5px 10px;
+            border-top: 1px solid #0d1117;
+            font-size: 11px;
+            font-family: 'SF Mono', 'Consolas', monospace;
+            flex-wrap: wrap;
+        }
+        .analysis-strategy { min-width: 62px; font-weight: 600; color: #58a6ff; white-space: nowrap; }
+        .analysis-msg { color: #c9d1d9; flex: 1; min-width: 0; word-break: break-word; }
+        .analysis-item.level-warn .analysis-msg { color: #d29922; }
+        .analysis-item.level-signal .analysis-msg { color: #3fb950; font-weight: 600; }
+        .analysis-item.level-signal { background: rgba(63,185,80,0.05); }
+        .analysis-item.level-info .analysis-strategy { color: #58a6ff; }
+        .analysis-item .analysis-strategy[data-strategy="AI分析"] { color: #a371f7; }
+        .analysis-item .analysis-strategy[data-strategy="AI加权"] { color: #a371f7; }
+        
+        /* No data */
+        .no-data { text-align: center; padding: 24px; color: #484f58; font-size: 13px; }
+        .no-data .icon { font-size: 28px; margin-bottom: 6px; }
+        
+        /* Account tabs */
+        .account-tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
+        .account-tab {
+            padding: 5px 12px;
+            border-radius: 6px;
+            background: #21262d;
+            color: #8b949e;
+            cursor: pointer;
+            font-size: 12px;
+            border: none;
+        }
+        .account-tab.active { background: #f0b90b; color: #0a0e17; font-weight: 600; }
+        .account-tab .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; }
+        .account-tab .dot.online { background: #3fb950; }
+        .account-tab .dot.offline { background: #f85149; }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .main { grid-template-columns: 1fr; padding: 8px; gap: 8px; }
+            .price-value { font-size: 28px; }
+            .account-value { font-size: 14px; }
+            .header h1 { font-size: 14px; }
+            .positions-table { font-size: 10px; }
+            .positions-table td, .positions-table th { padding: 4px 2px; }
+            .card { padding: 10px; }
+            .analysis-item { font-size: 10px; }
+            .log-entry { font-size: 11px; }
+            /* Stack positions table for mobile */
+            .pos-mobile-hide { display: none; }
+        }
+        @media (max-width: 480px) {
+            .price-value { font-size: 24px; }
+            .account-grid { grid-template-columns: 1fr 1fr; gap: 6px; }
+            .account-value { font-size: 13px; }
+            .auth-box { padding: 24px 16px; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Auth Screen -->
+    <div class="auth-screen" id="authScreen">
+        <div class="auth-box">
+            <h2>⚡ Gold Bolt Server</h2>
+            <p>请输入 API Token 访问监控面板</p>
+            <input type="password" class="auth-input" id="tokenInput" placeholder="API Token" autocomplete="off">
+            <button class="auth-btn" id="authBtn" onclick="doAuth()">进入</button>
+            <div class="auth-error" id="authError">Token 无效，请重试</div>
+        </div>
+    </div>
+    
+    <!-- Main App (hidden until auth) -->
+    <div class="main-app" id="mainApp">
+        <div class="header">
+            <h1>⚡ Gold Bolt <span>v1.1 — XAUUSD</span></h1>
+            <div class="server-status">
+                <div class="status-dot" id="serverDot"></div>
+                <span id="serverStatus">连接中...</span>
+                <span id="serverTime" style="color:#f0b90b; margin-left:8px; font-size:13px; font-family:'SF Mono','Consolas',monospace;"></span>
+            </div>
+        </div>
+        
+        <div class="main">
+            <!-- Account Tabs -->
+            <div style="grid-column: 1/-1;">
+                <div class="account-tabs" id="accountTabs">
+                    <div class="no-data" style="padding:6px;">等待 EA 连接...</div>
+                </div>
+            </div>
+            
+            <!-- Price -->
+            <div class="card price-card">
+                <div class="card-title">实时报价 XAUUSD</div>
+                <div class="price-main">
+                    <div class="price-value" id="priceValue">--</div>
+                    <div>
+                        <div class="price-spread">Spread: <span id="priceSpread">--</span></div>
+                        <div class="price-time" id="priceTime">等待数据...</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Account -->
+            <div class="card">
+                <div class="card-title">账户信息</div>
+                <div id="brokerInfo" style="font-size:11px;color:#8b949e;margin-bottom:8px;display:none;">
+                    <span id="accBroker"></span> · <span id="accServer"></span> · <span id="accType"></span> · <span id="accLeverage"></span>
+                </div>
+                <div class="account-grid">
+                    <div class="account-item">
+                        <div class="account-label">净值</div>
+                        <div class="account-value" id="accEquity">--</div>
+                    </div>
+                    <div class="account-item">
+                        <div class="account-label">余额</div>
+                        <div class="account-value" id="accBalance">--</div>
+                    </div>
+                    <div class="account-item">
+                        <div class="account-label">浮动盈亏</div>
+                        <div class="account-value" id="accFloat">--</div>
+                    </div>
+                    <div class="account-item">
+                        <div class="account-label">持仓数</div>
+                        <div class="account-value" id="accPosCount">0</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Positions -->
+            <div class="card">
+                <div class="card-title">当前持仓</div>
+                <div id="positionsContainer">
+                    <div class="no-data"><div class="icon">📭</div>暂无持仓</div>
+                </div>
+            </div>
+            
+            <!-- Strategy Analysis Log -->
+            <div class="card analysis-log">
+                <div class="card-title">📊 技术面分析 <span style="color:#484f58;font-size:10px;text-transform:none;">(每30秒)</span></div>
+                <div id="analysisContainer">
+                    <div class="no-data"><div class="icon">🔍</div>等待首次策略分析...</div>
+                </div>
+            </div>
+            
+            <!-- AI Analysis Log -->
+            <div class="card analysis-log" style="max-height:300px;">
+                <div class="card-title">🤖 AI 智能分析 <span style="color:#484f58;font-size:10px;text-transform:none;">(每60秒)</span></div>
+                <div id="aiAnalysisContainer">
+                    <div class="no-data"><div class="icon">🧠</div>等待首次 AI 分析...</div>
+                </div>
+            </div>
+            
+            <!-- Signal Log -->
+            <div class="card signal-log">
+                <div class="card-title">信号 & 执行日志</div>
+                <div id="logContainer">
+                    <div class="no-data"><div class="icon">📋</div>等待信号...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================
+        // Auth
+        // ============================================
+        let apiToken = localStorage.getItem('gb_token') || '';
+        
+        function doAuth() {
+            const input = document.getElementById('tokenInput');
+            const token = input.value.trim();
+            if (!token) return;
+            
+            // Validate token via API
+            fetch('/api/status', {
+                headers: { 'X-API-Token': token }
+            }).then(r => {
+                if (r.ok) {
+                    apiToken = token;
+                    localStorage.setItem('gb_token', token);
+                    showApp();
+                } else {
+                    document.getElementById('authError').style.display = 'block';
+                    input.value = '';
+                    input.focus();
+                }
+            }).catch(() => {
+                document.getElementById('authError').style.display = 'block';
+            });
+        }
+        
+        // Enter key support
+        document.getElementById('tokenInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') doAuth();
+        });
+        
+        function showApp() {
+            document.getElementById('authScreen').style.display = 'none';
+            document.getElementById('mainApp').style.display = 'block';
+            initSocket();
+            fetchStatus();
+        }
+        
+        // Check saved token on load
+        if (apiToken) {
+            // Also check URL param
+            const urlToken = new URLSearchParams(window.location.search).get('token');
+            if (urlToken) { apiToken = urlToken; localStorage.setItem('gb_token', urlToken); }
+            
+            fetch('/api/status', { headers: { 'X-API-Token': apiToken } })
+                .then(r => { if (r.ok) showApp(); })
+                .catch(() => {});
+        } else {
+            // Check URL param
+            const urlToken = new URLSearchParams(window.location.search).get('token');
+            if (urlToken) {
+                apiToken = urlToken;
+                localStorage.setItem('gb_token', urlToken);
+                fetch('/api/status', { headers: { 'X-API-Token': apiToken } })
+                    .then(r => { if (r.ok) showApp(); })
+                    .catch(() => {});
+            }
+        }
+        
+        // ============================================
+        // App State
+        // ============================================
+        let currentAccount = null;
+        let accounts = {};
+        let socket = null;
+        
+        function initSocket() {
+            socket = io();
+            
+            socket.on('connect', () => {
+                document.getElementById('serverDot').className = 'status-dot';
+                document.getElementById('serverStatus').textContent = '已连接';
+            });
+            
+            socket.on('disconnect', () => {
+                document.getElementById('serverDot').className = 'status-dot offline';
+                document.getElementById('serverStatus').textContent = '已断开';
+            });
+            
+            socket.on('tick_update', (data) => {
+                const acc = getAccount(data.account_id);
+                acc.tick = data;
+                if (data.account_id === currentAccount) {
+                    document.getElementById('priceValue').textContent = data.bid.toFixed(2);
+                    document.getElementById('priceSpread').textContent = data.spread.toFixed(1);
+                    document.getElementById('priceTime').textContent = data.time;
+                }
+            });
+            
+            socket.on('account_update', (data) => {
+                const acc = getAccount(data.account_id);
+                acc.equity = data.equity;
+                acc.balance = data.balance;
+                acc.connected = true;
+                acc.lastUpdate = new Date();
+                updateAccountTabs();
+                if (data.account_id === currentAccount) {
+                    document.getElementById('accEquity').textContent = '$' + fmt(data.equity);
+                    document.getElementById('accBalance').textContent = '$' + fmt(data.balance);
+                    const floatPnl = data.equity - data.balance;
+                    const el = document.getElementById('accFloat');
+                    el.textContent = (floatPnl >= 0 ? '+$' : '-$') + fmt(Math.abs(floatPnl));
+                    el.className = 'account-value ' + (floatPnl >= 0 ? 'positive' : 'negative');
+                }
+            });
+            
+            socket.on('positions_update', (data) => {
+                const acc = getAccount(data.account_id);
+                acc.positions = data.positions;
+                if (data.account_id === currentAccount) {
+                    document.getElementById('accPosCount').textContent = data.count;
+                    renderPositions(data.positions);
+                }
+            });
+            
+            socket.on('new_signal', (data) => {
+                const acc = getAccount(data.account_id);
+                if (!acc.logs) acc.logs = [];
+                acc.logs.unshift({
+                    time: data.time || new Date().toLocaleTimeString(),
+                    type: 'signal',
+                    msg: `${data.type} @ ${data.entry} | SL=${data.sl} TP=${data.tp1} | ${data.strategy} 评分:${data.score}`
+                });
+                if (data.account_id === currentAccount) renderLogs(acc.logs);
+            });
+            
+            socket.on('order_result', (data) => {
+                const acc = getAccount(data.account_id);
+                if (!acc.logs) acc.logs = [];
+                acc.logs.unshift({
+                    time: data.time || new Date().toLocaleTimeString(),
+                    type: data.result === 'OK' ? 'result-ok' : 'result-err',
+                    msg: data.result === 'OK' ? `订单 #${data.ticket} 执行成功` : `执行失败: ${data.error}`
+                });
+                if (data.account_id === currentAccount) renderLogs(acc.logs);
+            });
+            
+            socket.on('account_disconnect', (data) => {
+                const acc = getAccount(data.account_id);
+                acc.connected = false;
+                updateAccountTabs();
+            });
+            
+            socket.on('analysis_log', (data) => {
+                const acc = getAccount(data.account_id);
+                const source = data.source || 'technical';
+                
+                if (source === 'ai') {
+                    // AI 分析 → 插入独立日志
+                    if (!acc.aiRounds) acc.aiRounds = [];
+                    acc.aiRounds.unshift({
+                        time: data.time,
+                        result: '🤖 AI分析',
+                        logs: data.logs,
+                        collapsed: false,
+                        isAi: true,
+                    });
+                    if (acc.aiRounds.length > 20) acc.aiRounds = acc.aiRounds.slice(0, 20);
+                } else {
+                    // 技术面分析
+                    if (!acc.analysisRounds) acc.analysisRounds = [];
+                    const hasSignal = data.logs.some(l => l.level === 'signal' && l.strategy === '汇总');
+                    acc.analysisRounds.unshift({
+                        time: data.time,
+                        result: hasSignal ? '🟢 有信号' : '⚪ 无信号',
+                        logs: data.logs,
+                        collapsed: !hasSignal,
+                    });
+                    if (acc.analysisRounds.length > 30) acc.analysisRounds = acc.analysisRounds.slice(0, 30);
+                }
+                
+                if (data.account_id === currentAccount) renderAnalysis(acc);
+            });
+            
+            socket.on('account_registered', (data) => {
+                const acc = getAccount(data.account_id);
+                acc.broker = data.broker;
+                acc.server_name = data.server_name;
+                acc.account_name = data.account_name;
+                acc.account_type = data.account_type;
+                acc.currency = data.currency;
+                acc.leverage = data.leverage;
+                acc.connected = true;
+                updateAccountTabs();
+                if (data.account_id === currentAccount) selectAccount(data.account_id);
+            });
+        }
+        
+        // ============================================
+        // Helpers
+        // ============================================
+        function getAccount(id) {
+            if (!accounts[id]) {
+                accounts[id] = { id, connected: false, positions: [], logs: [], tick: {}, analysisRounds: [] };
+                if (!currentAccount) selectAccount(id);
+            }
+            return accounts[id];
+        }
+        
+        function selectAccount(id) {
+            currentAccount = id;
+            updateAccountTabs();
+            const acc = accounts[id] || {};
+            if (acc.tick && acc.tick.bid) {
+                document.getElementById('priceValue').textContent = acc.tick.bid.toFixed(2);
+                document.getElementById('priceSpread').textContent = (acc.tick.spread || 0).toFixed(1);
+            }
+            if (acc.equity) {
+                document.getElementById('accEquity').textContent = '$' + fmt(acc.equity);
+                document.getElementById('accBalance').textContent = '$' + fmt(acc.balance || 0);
+            }
+            // Broker info
+            if (acc.broker) {
+                document.getElementById('brokerInfo').style.display = 'block';
+                document.getElementById('accBroker').textContent = acc.broker;
+                document.getElementById('accServer').textContent = acc.server_name || '';
+                document.getElementById('accType').textContent = acc.account_type || '';
+                document.getElementById('accLeverage').textContent = acc.leverage ? '1:' + acc.leverage : '';
+            } else {
+                document.getElementById('brokerInfo').style.display = 'none';
+            }
+            renderPositions(acc.positions || []);
+            renderLogs(acc.logs || []);
+            renderAnalysis(acc);
+        }
+        
+        function updateAccountTabs() {
+            const container = document.getElementById('accountTabs');
+            const ids = Object.keys(accounts).filter(id => id !== 'default' && id !== 'test');
+            if (ids.length === 0) return;
+            container.innerHTML = ids.map(id => {
+                const acc = accounts[id];
+                const active = id === currentAccount ? 'active' : '';
+                const online = acc.connected ? 'online' : 'offline';
+                const broker = acc.broker ? ` (${acc.broker})` : '';
+                return `<button class="account-tab ${active}" onclick="selectAccount('${id}')">
+                    <span class="dot ${online}"></span>${id}${broker}
+                </button>`;
+            }).join('');
+        }
+        
+        function renderPositions(positions) {
+            const container = document.getElementById('positionsContainer');
+            if (!positions || positions.length === 0) {
+                container.innerHTML = '<div class="no-data"><div class="icon">📭</div>暂无持仓</div>';
+                return;
+            }
+            let html = `<table class="positions-table">
+                <tr><th>订单</th><th>方向</th><th>手数</th><th>开仓价</th><th class="pos-mobile-hide">止损</th><th class="pos-mobile-hide">止盈</th><th>盈亏</th></tr>`;
+            positions.forEach(p => {
+                const tag = p.type === 'BUY' ? 'buy-tag' : 'sell-tag';
+                const pc = p.profit >= 0 ? 'positive' : 'negative';
+                html += `<tr>
+                    <td>#${p.ticket}</td>
+                    <td><span class="${tag}">${p.type}</span></td>
+                    <td>${p.lots}</td>
+                    <td>${p.open_price.toFixed(2)}</td>
+                    <td class="pos-mobile-hide">${(p.sl||0).toFixed(2)}</td>
+                    <td class="pos-mobile-hide">${(p.tp||0).toFixed(2)}</td>
+                    <td class="${pc}">$${p.profit.toFixed(2)}</td>
+                </tr>`;
+            });
+            container.innerHTML = html + '</table>';
+        }
+        
+        function renderLogs(logs) {
+            const container = document.getElementById('logContainer');
+            if (!logs || logs.length === 0) {
+                container.innerHTML = '<div class="no-data"><div class="icon">📋</div>等待信号...</div>';
+                return;
+            }
+            container.innerHTML = logs.slice(0, 50).map(l => `
+                <div class="log-entry">
+                    <span class="log-time">${l.time}</span>
+                    <span class="log-type ${l.type}">${l.type === 'signal' ? '📡 信号' : l.type === 'result-ok' ? '✅ 成功' : '❌ 失败'}</span>
+                    <span class="log-msg">${l.msg}</span>
+                </div>
+            `).join('');
+        }
+        
+        function renderAnalysis(acc) {
+            // 技术面分析
+            const techContainer = document.getElementById('analysisContainer');
+            const techRounds = acc.analysisRounds || [];
+            
+            if (techRounds.length === 0) {
+                techContainer.innerHTML = '<div class="no-data"><div class="icon">🔍</div>等待首次策略分析...</div>';
+            } else {
+                techContainer.innerHTML = techRounds.map((round, idx) => {
+                    const bodyClass = round.collapsed ? 'analysis-body collapsed' : 'analysis-body';
+                    const arrow = round.collapsed ? '▶' : '▼';
+                    const items = round.logs.map(log =>
+                        `<div class="analysis-item level-${log.level}">
+                            <span class="analysis-strategy">[${log.strategy}]</span>
+                            <span class="analysis-msg">${log.msg}</span>
+                        </div>`
+                    ).join('');
+                    return `<div class="analysis-round">
+                        <div class="analysis-header" onclick="toggleRound2(this)">
+                            <span><span class="round-time">${round.time}</span> — 技术面分析</span>
+                            <span><span class="round-result">${round.result}</span> ${arrow}</span>
+                        </div>
+                        <div class="${bodyClass}">${items}</div>
+                    </div>`;
+                }).join('');
+            }
+            
+            // AI 分析
+            const aiContainer = document.getElementById('aiAnalysisContainer');
+            const aiRounds = acc.aiRounds || [];
+            
+            if (aiRounds.length === 0) {
+                aiContainer.innerHTML = '<div class="no-data"><div class="icon">🧠</div>等待首次 AI 分析...</div>';
+            } else {
+                aiContainer.innerHTML = aiRounds.map((round, idx) => {
+                    const bodyClass = round.collapsed ? 'analysis-body collapsed' : 'analysis-body';
+                    const arrow = round.collapsed ? '▶' : '▼';
+                    const items = round.logs.map(log =>
+                        `<div class="analysis-item level-${log.level}">
+                            <span class="analysis-strategy" style="color:#a371f7;">[${log.strategy}]</span>
+                            <span class="analysis-msg">${log.msg}</span>
+                        </div>`
+                    ).join('');
+                    return `<div class="analysis-round">
+                        <div class="analysis-header" style="background:#1a1028;" onclick="toggleRound2(this)">
+                            <span><span class="round-time">${round.time}</span> — 🤖 AI 分析</span>
+                            <span><span class="round-result">${round.result}</span> ${arrow}</span>
+                        </div>
+                        <div class="${bodyClass}">${items}</div>
+                    </div>`;
+                }).join('');
+            }
+        }
+        
+        function toggleRound2(el) {
+            const body = el.nextElementSibling;
+            if (body) {
+                body.classList.toggle('collapsed');
+                const arrow = el.querySelector('span:last-child');
+                if (arrow) {
+                    const text = arrow.textContent;
+                    arrow.textContent = text.includes('▶') ? text.replace('▶', '▼') : text.replace('▼', '▶');
+                }
+            }
+        }
+        
+        function fmt(n) {
+            return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+        
+        setInterval(() => {
+            const el = document.getElementById('serverTime');
+            if (el) {
+                const now = new Date();
+                const y = now.getFullYear();
+                const m = String(now.getMonth()+1).padStart(2,'0');
+                const d = String(now.getDate()).padStart(2,'0');
+                const h = String(now.getHours()).padStart(2,'0');
+                const min = String(now.getMinutes()).padStart(2,'0');
+                const s = String(now.getSeconds()).padStart(2,'0');
+                el.textContent = `${y}-${m}-${d} ${h}:${min}:${s}`;
+            }
+        }, 1000);
+        
+        function fetchStatus() {
+            fetch('/api/status', { headers: { 'X-API-Token': apiToken } })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.accounts) {
+                        Object.keys(data.accounts).forEach(id => {
+                            const acc = getAccount(id);
+                            Object.assign(acc, data.accounts[id]);
+                        });
+                        updateAccountTabs();
+                    }
+                });
+        }
+    </script>
+</body>
+</html>
