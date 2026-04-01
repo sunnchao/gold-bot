@@ -702,7 +702,7 @@ def analysis_loop():
                 socketio.emit('new_signal', {"account_id": acc_id, **command})
                 logger.info(
                     f"[{acc_id}] 📤 信号: {signal['side']} @ {signal['entry']:.2f} | "
-                    f"SL={signal['stop_loss']:.2f} | {signal['strategy']} | 评分:{signal['score']}"
+                    f"SL={signal['stop_loss']:.2f} | TP1={signal['tp1']:.2f} | {signal['strategy']} | 评分:{signal['score']}"
                 )
                 
         except Exception as e:

@@ -763,6 +763,46 @@ void ExecuteSignal(string cmd, string cmd_id)
    {
       Print("✅ 开仓：#", ticket, " ", type_str, " ", lots, "手 @ ", price, 
             " | Magic=", magicForOrder, " (", strategy, ")");
+      
+      // 检查并设置 TP/SL（兼容 ECN/STP broker）
+      if(OrderSelect(ticket, SELECT_BY_TICKET))
+      {
+         double current_sl = OrderStopLoss();
+         double current_tp = OrderTakeProfit();
+         
+         // 如果 TP/SL 未设置，尝试单独设置
+         if(current_sl == 0 || current_tp == 0)
+         {
+            double min_stop = MarketInfo(Symbol_, MODE_STOPLEVEL) * Point;
+            double final_sl = sl;
+            double final_tp = tp1;
+            
+            // 确保 SL 距离符合要求
+            if(MathAbs(price - sl) < min_stop)
+            {
+               if(type_str == "BUY") final_sl = price - min_stop;
+               else final_sl = price + min_stop;
+            }
+            
+            // 确保 TP 距离符合要求
+            if(MathAbs(tp1 - price) < min_stop)
+            {
+               if(type_str == "BUY") final_tp = price + min_stop;
+               else final_tp = price - min_stop;
+            }
+            
+            if(OrderModify(ticket, price, final_sl, final_tp, 0, clrYellow))
+            {
+               Print("📝 开仓后设置 TP/SL: SL=", final_sl, " TP=", final_tp);
+            }
+            else
+            {
+               int mod_err = GetLastError();
+               Print("⚠️ 设置 TP/SL 失败: Error#", mod_err);
+            }
+         }
+      }
+      
       ReportResult(cmd_id, "OK", ticket, "");
    }
    else
