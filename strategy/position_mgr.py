@@ -19,6 +19,8 @@ class PositionState:
         self.max_profit_atr = 0.0      # 最大盈利ATR数
         self.open_time = time.time()    # 开仓时间
         self.last_modify_time = 0
+        self.be_moved = False           # 是否已移保本止损
+        self.be_trigger_atr = 1.0       # 保本触发阈值（浮盈≥1 ATR）
 
 
 class PositionManager:
@@ -109,35 +111,42 @@ class PositionManager:
                 commands.append(cmd)
                 continue
             
-            # 2. 智能 TP1
+            # 2. 保本止损（新增）
+            cmd = self._check_breakeven(ticket, state, pos, side, price, entry,
+                                         lots, atr, profit_atr, h1)
+            if cmd:
+                commands.append(cmd)
+                # 保本后继续检查，不 continue
+            
+            # 3. 智能 TP1
             cmd = self._check_tp1(ticket, state, pos, side, price, entry,
                                    lots, atr, profit_atr, tp1_multi, h1)
             if cmd:
                 commands.append(cmd)
                 continue
             
-            # 3. 关键价位止盈
+            # 4. 关键价位止盈
             cmd = self._check_key_level_tp(ticket, state, pos, side, price, entry,
                                             lots, atr, profit_atr)
             if cmd:
                 commands.append(cmd)
                 continue
             
-            # 4. 智能 TP2
+            # 5. 智能 TP2
             cmd = self._check_tp2(ticket, state, pos, side, price, entry,
                                    lots, atr, profit_atr, tp2_multi, h1)
             if cmd:
                 commands.append(cmd)
                 continue
             
-            # 5. 趋势反转（灵敏版）
+            # 6. 趋势反转（双重确认版）
             cmd = self._check_trend_reversal(ticket, state, pos, side, price,
                                               lots, profit_atr, h1)
             if cmd:
                 commands.append(cmd)
                 continue
             
-            # 6. 动态追踪保护
+            # 7. 动态追踪保护
             cmd = self._check_dynamic_trailing(ticket, state, pos, side, price,
                                                 lots, atr, profit_atr)
             if cmd:
@@ -190,34 +199,56 @@ class PositionManager:
         
         return None
     
+    def _check_breakeven(self, ticket, state, pos, side, price, entry,
+                         lots, atr, profit_atr, h1) -> Optional[dict]:
+        """
+        保本止损：浮盈 ≥ 1 ATR 时，将止损移至开仓价
+        核心改进：不平仓，让利润继续跑
+        """
+        if state.be_moved:
+            return None
+        
+        if profit_atr < state.be_trigger_atr:
+            return None
+        
+        state.be_moved = True
+        logger.info(f"#{ticket} 🔒 保本止损触发 | 浮盈{profit_atr:.1f}ATR，止损移至{entry:.2f}")
+        
+        return {
+            "action": "MODIFY",
+            "ticket": ticket,
+            "new_sl": entry,
+            "reason": f"breakeven_{profit_atr:.1f}ATR",
+        }
+    
     def _check_tp1(self, ticket, state, pos, side, price, entry,
                     lots, atr, profit_atr, tp1_multi, h1) -> Optional[dict]:
         """
-        TP1: 自适应 ATR 倍数，或提前触发（0.8x + 动量减弱）
+        TP1: 自适应 ATR 倍数，或提前触发（0.8x + RSI极端）
         平仓 40%
+        必须先触发保本止损（be_moved=True）才考虑 TP1
         """
         if state.tp1_hit:
             return None
         
+        # 必须先保本
+        if not state.be_moved:
+            return None
+        
         should_tp1 = profit_atr >= tp1_multi
         
-        # 提前 TP1：0.8 * tp1_multi + 动量信号
+        # 提前 TP1：0.8 * tp1_multi + RSI 极端信号
         early_threshold = tp1_multi * 0.6
         if not should_tp1 and profit_atr >= early_threshold and len(h1) >= 3:
             last = h1.iloc[-1]
             prev = h1.iloc[-2]
             
             if side == "BUY":
-                if (last.get("macd_hist", 0) < 0 and prev.get("macd_hist", 0) > 0):
-                    should_tp1 = True
-                    logger.info(f"#{ticket} MACD转负，提前TP1")
-                elif prev.get("rsi", 50) > 65 and last.get("rsi", 50) < 55:
+                if prev.get("rsi", 50) > 65 and last.get("rsi", 50) < 55:
                     should_tp1 = True
                     logger.info(f"#{ticket} RSI回落，提前TP1")
             else:
-                if (last.get("macd_hist", 0) > 0 and prev.get("macd_hist", 0) < 0):
-                    should_tp1 = True
-                elif prev.get("rsi", 50) < 35 and last.get("rsi", 50) > 45:
+                if prev.get("rsi", 50) < 35 and last.get("rsi", 50) > 45:
                     should_tp1 = True
         
         if should_tp1:
@@ -331,9 +362,15 @@ class PositionManager:
     def _check_trend_reversal(self, ticket, state, pos, side, price,
                                lots, profit_atr, h1) -> Optional[dict]:
         """
-        趋势反转（灵敏版）— 评分制
-        RSI + MACD + EMA + ADX 综合判断
+        趋势反转（双重确认版）— 必须已保本后才触发
+        双重确认条件：
+        - MACD histogram < -0.5（明显负值，不是刚转负）
+        - 价格跌破 EMA20
+        两个条件同时满足才触发退出
         """
+        if not state.be_moved:
+            return None
+        
         if profit_atr < 0.3:
             return None
         
@@ -347,18 +384,23 @@ class PositionManager:
         reasons = []
         
         if side == "BUY":
+            # 双重确认：MACD histogram 明显负值 + 价格跌破 EMA20
+            macd_hist = last.get("macd_hist", 0)
+            ema20 = last.get("ema20", price)
+            
+            dual_confirm = macd_hist < -0.5 and price < ema20
+            if dual_confirm:
+                score += 3
+                reasons.append(f"MACD={macd_hist:.2f}<-0.5且价格<EMA20")
+            
             # RSI 跌破40
             if last.get("rsi", 50) < 40:
                 score += 2
                 reasons.append(f"RSI={last.get('rsi', 0):.0f}<40")
             # MACD 柱状图翻负
             if last.get("macd_hist", 0) < 0 and prev.get("macd_hist", 0) > 0:
-                score += 2
-                reasons.append("MACD翻负")
-            # 价格跌破 EMA20
-            if price < last.get("ema20", price):
                 score += 1
-                reasons.append("价格<EMA20")
+                reasons.append("MACD翻负")
             # ADX 衰竭
             if last.get("adx", 25) < 20:
                 score += 1
@@ -368,15 +410,21 @@ class PositionManager:
                 score += 2
                 reasons.append("EMA死叉")
         else:
+            # 双重确认：MACD histogram 明显正值 + 价格突破 EMA20
+            macd_hist = last.get("macd_hist", 0)
+            ema20 = last.get("ema20", price)
+            
+            dual_confirm = macd_hist > 0.5 and price > ema20
+            if dual_confirm:
+                score += 3
+                reasons.append(f"MACD={macd_hist:.2f}>0.5且价格>EMA20")
+            
             if last.get("rsi", 50) > 60:
                 score += 2
                 reasons.append(f"RSI={last.get('rsi', 0):.0f}>60")
             if last.get("macd_hist", 0) > 0 and prev.get("macd_hist", 0) < 0:
-                score += 2
-                reasons.append("MACD翻正")
-            if price > last.get("ema20", price):
                 score += 1
-                reasons.append("价格>EMA20")
+                reasons.append("MACD翻正")
             if last.get("adx", 25) < 20:
                 score += 1
                 reasons.append(f"ADX={last.get('adx', 0):.0f}<20")

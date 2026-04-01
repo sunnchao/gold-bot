@@ -33,6 +33,7 @@ def post_api(combined_bias, confidence, reasoning, exit_suggestion, risk_alert, 
     payload = {
         "agent": "Aurex",
         "symbol": "XAUUSD",
+        "account_id": "90974574",
         "analysis": {
             "combined_bias": combined_bias,
             "confidence": confidence,
@@ -54,13 +55,25 @@ def post_api(combined_bias, confidence, reasoning, exit_suggestion, risk_alert, 
         print(f"API ERROR: {e}")
 
 
-def post_feishu_card(combined_bias, confidence, reasoning, exit_suggestion, risk_alert, alert_reason):
+def post_feishu_card(combined_bias, confidence, reasoning, exit_suggestion, risk_alert, alert_reason, strategy_name="pullback"):
     """飞书 interactive 卡片推送"""
     ts, sig = gen_sign()
+
+    # 策略名称映射（中文优先，英文辅助）
+    strategy_name_map = {
+        "pullback":          "趋势回调 PULLBACK",
+        "breakout_retest":   "突破回踩 BREAKOUT",
+        "divergence":        "RSI背离 DIVERGENCE",
+        "breakout_pyramid":  "突破加仓 PYRAMID",
+        "counter_pullback":  "反向回调 COUNTER",
+        "range":             "震荡区间 RANGE",
+    }
+    strategy_display = strategy_name_map.get(strategy_name.lower(), strategy_name.upper())
 
     bias_map = {"bullish": "偏多", "bearish": "偏空", "neutral": "中性"}
     exit_map = {
         "hold": "持仓",
+        "tighten": "移动止损",
         "close_long": "平多",
         "close_short": "平空",
         "close_all": "清仓",
@@ -91,9 +104,13 @@ def post_feishu_card(combined_bias, confidence, reasoning, exit_suggestion, risk
     # 风险提示
     risk_block = f"\n\n⚠️ **风险提示**\n{alert_reason}" if risk_alert else ""
 
+    # 标题：中文策略名 + 账户 + 货币 + 价格
+    card_title = f"📊 {strategy_display} | 90974574 | XAUUSD {price_str}"
+
     content = (
         f"**账户**: `90974574`\n"
         f"**品种**: XAUUSD\n"
+        f"**策略**: {strategy_display}\n"
         f"**信号**: {bias_cn} | 置信度 {confidence}%\n"
         f"`{conf_bar}`\n\n"
         f"**操作建议**: {exit_cn}\n\n"
@@ -108,9 +125,8 @@ def post_feishu_card(combined_bias, confidence, reasoning, exit_suggestion, risk
         "msg_type": "interactive",
         "card": {
             "header": {
-                "title": {"tag": "plain_text", "content": f"📊 Aurex 技术分析 | XAUUSD {price_str}"},
+                "title": {"tag": "plain_text", "content": card_title},
                 "template": template,
-                "template": "blue"
             },
             "elements": [
                 {"tag": "markdown", "content": content},
@@ -136,7 +152,7 @@ def post_feishu_card(combined_bias, confidence, reasoning, exit_suggestion, risk
 
 def main():
     if len(sys.argv) < 7:
-        print("Usage: post_result_90974574.py <combined_bias> <confidence> <reasoning> <exit_suggestion> <risk_alert> <alert_reason>")
+        print("Usage: post_result-90974574.py <combined_bias> <confidence> <reasoning> <exit_suggestion> <risk_alert> <alert_reason> [strategy_name]")
         sys.exit(1)
 
     combined_bias   = sys.argv[1]
@@ -145,9 +161,25 @@ def main():
     exit_suggestion = sys.argv[4]
     risk_alert      = sys.argv[5].lower() == "true"
     alert_reason    = sys.argv[6]
+    strategy_name   = sys.argv[7] if len(sys.argv) > 7 else "pullback"
 
     post_api(combined_bias, confidence, reasoning, exit_suggestion, risk_alert, alert_reason)
-    post_feishu_card(combined_bias, confidence, reasoning, exit_suggestion, risk_alert, alert_reason)
+
+    # P0修复：risk_alert=true 强制推送
+    if risk_alert:
+        post_feishu_card(combined_bias, confidence, reasoning,
+                         exit_suggestion, risk_alert, alert_reason,
+                         strategy_name=strategy_name)
+        print(f"推送结果: risk_alert=true → 强制推送")
+    else:
+        # 有持仓 + 移动止损建议时推送
+        if exit_suggestion.lower() == "tighten":
+            post_feishu_card(combined_bias, confidence, reasoning,
+                             exit_suggestion, risk_alert, alert_reason,
+                             strategy_name=strategy_name)
+            print(f"推送结果: tighten → 推送")
+        else:
+            print(f"推送结果: Feishu=SKIP")
 
 
 if __name__ == "__main__":
