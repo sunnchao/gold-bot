@@ -114,7 +114,7 @@ def post_feishu_card(combined_bias, confidence, reasoning, exit_suggestion, risk
     signal_label = "📈 **开单信号**" if exit_suggestion.lower() in ["hold"] and combined_bias.lower() != "neutral" else "🔄 **持仓调整**"
 
     # 标题：中文策略名 + 账户 + 货币 + 价格
-    card_title = f"📊 {strategy_display} | 90011087 | XAUUSD {price_str}"
+    card_title = f"📊 {strategy_display} | 90011087 | XAUUSD"
 
     content = (
         f"{signal_label}\n\n"

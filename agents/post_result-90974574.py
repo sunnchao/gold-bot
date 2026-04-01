@@ -105,7 +105,7 @@ def post_feishu_card(combined_bias, confidence, reasoning, exit_suggestion, risk
     risk_block = f"\n\n⚠️ **风险提示**\n{alert_reason}" if risk_alert else ""
 
     # 标题：中文策略名 + 账户 + 货币 + 价格
-    card_title = f"📊 {strategy_display} | 90974574 | XAUUSD {price_str}"
+    card_title = f"📊 {strategy_display} | 90974574 | XAUUSD"
 
     content = (
         f"**账户**: `90974574`\n"
