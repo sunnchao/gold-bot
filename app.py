@@ -151,6 +151,104 @@ def _track_strategy_accuracy(acc, closed_position):
     logger.info(f"[{acc.get('account_id')}] 策略胜率更新: {strategy} | wins={stats['wins']} losses={stats['losses']}")
 
 
+# P3: 新开仓推送飞书通知
+def _notify_new_order(acc_id, pos):
+    """新开仓订单推送飞书 webhook 通知"""
+    from gold_bolt_server.utils.feishu_notify import FEISHU_WEBHOOK_URL, FEISHU_SECRET
+    
+    ticket = pos.get("ticket", 0)
+    direction = pos.get("direction", "UNKNOWN")
+    lots = pos.get("lots", 0)
+    entry_price = pos.get("entry_price", 0)
+    strategy = pos.get("strategy", "unknown")
+    magic = pos.get("magic", 0)
+    sl = pos.get("sl", 0)
+    tp = pos.get("tp", 0)
+    
+    # 方向图标和颜色
+    if direction == "BUY":
+        dir_icon = "🟢"
+        dir_text = "做多"
+        template = "green"
+    elif direction == "SELL":
+        dir_icon = "🔴"
+        dir_text = "做空"
+        template = "red"
+    else:
+        dir_icon = "⚪"
+        dir_text = direction
+        template = "blue"
+    
+    # 策略中文名
+    strategy_names = {
+        "pullback": "趋势回调",
+        "breakout_retest": "突破回踩",
+        "divergence": "RSI背离",
+        "breakout_pyramid": "突破加仓",
+        "counter_pullback": "反向回调",
+        "range": "震荡区间",
+    }
+    strategy_cn = strategy_names.get(strategy, strategy)
+    
+    # 构建卡片
+    title = f"📊 新开仓 | {acc_id} | XAUUSD"
+    content = (
+        f"**账户**: `{acc_id}`\n"
+        f"**订单号**: #{ticket}\n"
+        f"**方向**: {dir_icon} **{dir_text}**\n"
+        f"**手数**: {lots} lot\n"
+        f"**入场价**: {entry_price}\n"
+        f"**策略**: {strategy_cn} (`{magic}`)\n"
+        f"**止损**: {sl if sl > 0 else '—'} | **止盈**: {tp if tp > 0 else '—'}"
+    )
+    
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    
+    # 发送飞书卡片
+    import time
+    import hmac
+    import hashlib
+    import base64
+    import requests
+    
+    ts = str(int(time.time()))
+    sign_str = ts + "\n" + FEISHU_SECRET
+    sign = base64.b64encode(
+        hmac.new(sign_str.encode(), digestmod=hashlib.sha256).digest()
+    ).decode()
+    
+    payload = {
+        "timestamp": ts,
+        "sign": sign,
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": template,
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+                {
+                    "tag": "note",
+                    "elements": [
+                        {"tag": "plain_text", "content": f"⏰ {now} | Gold Bolt"}
+                    ]
+                }
+            ]
+        }
+    }
+    
+    try:
+        resp = requests.post(FEISHU_WEBHOOK_URL, json=payload, timeout=10)
+        result = resp.json()
+        if result.get("code") == 0 or result.get("StatusCode") == 0:
+            logger.info(f"[{acc_id}] ✅ 新开仓推送成功: #{ticket} {direction} {lots}lot @ {entry_price}")
+        else:
+            logger.warning(f"[{acc_id}] ⚠️ 新开仓推送失败: {result}")
+    except Exception as e:
+        logger.error(f"[{acc_id}] ❌ 新开仓推送异常: {e}")
+
+
 @app.route('/register', methods=['POST'])
 @require_token
 def api_register():
@@ -315,6 +413,14 @@ def api_positions():
             closed_pos = acc["positions"].get(ticket, {})
             if closed_pos:
                 _track_strategy_accuracy(acc, closed_pos)
+        
+        # P3: 检测新开仓并推送飞书通知
+        opened_tickets = new_tickets - old_tickets
+        for ticket in opened_tickets:
+            new_pos = next((p for p in positions if p["ticket"] == ticket), None)
+            if new_pos:
+                _notify_new_order(acc_id, new_pos)
+        
         # 更新持仓
         acc["positions"] = {p["ticket"]: p for p in positions}
     
