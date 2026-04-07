@@ -13,7 +13,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, render_template
 from flask_socketio import SocketIO
 
-from gold_bolt_server.config import SERVER, STRATEGY, SIGNAL, TRADING_HOURS, ADMIN_TOKEN
+from gold_bolt_server.config import SERVER, STRATEGY, SIGNAL, TRADING_HOURS, ADMIN_TOKEN, ENABLE_AI
 from gold_bolt_server.data.manager import DataManager
 from gold_bolt_server.strategy.engine import StrategyEngine
 from gold_bolt_server.strategy.position_mgr import PositionManager
@@ -1037,6 +1037,11 @@ def api_ai_result(account_id):
     用途： Aurex AI Agent 回传分析结果（combined_bias, confidence, exit_suggestion 等）
           GB Server 据此调整持仓或推送 WebSocket 更新
     """
+    # AI 分析已禁用时，忽略结果
+    if not ENABLE_AI:
+        logger.info(f"[{account_id}] 🤖 AI 分析已禁用，忽略 AI 结果")
+        return jsonify({"status": "OK", "received": False, "message": "AI analysis disabled"})
+
     token = getattr(request, '_gb_token', '')
     allowed = token_mgr.get_allowed_accounts(token)
     if allowed is not None and account_id not in allowed:

@@ -2,10 +2,20 @@
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
 .venv/
+venv/
+ENV/
 
 # Logs
 logs/
+*.log
 
 # Backups
 *.bak
@@ -14,11 +24,38 @@ logs/
 .DS_Store
 Thumbs.db
 
-# IDE
+# IDE / Tools
 .idea/
 .vscode/
 *.swp
+*.swo
+.opencode/
 
 # Local config (secrets)
 *.local
 .env
+.env.*
+config*.py
+credentials*.json
+*.pem
+*.key
+
+# Flask
+instance/
+.webassets-cache
+
+# SocketIO
+*.sock
+
+# Data
+data/*.json
+data/*.db
+!data/.gitkeep
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Distribution
+*.whl
