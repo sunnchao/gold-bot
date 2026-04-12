@@ -13,15 +13,9 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-FEISHU_WEBHOOK_URL = os.getenv(
-    "FEISHU_WEBHOOK_URL",
-    "https://open.feishu.cn/open-apis/bot/v2/hook/8ecc6b90-aba4-49e5-bcfe-b8779af28e15"
-)
+FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL", "")
 
-FEISHU_SECRET = os.getenv(
-    "FEISHU_SECRET",
-    "qBkTnDV6wk6BXiutYf9OB"
-)
+FEISHU_SECRET = os.getenv("FEISHU_SECRET", "")
 
 _COOLDOWN = 600  # 10分钟冷却
 
@@ -37,9 +31,11 @@ class FeishuNotifier:
         return time.time() - self._last_sent >= _COOLDOWN
 
     def _gen_sign(self, timestamp: int) -> str:
-        """生成飞书签名"""
+        """生成飞书签名（官方标准方式）"""
         string_to_sign = f"{timestamp}\n{FEISHU_SECRET}"
+        # 飞书签名规范: secret 为 key, timestamp+\n+secret 为 msg
         hmac_code = hmac.new(
+            FEISHU_SECRET.encode("utf-8"),
             string_to_sign.encode("utf-8"),
             digestmod=hashlib.sha256
         ).digest()

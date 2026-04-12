@@ -17,7 +17,8 @@ SERVER = {
 # Token & 账户权限
 # ============================================
 # 管理员 Token — 可查看所有账户
-ADMIN_TOKEN = os.getenv("GBOLT_ADMIN_TOKEN", "RbIzdutbQYFR_cAdZv1jZrN0MyKoLpyf0jb0vSqzhGI")
+# 管理员 Token — 可查看所有账户（从环境变量读取，无默认值）
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 
 # 账户 Token 映射
 # 格式: { "token_string": ["account_id_1", "account_id_2", ...] }
@@ -90,3 +91,23 @@ TRADING_HOURS = {
     "skip_end":   "07:30",   # 跳过结束
     "timezone":   "Asia/Shanghai",
 }
+
+# ============================================
+# 策略映射 — Magic Number <-> 策略名
+# ============================================
+# EA 的 Magic Number 与策略名互查
+STRATEGY_MAGIC_MAP = {
+    # 策略名 -> Magic Number
+    "pullback":          20250231,
+    "breakout_retest":   20250232,
+    "divergence":        20250233,
+    "breakout_pyramid":  20250234,
+    "counter_pullback":  20250235,
+    "range":             20250236,
+}
+
+# Magic Number -> 策略名（从上面自动生成）
+MAGIC_TO_STRATEGY = {v: k for k, v in STRATEGY_MAGIC_MAP.items()}
+
+# 字符串 key 版本（用于 JSON/配置，key 为字符串）
+DEFAULT_STRATEGY_MAPPING = {str(k): v for k, v in MAGIC_TO_STRATEGY.items()}

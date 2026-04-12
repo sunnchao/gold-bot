@@ -10,10 +10,14 @@ import threading
 from datetime import datetime
 from functools import wraps
 
+# 加载 .env 环境变量
+from dotenv import load_dotenv
+load_dotenv()
+
 from flask import Flask, request, jsonify, render_template
 from flask_socketio import SocketIO
 
-from gold_bolt_server.config import SERVER, STRATEGY, SIGNAL, TRADING_HOURS, ADMIN_TOKEN
+from gold_bolt_server.config import SERVER, STRATEGY, SIGNAL, TRADING_HOURS, ADMIN_TOKEN, STRATEGY_MAGIC_MAP, MAGIC_TO_STRATEGY, DEFAULT_STRATEGY_MAPPING
 from gold_bolt_server.data.manager import DataManager
 from gold_bolt_server.strategy.engine import StrategyEngine
 from gold_bolt_server.strategy.position_mgr import PositionManager
@@ -30,7 +34,7 @@ app = Flask(__name__,
     template_folder='templates',
     static_folder='static',
 )
-app.config['SECRET_KEY'] = 'gold-bolt-secret'
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', os.urandom(24).hex())
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 
@@ -40,9 +44,11 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 class AccountStore:
     def __init__(self):
         self.accounts = {}   # account_id -> AccountData
+        self.data_managers = {}  # account_id -> DataManager
         self.lock = threading.Lock()
     
     def get(self, account_id: str):
+        """获取或创建账户（调用方需自行加锁或接受竞态风险）"""
         if account_id not in self.accounts:
             self.accounts[account_id] = {
                 "account_id": account_id,
@@ -83,12 +89,19 @@ class AccountStore:
     
     def all_ids(self):
         return list(self.accounts.keys())
+    
+    def get_dm(self, account_id: str):
+        """获取或创建 DataManager（需在 lock 内调用）"""
+        if account_id not in self.data_managers:
+            self.data_managers[account_id] = DataManager()
+            logger.info(f"[{account_id}] 创建DataManager")
+        return self.data_managers[account_id]
+
 
 store = AccountStore()
 strategy_engine = StrategyEngine()
 position_manager = PositionManager()
 token_mgr = TokenManager(ADMIN_TOKEN)
-data_managers = {}  # account_id -> DataManager
 
 
 # ============================================
@@ -127,15 +140,7 @@ def _track_strategy_accuracy(acc, closed_position):
     magic = closed_position.get("magic", 0)
     profit = float(closed_position.get("profit", 0))
     
-    magic_to_strategy = {
-        20250231: "pullback",
-        20250232: "breakout_retest",
-        20250233: "divergence",
-        20250234: "breakout_pyramid",
-        20250235: "counter_pullback",
-        20250236: "range",
-    }
-    strategy = magic_to_strategy.get(magic)
+    strategy = MAGIC_TO_STRATEGY.get(magic)
     if not strategy:
         return
     
@@ -288,11 +293,9 @@ def api_bars():
         acc = store.get(acc_id)
         acc["bars"][tf] = bars
     
-    if acc_id not in data_managers:
-        data_managers[acc_id] = DataManager()
-        logger.info(f"[{acc_id}] 创建DataManager")
-    data_managers[acc_id].update_from_bars(tf, bars)
-    logger.info(f"[{acc_id}] 收到 {tf} K线 {len(bars)}根 | DM keys: {list(data_managers.keys())}")
+    dm = store.get_dm(acc_id)
+    dm.update_from_bars(tf, bars)
+    logger.info(f"[{acc_id}] 收到 {tf} K线 {len(bars)}根 | DM keys: {list(store.data_managers.keys())}")
     
     return jsonify({"status": "OK", "received": len(bars)})
 
@@ -441,7 +444,8 @@ def api_history(account_id):
     if allowed is not None and account_id not in allowed:
         return jsonify({"status": "ERROR", "message": "forbidden"}), 403
     
-    acc = store.get(account_id)
+    with store.lock:
+        acc = store.get(account_id)
     return jsonify({"history": acc["history"]})
 
 
@@ -481,8 +485,9 @@ def api_ea_version():
 
 
 @app.route('/api/ea/download')
+@require_token
 def api_ea_download():
-    """EA 下载最新 .mq4 文件"""
+    """EA 下载最新 .mq4 文件（需认证）"""
     if not os.path.exists(EA_FILE_PATH):
         return jsonify({"status": "ERROR", "message": "file not found"}), 404
     from flask import send_file
@@ -562,15 +567,7 @@ def _check_net_position_conflict(acc, new_signal):
     """检查新信号是否与账户净持仓方向冲突"""
     strategy = new_signal.get("strategy", "")
     side = new_signal.get("side", "")
-    magic_map = {
-        "pullback": 20250231,
-        "breakout_retest": 20250232,
-        "divergence": 20250233,
-        "breakout_pyramid": 20250234,
-        "counter_pullback": 20250235,
-        "range": 20250236,
-    }
-    target_magic = magic_map.get(strategy)
+    target_magic = STRATEGY_MAGIC_MAP.get(strategy)
     if not target_magic:
         return None
     positions = acc.get("positions", {})
@@ -593,37 +590,66 @@ def analysis_loop():
         try:
             time.sleep(30)
             
-            all_ids = store.all_ids()
+            with store.lock:
+                all_ids = store.all_ids()
+                # 快照账户状态，避免长时间持锁
+                accounts_snapshot = {}
+                for acc_id in all_ids:
+                    acc = store.accounts.get(acc_id)
+                    if acc:
+                        accounts_snapshot[acc_id] = {
+                            "connected": acc.get("connected", False),
+                            "last_heartbeat": acc.get("last_heartbeat", 0),
+                            "tick": acc.get("tick", {}),
+                            "bars": dict(acc.get("bars", {})),
+                            "last_signal_time": acc.get("last_signal_time", 0),
+                            "market_open": acc.get("market_open", True),
+                            "is_trade_allowed": acc.get("is_trade_allowed", True),
+                        }
+            
             logger.info(f"📊 技术分析轮次 | 账户数:{len(all_ids)}")
             
             for acc_id in all_ids:
-                acc = store.get(acc_id)
+                snap = accounts_snapshot.get(acc_id)
+                if not snap:
+                    continue
                 
-                hb_age = time.time() - acc["last_heartbeat"]
+                hb_age = time.time() - snap["last_heartbeat"]
                 if hb_age > 120:
-                    if acc["connected"]:
-                        acc["connected"] = False
+                    if snap["connected"]:
+                        with store.lock:
+                            acc = store.accounts.get(acc_id)
+                            if acc:
+                                acc["connected"] = False
                         socketio.emit('account_disconnect', {"account_id": acc_id})
                     continue
                 
-                if acc_id not in data_managers:
-                    continue
-                dm = data_managers[acc_id]
+                with store.lock:
+                    dm = store.data_managers.get(acc_id)
                 
-                has_tick = bool(acc["tick"])
-                has_bars = bool(acc["bars"])
-                bar_keys = list(acc["bars"].keys()) if acc["bars"] else []
+                if dm is None:
+                    continue
+                
+                has_tick = bool(snap["tick"])
+                has_bars = bool(snap["bars"])
+                bar_keys = list(snap["bars"].keys()) if snap["bars"] else []
 
                 if not has_tick or not has_bars:
                     continue
 
                 # 市场关闭时跳过策略分析
-                if not acc.get("market_open", True):
+                if not snap.get("market_open", True):
                     logger.info(f"[{acc_id}] 市场关闭 (market_open=false)，跳过策略分析")
                     continue
-                if not acc.get("is_trade_allowed", True):
+                if not snap.get("is_trade_allowed", True):
                     logger.info(f"[{acc_id}] 交易不可用 (is_trade_allowed=false)，跳过策略分析")
                     continue
+                
+                # 获取实时账户数据用于策略分析
+                with store.lock:
+                    acc = store.accounts.get(acc_id)
+                    if not acc:
+                        continue
                 
                 # === 持仓管理 ===
                 try:
@@ -664,8 +690,8 @@ def analysis_loop():
                 if not signal:
                     continue
                 
-                # 防重复
-                if time.time() - acc["last_signal_time"] < SIGNAL["min_signal_interval"]:
+                # 防重复（使用快照中的时间，避免竞态）
+                if time.time() - snap["last_signal_time"] < SIGNAL["min_signal_interval"]:
                     continue
 
                 # P1净持仓冲突检查
@@ -735,8 +761,9 @@ def api_trigger_ai():
 @require_token
 def api_debug_dm(account_id):
     """调试：检查 DataManager 状态"""
-    acc = store.get(account_id)
-    dm = data_managers.get(account_id)
+    with store.lock:
+        acc = store.get(account_id)
+        dm = store.data_managers.get(account_id)
     
     result = {
         "account_id": account_id,
@@ -795,15 +822,7 @@ def api_analysis_payload(account_id):
             # P3: 使用动态策略映射
             strategy_mapping = acc.get("strategy_mapping", {})
             if not strategy_mapping:
-                # 默认映射
-                strategy_mapping = {
-                    "20250231": "pullback",
-                    "20250232": "breakout_retest",
-                    "20250233": "divergence",
-                    "20250234": "breakout_pyramid",
-                    "20250235": "counter_pullback",
-                    "20250236": "range",
-                }
+                strategy_mapping = DEFAULT_STRATEGY_MAPPING
             strategy = strategy_mapping.get(str(magic), "unknown")
 
             # 计算持仓时长（秒）
@@ -837,7 +856,7 @@ def api_analysis_payload(account_id):
 
     # ---- 技术指标（从 data_managers 获取）----
     indicators = {}
-    dm = data_managers.get(account_id)
+    dm = store.data_managers.get(account_id)
     if dm:
         for tf in ["M15", "M30", "H1", "H4", "D1"]:
             df = dm.get_dataframe(tf)
@@ -899,14 +918,7 @@ def api_analysis_payload(account_id):
     strategy_mapping = acc.get("strategy_mapping", {})
     # 如果EA没有上报，使用默认映射
     if not strategy_mapping:
-        strategy_mapping = {
-            "20250231": "pullback",
-            "20250232": "breakout_retest",
-            "20250233": "divergence",
-            "20250234": "breakout_pyramid",
-            "20250235": "counter_pullback",
-            "20250236": "range",
-        }
+        strategy_mapping = DEFAULT_STRATEGY_MAPPING
 
     result = {
         "status": "OK",
@@ -1016,7 +1028,7 @@ def api_trailing_stop(account_id):
     with store.lock:
         acc = store.get(account_id)
 
-    dm = data_managers.get(account_id)
+    dm = store.data_managers.get(account_id)
     current_atr = 0.0
     if dm:
         h1 = dm.get_dataframe("H1")
@@ -1111,7 +1123,7 @@ def api_market(symbol):
     # 从 data_managers 取技术指标（使用第一个有该品种数据的账户）
     indicators = {}
     for acc_id in store.all_ids():
-        dm = data_managers.get(acc_id)
+        dm = store.data_managers.get(acc_id)
         if dm:
             for tf in ["M15", "M30", "H1", "H4", "D1"]:
                 df = dm.get_dataframe(tf)

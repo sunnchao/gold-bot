@@ -22,3 +22,15 @@ Thumbs.db
 # Local config (secrets)
 *.local
 .env
+
+# AI tool temp dirs
+.codex/
+.opencode/
+.aider*
+.claude/
+.cursor/
+.copilot/
+.devai/
+.windsurf/
+.augment/
+.gemini/

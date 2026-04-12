@@ -8,10 +8,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-DISCORD_WEBHOOK_URL = os.getenv(
-    "DISCORD_WEBHOOK_URL",
-    "https://discord.com/api/webhooks/1484543016277508277/ay0ahsUyv08FzNqAncSsIS9Tv64aatct09YN2v9_nEzoYuTRTHwnUOpvDbCvyRbf1ZUa"
-)
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 _COOLDOWN = 900  # 15分钟冷却
 
