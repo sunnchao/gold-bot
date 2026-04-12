@@ -17,14 +17,14 @@ func TestReadMigrationLoadsInitSQL(t *testing.T) {
 	if !strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS accounts") {
 		t.Fatal("embedded migration content does not create accounts table")
 	}
-	if strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS account_runtime") {
-		t.Fatal("embedded init migration unexpectedly creates account_runtime table")
+	if !strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS account_runtime") {
+		t.Fatal("embedded migration content does not create account_runtime table")
 	}
-	if strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS tokens") {
-		t.Fatal("embedded init migration unexpectedly creates tokens table")
+	if !strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS tokens") {
+		t.Fatal("embedded migration content does not create tokens table")
 	}
-	if strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS token_accounts") {
-		t.Fatal("embedded init migration unexpectedly creates token_accounts table")
+	if !strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS token_accounts") {
+		t.Fatal("embedded migration content does not create token_accounts table")
 	}
 }
 
