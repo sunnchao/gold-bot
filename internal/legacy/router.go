@@ -2,11 +2,13 @@ package legacy
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"gold-bot/internal/domain"
+	sqlitestore "gold-bot/internal/store/sqlite"
 )
 
 type AccountStore interface {
@@ -23,9 +25,20 @@ type TokenStore interface {
 	BindAccount(ctx context.Context, token, accountID string) error
 }
 
+type CommandStore interface {
+	TakePending(ctx context.Context, accountID string, deliveredAt time.Time) ([]domain.Command, error)
+	MarkFromResult(ctx context.Context, commandID, result string, ts time.Time) error
+}
+
+type HistoryStore interface {
+	SaveCommandResult(ctx context.Context, result domain.CommandResult) error
+}
+
 type Dependencies struct {
 	Accounts AccountStore
 	Tokens   TokenStore
+	Commands CommandStore
+	History  HistoryStore
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -36,6 +49,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 	auth := NewAuthMiddleware(deps.Tokens)
+	commands, history := resolveLegacyStores(deps)
 
 	mux.Handle("/register", auth.RequireToken(&RegisterHandler{
 		accounts: deps.Accounts,
@@ -62,6 +76,40 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 		tokens:   deps.Tokens,
 		now:      time.Now,
 	}))
+	mux.Handle("/poll", auth.RequireToken(&PollHandler{
+		tokens:   deps.Tokens,
+		commands: commands,
+		now:      time.Now,
+	}))
+	mux.Handle("/order_result", auth.RequireToken(&OrderResultHandler{
+		tokens:   deps.Tokens,
+		commands: commands,
+		history:  history,
+		now:      time.Now,
+	}))
+}
+
+func resolveLegacyStores(deps Dependencies) (CommandStore, HistoryStore) {
+	commands := deps.Commands
+	history := deps.History
+	if commands != nil && history != nil {
+		return commands, history
+	}
+
+	dbProvider, ok := deps.Accounts.(interface{ DB() *sql.DB })
+	if !ok {
+		return commands, history
+	}
+
+	db := dbProvider.DB()
+	if commands == nil {
+		commands = sqlitestore.NewCommandRepository(db)
+	}
+	if history == nil {
+		history = sqlitestore.NewHistoryRepository(db)
+	}
+
+	return commands, history
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
