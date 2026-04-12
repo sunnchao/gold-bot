@@ -250,6 +250,54 @@ func TestTokenRepositoryValidateRetriesBusyLock(t *testing.T) {
 	<-releaseDone
 }
 
+func TestTokenRepositoryAuthorizeAccountReturnsErrorWhenFirstBindStaysBusy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tokens.sqlite")
+
+	db, err := store.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	lockDB, err := store.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite lockDB returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := lockDB.Close(); err != nil {
+			t.Fatalf("Close lockDB returned error: %v", err)
+		}
+	})
+
+	if err := store.RunMigrations(db); err != nil {
+		t.Fatalf("RunMigrations returned error: %v", err)
+	}
+
+	repo := NewTokenRepository(db)
+	if err := repo.PutToken(context.Background(), "test-token", "test", false, time.Now().UTC()); err != nil {
+		t.Fatalf("PutToken returned error: %v", err)
+	}
+
+	if _, err := lockDB.Exec(`BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE returned error: %v", err)
+	}
+	defer func() {
+		_, _ = lockDB.Exec(`ROLLBACK`)
+	}()
+
+	allowed, err := repo.AuthorizeAccount(context.Background(), "test-token", "90011087")
+	if err == nil {
+		t.Fatal("AuthorizeAccount returned nil error, want busy error")
+	}
+	if allowed {
+		t.Fatal("AuthorizeAccount returned true, want false")
+	}
+}
+
 func newTestTokenRepository(t *testing.T) *TokenRepository {
 	t.Helper()
 

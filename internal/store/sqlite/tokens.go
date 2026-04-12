@@ -116,11 +116,15 @@ func (r *TokenRepository) AuthorizeAccount(ctx context.Context, token, accountID
 	}
 
 	inserted, err := r.bindFirstAccount(ctx, token, accountID)
+	var lastBindBusyErr error
 	if err == nil && inserted {
 		return true, nil
 	}
 	if err != nil && !isSQLiteBusy(err) {
 		return false, err
+	}
+	if err != nil {
+		lastBindBusyErr = err
 	}
 
 	for attempt := 0; attempt < 5; attempt++ {
@@ -151,13 +155,31 @@ func (r *TokenRepository) AuthorizeAccount(ctx context.Context, token, accountID
 		if err != nil && !isSQLiteBusy(err) {
 			return false, err
 		}
+		if err != nil {
+			lastBindBusyErr = err
+		}
 	}
 
 	authorized, err = r.tokenAccountExists(ctx, token, accountID)
 	if err != nil {
 		return false, err
 	}
-	return authorized, nil
+	if authorized {
+		return true, nil
+	}
+
+	bound, err = r.tokenHasAnyAccount(ctx, token)
+	if err != nil {
+		return false, err
+	}
+	if bound {
+		return false, nil
+	}
+	if lastBindBusyErr != nil {
+		return false, lastBindBusyErr
+	}
+
+	return false, nil
 }
 
 func (r *TokenRepository) tokenExists(ctx context.Context, token string) (bool, error) {
