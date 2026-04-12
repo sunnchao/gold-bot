@@ -19,6 +19,7 @@ type AccountStore interface {
 
 type TokenStore interface {
 	Validate(ctx context.Context, token string) bool
+	AuthorizeAccount(ctx context.Context, token, accountID string) (bool, error)
 	BindAccount(ctx context.Context, token, accountID string) error
 }
 
@@ -28,8 +29,13 @@ type Dependencies struct {
 }
 
 func NewRouter(deps Dependencies) http.Handler {
-	auth := NewAuthMiddleware(deps.Tokens)
 	mux := http.NewServeMux()
+	RegisterRoutes(mux, deps)
+	return mux
+}
+
+func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
+	auth := NewAuthMiddleware(deps.Tokens)
 
 	mux.Handle("/register", auth.RequireToken(&RegisterHandler{
 		accounts: deps.Accounts,
@@ -53,20 +59,10 @@ func NewRouter(deps Dependencies) http.Handler {
 		accounts: deps.Accounts,
 		now:      time.Now,
 	}))
-
-	return mux
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func defaultAccountID(accountID string) string {
-	if accountID == "" {
-		return "default"
-	}
-
-	return accountID
 }

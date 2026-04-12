@@ -19,10 +19,17 @@ type BarsRequest struct {
 
 func (h *BarsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req BarsRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeBadRequest(w, "invalid JSON")
+		return
+	}
 
 	now := h.now().UTC()
-	accountID := defaultAccountID(req.AccountID)
+	accountID, err := requireAccountID(req.AccountID)
+	if err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
 	if err := h.accounts.EnsureAccount(r.Context(), accountID, now); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",

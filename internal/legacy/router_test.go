@@ -3,10 +3,13 @@ package legacy
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,6 +183,98 @@ func TestPositionsReturnsCount(t *testing.T) {
 	}
 }
 
+func TestRegisterRejectsAccountOutsideTokenBinding(t *testing.T) {
+	ts, accounts, tokens := newTestServer(t)
+	ctx := context.Background()
+
+	if err := tokens.BindAccount(ctx, "test-token", "90011087"); err != nil {
+		t.Fatalf("BindAccount returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString(`{
+		"account_id":"90022000",
+		"broker":"Demo Broker"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "test-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /register status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	assertAccountMissing(t, accounts, "90022000")
+	assertTokenAccounts(t, tokens, "test-token", []string{"90011087"})
+}
+
+func TestHeartbeatRejectsAccountOutsideTokenBinding(t *testing.T) {
+	ts, accounts, tokens := newTestServer(t)
+	ctx := context.Background()
+
+	if err := tokens.BindAccount(ctx, "test-token", "90011087"); err != nil {
+		t.Fatalf("BindAccount returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/heartbeat", bytes.NewBufferString(`{
+		"account_id":"90022000",
+		"balance":1000
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "test-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /heartbeat status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	assertAccountMissing(t, accounts, "90022000")
+	assertTokenAccounts(t, tokens, "test-token", []string{"90011087"})
+}
+
+func TestLegacyHandlersRejectBadRequestWithoutPersistingDefaultAccount(t *testing.T) {
+	testCases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "register invalid json", path: "/register", body: `{"account_id":`},
+		{name: "register missing account", path: "/register", body: `{"broker":"Demo Broker"}`},
+		{name: "heartbeat invalid json", path: "/heartbeat", body: `{"account_id":`},
+		{name: "heartbeat missing account", path: "/heartbeat", body: `{"balance":1000}`},
+		{name: "tick invalid json", path: "/tick", body: `{"account_id":`},
+		{name: "tick missing account", path: "/tick", body: `{"symbol":"XAUUSD"}`},
+		{name: "bars invalid json", path: "/bars", body: `{"account_id":`},
+		{name: "bars missing account", path: "/bars", body: `{"bars":[]}`},
+		{name: "positions invalid json", path: "/positions", body: `{"account_id":`},
+		{name: "positions missing account", path: "/positions", body: `{"positions":[]}`},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, accounts, tokens := newTestServer(t)
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tc.path, bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-API-Token", "test-token")
+
+			ts.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s status = %d, want %d", tc.path, rec.Code, http.StatusBadRequest)
+			}
+
+			assertAccountMissing(t, accounts, "default")
+			assertAccountMissing(t, accounts, "")
+			assertTokenAccounts(t, tokens, "test-token", nil)
+		})
+	}
+}
+
 func newTestServer(t *testing.T) (http.Handler, *sqlitestore.AccountRepository, *sqlitestore.TokenRepository) {
 	t.Helper()
 
@@ -208,4 +303,33 @@ func newTestServer(t *testing.T) (http.Handler, *sqlitestore.AccountRepository, 
 		Accounts: accounts,
 		Tokens:   tokens,
 	}), accounts, tokens
+}
+
+func assertTokenAccounts(t *testing.T, tokens *sqlitestore.TokenRepository, token string, want []string) {
+	t.Helper()
+
+	got, err := tokens.AccountsForToken(context.Background(), token)
+	if err != nil {
+		t.Fatalf("AccountsForToken returned error: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("AccountsForToken = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("AccountsForToken = %v, want %v", got, want)
+		}
+	}
+}
+
+func assertAccountMissing(t *testing.T, accounts *sqlitestore.AccountRepository, accountID string) {
+	t.Helper()
+
+	_, err := accounts.GetAccount(context.Background(), accountID)
+	if err == nil {
+		t.Fatalf("GetAccount(%q) unexpectedly succeeded", accountID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) && !strings.Contains(err.Error(), "sql: no rows in result set") {
+		t.Fatalf("GetAccount(%q) returned unexpected error: %v", accountID, err)
+	}
 }

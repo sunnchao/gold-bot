@@ -1,7 +1,6 @@
 package legacy
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -26,10 +25,32 @@ type RegisterRequest struct {
 
 func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeBadRequest(w, "invalid JSON")
+		return
+	}
 
 	now := h.now().UTC()
-	accountID := defaultAccountID(req.AccountID)
+	accountID, err := requireAccountID(req.AccountID)
+	if err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	allowed, err := authorizeAccountWrite(r, h.tokens, accountID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"status":  "ERROR",
+			"message": err.Error(),
+		})
+		return
+	}
+	if !allowed {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"status":  "ERROR",
+			"message": "token not authorized for account",
+		})
+		return
+	}
 	if err := h.accounts.UpsertAccount(r.Context(), domain.Account{
 		AccountID:   accountID,
 		Broker:      req.Broker,
@@ -40,13 +61,6 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Leverage:    req.Leverage,
 		UpdatedAt:   now,
 	}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "ERROR",
-			"message": err.Error(),
-		})
-		return
-	}
-	if err := h.tokens.BindAccount(r.Context(), tokenFromContext(r.Context()), accountID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),

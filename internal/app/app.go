@@ -6,7 +6,9 @@ import (
 	"net/http"
 
 	"gold-bot/internal/config"
+	"gold-bot/internal/legacy"
 	"gold-bot/internal/store"
+	sqlitestore "gold-bot/internal/store/sqlite"
 )
 
 type App struct {
@@ -29,6 +31,11 @@ func New(cfg config.Config) (*App, error) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+
+	legacy.RegisterRoutes(mux, legacy.Dependencies{
+		Accounts: sqlitestore.NewAccountRepository(db),
+		Tokens:   sqlitestore.NewTokenRepository(db),
 	})
 
 	server := &http.Server{

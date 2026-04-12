@@ -37,6 +37,39 @@ func TestTokenRepositoryPersistsAndValidatesTokens(t *testing.T) {
 	}
 }
 
+func TestTokenRepositoryAuthorizeAccountBindsFirstAccountAndRejectsOthers(t *testing.T) {
+	repo := newTestTokenRepository(t)
+	ctx := context.Background()
+
+	if err := repo.PutToken(ctx, "test-token", "test", false, time.Now().UTC()); err != nil {
+		t.Fatalf("PutToken returned error: %v", err)
+	}
+
+	allowed, err := repo.AuthorizeAccount(ctx, "test-token", "90011087")
+	if err != nil {
+		t.Fatalf("AuthorizeAccount returned error: %v", err)
+	}
+	if !allowed {
+		t.Fatal("AuthorizeAccount returned false for first binding")
+	}
+
+	allowed, err = repo.AuthorizeAccount(ctx, "test-token", "90022000")
+	if err != nil {
+		t.Fatalf("AuthorizeAccount returned error: %v", err)
+	}
+	if allowed {
+		t.Fatal("AuthorizeAccount returned true for different account")
+	}
+
+	accounts, err := repo.AccountsForToken(ctx, "test-token")
+	if err != nil {
+		t.Fatalf("AccountsForToken returned error: %v", err)
+	}
+	if len(accounts) != 1 || accounts[0] != "90011087" {
+		t.Fatalf("AccountsForToken = %v, want [90011087]", accounts)
+	}
+}
+
 func newTestTokenRepository(t *testing.T) *TokenRepository {
 	t.Helper()
 
