@@ -36,3 +36,8 @@ Thumbs.db
 .windsurf/
 .augment/
 .gemini/
+
+# Go / SQLite artifacts
+data/gold_bolt.sqlite*
+*.test
+coverage.out
