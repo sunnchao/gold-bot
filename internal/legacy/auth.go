@@ -18,7 +18,23 @@ func NewAuthMiddleware(tokens TokenStore) *AuthMiddleware {
 func (m *AuthMiddleware) RequireToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := extractToken(r)
-		if token == "" || !m.tokens.Validate(r.Context(), token) {
+		if token == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"status":  "ERROR",
+				"message": "invalid token",
+			})
+			return
+		}
+
+		valid, err := m.tokens.Validate(r.Context(), token)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"status":  "ERROR",
+				"message": "token validation failed",
+			})
+			return
+		}
+		if !valid {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"status":  "ERROR",
 				"message": "invalid token",

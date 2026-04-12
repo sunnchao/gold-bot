@@ -18,7 +18,7 @@ type AccountStore interface {
 }
 
 type TokenStore interface {
-	Validate(ctx context.Context, token string) bool
+	Validate(ctx context.Context, token string) (bool, error)
 	AuthorizeAccount(ctx context.Context, token, accountID string) (bool, error)
 	BindAccount(ctx context.Context, token, accountID string) error
 }

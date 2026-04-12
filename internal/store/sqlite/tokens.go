@@ -41,21 +41,30 @@ func (r *TokenRepository) PutToken(ctx context.Context, token, name string, isAd
 	return nil
 }
 
-func (r *TokenRepository) Validate(ctx context.Context, token string) bool {
+func (r *TokenRepository) Validate(ctx context.Context, token string) (bool, error) {
 	if token == "" {
-		return false
+		return false, nil
 	}
 
-	var count int
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT COUNT(1)
-		FROM tokens
-		WHERE token = ?
-	`, token).Scan(&count); err != nil {
-		return false
+	for attempt := 0; attempt < 5; attempt++ {
+		var count int
+		err := r.db.QueryRowContext(ctx, `
+			SELECT COUNT(1)
+			FROM tokens
+			WHERE token = ?
+		`, token).Scan(&count)
+		switch {
+		case isSQLiteBusy(err):
+			time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+			continue
+		case err != nil:
+			return false, fmt.Errorf("validate token %s: %w", token, err)
+		default:
+			return count > 0, nil
+		}
 	}
 
-	return count > 0
+	return false, fmt.Errorf("validate token %s: sqlite busy after retries", token)
 }
 
 func (r *TokenRepository) BindAccount(ctx context.Context, token, accountID string) error {
