@@ -31,11 +31,9 @@ class FeishuNotifier:
         return time.time() - self._last_sent >= _COOLDOWN
 
     def _gen_sign(self, timestamp: int) -> str:
-        """生成飞书签名（官方标准方式）"""
+        """生成飞书签名（官方标准：timestamp + \\n + secret 作为消息体进行 SHA256 哈希）"""
         string_to_sign = f"{timestamp}\n{FEISHU_SECRET}"
-        # 飞书签名规范: secret 为 key, timestamp+\n+secret 为 msg
         hmac_code = hmac.new(
-            FEISHU_SECRET.encode("utf-8"),
             string_to_sign.encode("utf-8"),
             digestmod=hashlib.sha256
         ).digest()
