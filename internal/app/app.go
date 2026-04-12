@@ -10,7 +10,6 @@ import (
 )
 
 type App struct {
-	cfg    config.Config
 	db     *sql.DB
 	server *http.Server
 }
@@ -38,14 +37,9 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	return &App{
-		cfg:    cfg,
 		db:     db,
 		server: server,
 	}, nil
-}
-
-func MustLoadConfig() config.Config {
-	return config.MustLoad()
 }
 
 func (a *App) Run() error {
