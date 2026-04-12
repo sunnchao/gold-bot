@@ -23,6 +23,7 @@ Thumbs.db
 *.local
 .env
 .worktrees/
+.superpowers/
 
 # AI tool temp dirs
 .codex/
