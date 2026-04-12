@@ -702,11 +702,13 @@ def analysis_loop():
                     continue
                 
                 cmd_id = f"sig_{int(time.time())}_{acc_id}"
+                # 从账户 ticker 获取实际交易品种（支持多品种：GOLDm#, GBPJPYm# 等）
+                symbol = acc.get("tick", {}).get("symbol", "XAUUSD")
                 command = {
                     "command_id": cmd_id,
                     "action": "SIGNAL",
                     "type": signal["side"],
-                    "symbol": "XAUUSD",
+                    "symbol": symbol,
                     "entry": signal["entry"],
                     "sl": signal["stop_loss"],
                     "tp1": signal["tp1"],

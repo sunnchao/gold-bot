@@ -89,11 +89,11 @@ def gen_sign():
     return ts, sig
 
 
-def post_api(account_id, combined_bias, confidence, reasoning, exit_suggestion, risk_alert, alert_reason):
+def post_api(account_id, combined_bias, confidence, reasoning, exit_suggestion, risk_alert, alert_reason, symbol="XAUUSD"):
     """写入 GB Server /api/ai_result"""
     payload = {
         "agent": "Aurex",
-        "symbol": "XAUUSD",
+        "symbol": symbol,
         "account_id": account_id,
         "analysis": {
             "combined_bias": combined_bias,
@@ -119,8 +119,8 @@ def post_api(account_id, combined_bias, confidence, reasoning, exit_suggestion, 
         return False
 
 
-def check_positions_profit(account_id):
-    """检查是否有盈利持仓"""
+def _fetch_account_info(account_id):
+    """从服务器获取账户信息（品种、持仓等）"""
     try:
         req = urllib.request.Request(
             f"{API_BASE}/api/analysis_payload/{account_id}",
@@ -128,20 +128,39 @@ def check_positions_profit(account_id):
         )
         resp = urllib.request.urlopen(req, timeout=5)
         pd = json.loads(resp.read().decode())
-        positions = pd.get("positions", [])
+        return pd
+    except Exception as e:
+        print(f"获取账户信息失败: {e}")
+        return None
 
-        if not positions:
-            return None, False  # 无持仓
 
-        has_profit = any(p.get("profit", 0) > 0 for p in positions)
-        return positions, has_profit
-    except Exception:
+def get_account_symbol(account_id):
+    """获取账户的交易品种（如 GOLDm#、XAUUSD 等）"""
+    pd = _fetch_account_info(account_id)
+    if pd:
+        symbol = pd.get("market", {}).get("symbol", "")
+        if symbol:
+            return symbol
+    return "XAUUSD"  # 默认
+
+
+def check_positions_profit(account_id):
+    """检查是否有盈利持仓"""
+    pd = _fetch_account_info(account_id)
+    if pd is None:
         return None, False
+    positions = pd.get("positions", [])
+
+    if not positions:
+        return None, False  # 无持仓
+
+    has_profit = any(p.get("profit", 0) > 0 for p in positions)
+    return positions, has_profit
 
 
 def post_feishu_card(account_id, combined_bias, confidence, reasoning,
                      exit_suggestion, risk_alert, alert_reason,
-                     strategy_name="pullback"):
+                     strategy_name="pullback", symbol="XAUUSD"):
     """飞书 interactive 卡片推送"""
     ts, sig = gen_sign()
 
@@ -173,12 +192,12 @@ def post_feishu_card(account_id, combined_bias, confidence, reasoning,
     signal_label = "📈 **开单信号**" if exit_suggestion.lower() == "hold" and combined_bias.lower() != "neutral" else "🔄 **持仓调整**"
 
     # 标题
-    card_title = f"📊 {strategy_display} | {account_id} | XAUUSD"
+    card_title = f"📊 {strategy_display} | {account_id} | {symbol}"
 
     content = (
         f"{signal_label}\n\n"
         f"**账户**: `{account_id}`\n"
-        f"**品种**: XAUUSD\n"
+        f"**品种**: {symbol}\n"
         f"**策略**: {strategy_display}\n"
         f"**信号**: {bias_cn} | 置信度 {confidence}%\n"
         f"`{conf_bar}`\n\n"
@@ -255,8 +274,11 @@ def main():
     alert_reason    = args[5]
     strategy_name   = args[6] if len(args) > 6 else "pullback"
 
+    # 0. 获取账户交易品种（从服务器动态获取，如 GOLDm#、GBPJPYm# 等）
+    symbol = get_account_symbol(account_id)
+
     # 1. 写入 GB Server（总是执行）
-    api_ok = post_api(account_id, combined_bias, confidence, reasoning, exit_suggestion, risk_alert, alert_reason)
+    api_ok = post_api(account_id, combined_bias, confidence, reasoning, exit_suggestion, risk_alert, alert_reason, symbol=symbol)
 
     # 2. 检查持仓状态
     positions, has_profit = check_positions_profit(account_id)
@@ -284,7 +306,7 @@ def main():
         feishu_ok = post_feishu_card(
             account_id, combined_bias, confidence, reasoning,
             exit_suggestion, risk_alert, alert_reason,
-            strategy_name=strategy_name
+            strategy_name=strategy_name, symbol=symbol
         )
         print(f"推送结果: API={api_ok}, Feishu={feishu_ok} ({push_reason})")
     else:
