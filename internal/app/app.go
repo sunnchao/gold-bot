@@ -2,6 +2,7 @@ package app
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 
 	"gold-bot/internal/config"
@@ -47,13 +48,19 @@ func MustLoadConfig() config.Config {
 	return config.MustLoad()
 }
 
-func TestConfig() config.Config {
-	return config.Config{
-		HTTPAddr: ":0",
-		DBPath:   ":memory:",
-	}
-}
-
 func (a *App) Run() error {
 	return a.server.ListenAndServe()
+}
+
+func (a *App) Close() error {
+	var err error
+
+	if a.server != nil {
+		err = errors.Join(err, a.server.Close())
+	}
+	if a.db != nil {
+		err = errors.Join(err, a.db.Close())
+	}
+
+	return err
 }

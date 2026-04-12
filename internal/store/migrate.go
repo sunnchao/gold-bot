@@ -3,11 +3,12 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
-	"runtime"
+	"io/fs"
+	"path"
 	"sort"
 	"time"
+
+	migrationfs "gold-bot/migrations"
 )
 
 const schemaMigrationsDDL = `
@@ -45,9 +46,9 @@ func applyMigration(db *sql.DB, file string) error {
 		return nil
 	}
 
-	content, err := os.ReadFile(filepath.Join(migrationsDir(), file))
+	content, err := readMigration(file)
 	if err != nil {
-		return fmt.Errorf("read migration %s: %w", file, err)
+		return err
 	}
 
 	tx, err := db.Begin()
@@ -77,9 +78,9 @@ func applyMigration(db *sql.DB, file string) error {
 }
 
 func migrationFiles() ([]string, error) {
-	entries, err := os.ReadDir(migrationsDir())
+	entries, err := fs.ReadDir(migrationfs.Files, ".")
 	if err != nil {
-		return nil, fmt.Errorf("read migrations dir: %w", err)
+		return nil, fmt.Errorf("read embedded migrations: %w", err)
 	}
 
 	files := make([]string, 0, len(entries))
@@ -87,7 +88,7 @@ func migrationFiles() ([]string, error) {
 		if entry.IsDir() {
 			continue
 		}
-		if filepath.Ext(entry.Name()) != ".sql" {
+		if path.Ext(entry.Name()) != ".sql" {
 			continue
 		}
 		files = append(files, entry.Name())
@@ -97,7 +98,11 @@ func migrationFiles() ([]string, error) {
 	return files, nil
 }
 
-func migrationsDir() string {
-	_, file, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(file), "..", "..", "migrations")
+func readMigration(file string) ([]byte, error) {
+	content, err := migrationfs.Files.ReadFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("read migration %s: %w", file, err)
+	}
+
+	return content, nil
 }
