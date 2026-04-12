@@ -459,6 +459,119 @@ func TestOrderResultRejectsAccountOutsideTokenBinding(t *testing.T) {
 	assertTokenAccounts(t, tokens, "test-token", []string{"90011087"})
 }
 
+func TestOrderResultIgnoresCommandOwnedByDifferentAccount(t *testing.T) {
+	ts, db, _, tokens := newTestServerWithDB(t)
+	ctx := context.Background()
+
+	if err := tokens.BindAccount(ctx, "test-token", "90011087"); err != nil {
+		t.Fatalf("BindAccount returned error: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO commands (
+			command_id,
+			account_id,
+			action,
+			payload_json,
+			status,
+			created_at,
+			delivered_at,
+			acked_at,
+			failed_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		"sig_cross_account",
+		"90022000",
+		"SIGNAL",
+		`{"command_id":"sig_cross_account","action":"SIGNAL","symbol":"XAUUSD"}`,
+		"delivered",
+		time.Now().UTC().Format(time.RFC3339Nano),
+		time.Now().UTC().Format(time.RFC3339Nano),
+		"",
+		"",
+	); err != nil {
+		t.Fatalf("seed delivered command returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/order_result", bytes.NewBufferString(`{
+		"account_id":"90011087",
+		"command_id":"sig_cross_account",
+		"result":"OK",
+		"ticket":123,
+		"error":""
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "test-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /order_result status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var status string
+	var ackedAt string
+	var failedAt string
+	if err := db.QueryRow(`
+		SELECT status, acked_at, failed_at
+		FROM commands
+		WHERE command_id = ?
+	`, "sig_cross_account").Scan(&status, &ackedAt, &failedAt); err != nil {
+		t.Fatalf("query command returned error: %v", err)
+	}
+	if status != "delivered" {
+		t.Fatalf("status = %q, want %q", status, "delivered")
+	}
+	if ackedAt != "" {
+		t.Fatalf("acked_at = %q, want empty", ackedAt)
+	}
+	if failedAt != "" {
+		t.Fatalf("failed_at = %q, want empty", failedAt)
+	}
+
+	var resultCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM command_results WHERE command_id = ?`, "sig_cross_account").Scan(&resultCount); err != nil {
+		t.Fatalf("query command results returned error: %v", err)
+	}
+	if resultCount != 0 {
+		t.Fatalf("command result count = %d, want %d", resultCount, 0)
+	}
+}
+
+func TestOrderResultIgnoresUnknownCommand(t *testing.T) {
+	ts, db, _, tokens := newTestServerWithDB(t)
+	ctx := context.Background()
+
+	if err := tokens.BindAccount(ctx, "test-token", "90011087"); err != nil {
+		t.Fatalf("BindAccount returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/order_result", bytes.NewBufferString(`{
+		"account_id":"90011087",
+		"command_id":"sig_missing",
+		"result":"ERROR",
+		"ticket":0,
+		"error":"missing"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "test-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /order_result status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resultCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM command_results WHERE command_id = ?`, "sig_missing").Scan(&resultCount); err != nil {
+		t.Fatalf("query command results returned error: %v", err)
+	}
+	if resultCount != 0 {
+		t.Fatalf("command result count = %d, want %d", resultCount, 0)
+	}
+}
+
 func newTestServer(t *testing.T) (http.Handler, *sqlitestore.AccountRepository, *sqlitestore.TokenRepository) {
 	t.Helper()
 

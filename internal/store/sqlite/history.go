@@ -17,26 +17,29 @@ func NewHistoryRepository(db *sql.DB) *HistoryRepository {
 }
 
 func (r *HistoryRepository) SaveCommandResult(ctx context.Context, result domain.CommandResult) error {
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO command_results (
-			command_id,
-			account_id,
-			result,
-			ticket,
-			error_text,
-			created_at
-		) VALUES (?, ?, ?, ?, ?, ?)
-	`,
-		result.CommandID,
-		result.AccountID,
-		result.Result,
-		result.Ticket,
-		result.ErrorText,
-		formatTime(normalizeTime(result.CreatedAt)),
-	)
-	if err != nil {
-		return fmt.Errorf("save command result %s: %w", result.CommandID, err)
-	}
-
-	return nil
+	return retrySQLiteBusy(func() error {
+		_, err := r.db.ExecContext(ctx, `
+			INSERT INTO command_results (
+				command_id,
+				account_id,
+				result,
+				ticket,
+				error_text,
+				created_at
+			) VALUES (?, ?, ?, ?, ?, ?)
+		`,
+			result.CommandID,
+			result.AccountID,
+			result.Result,
+			result.Ticket,
+			result.ErrorText,
+			formatTime(normalizeTime(result.CreatedAt)),
+		)
+		if err != nil {
+			return fmt.Errorf("save command result %s: %w", result.CommandID, err)
+		}
+		return nil
+	}, func() error {
+		return fmt.Errorf("save command result %s: sqlite busy after retries", result.CommandID)
+	})
 }

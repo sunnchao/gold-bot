@@ -13,7 +13,6 @@ import (
 type OrderResultHandler struct {
 	tokens   TokenStore
 	commands CommandStore
-	history  HistoryStore
 	now      func() time.Time
 }
 
@@ -61,7 +60,7 @@ func (h *OrderResultHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if h.commands == nil || h.history == nil {
+	if h.commands == nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": "command history unavailable",
@@ -70,21 +69,14 @@ func (h *OrderResultHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ts := h.now().UTC()
-	if err := h.history.SaveCommandResult(r.Context(), domain.CommandResult{
+	if err := h.commands.ApplyResult(r.Context(), domain.CommandResult{
 		CommandID: req.CommandID,
 		AccountID: accountID,
 		Result:    req.Result,
 		Ticket:    req.Ticket,
 		ErrorText: req.Error,
 		CreatedAt: ts,
-	}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "ERROR",
-			"message": err.Error(),
-		})
-		return
-	}
-	if err := h.commands.MarkFromResult(r.Context(), req.CommandID, req.Result, ts); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	}); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),

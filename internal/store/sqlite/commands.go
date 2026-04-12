@@ -30,37 +30,48 @@ func (r *CommandRepository) Enqueue(ctx context.Context, command domain.Command)
 		return fmt.Errorf("marshal command payload %s: %w", command.CommandID, err)
 	}
 
-	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO commands (
-			command_id,
-			account_id,
-			action,
-			payload_json,
-			status,
-			created_at,
-			delivered_at,
-			acked_at,
-			failed_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		command.CommandID,
-		command.AccountID,
-		string(command.Action),
-		string(payloadJSON),
-		string(status),
-		formatTime(normalizeTime(command.CreatedAt)),
-		formatTime(command.DeliveredAt),
-		formatTime(command.AckedAt),
-		formatTime(command.FailedAt),
-	)
-	if err != nil {
-		return fmt.Errorf("enqueue command %s: %w", command.CommandID, err)
-	}
-
-	return nil
+	return retrySQLiteBusy(func() error {
+		_, err = r.db.ExecContext(ctx, `
+			INSERT INTO commands (
+				command_id,
+				account_id,
+				action,
+				payload_json,
+				status,
+				created_at,
+				delivered_at,
+				acked_at,
+				failed_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			command.CommandID,
+			command.AccountID,
+			string(command.Action),
+			string(payloadJSON),
+			string(status),
+			formatTime(normalizeTime(command.CreatedAt)),
+			formatTime(command.DeliveredAt),
+			formatTime(command.AckedAt),
+			formatTime(command.FailedAt),
+		)
+		if err != nil {
+			return fmt.Errorf("enqueue command %s: %w", command.CommandID, err)
+		}
+		return nil
+	}, func() error {
+		return fmt.Errorf("enqueue command %s: sqlite busy after retries", command.CommandID)
+	})
 }
 
 func (r *CommandRepository) TakePending(ctx context.Context, accountID string, deliveredAt time.Time) ([]domain.Command, error) {
+	return retrySQLiteBusyValue(func() ([]domain.Command, error) {
+		return r.takePendingOnce(ctx, accountID, deliveredAt)
+	}, func() error {
+		return fmt.Errorf("take pending for %s: sqlite busy after retries", accountID)
+	})
+}
+
+func (r *CommandRepository) takePendingOnce(ctx context.Context, accountID string, deliveredAt time.Time) ([]domain.Command, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin take pending for %s: %w", accountID, err)
@@ -137,62 +148,115 @@ func (r *CommandRepository) TakePending(ctx context.Context, accountID string, d
 	return commands, nil
 }
 
-func (r *CommandRepository) MarkFromResult(ctx context.Context, commandID, result string, ts time.Time) error {
+func (r *CommandRepository) ApplyResult(ctx context.Context, result domain.CommandResult) error {
 	status := domain.CommandStatusFailed
 	column := "failed_at"
-	if result == "OK" {
+	if result.Result == "OK" {
 		status = domain.CommandStatusAcked
 		column = "acked_at"
 	}
 
-	res, err := r.db.ExecContext(ctx, fmt.Sprintf(`
+	return retrySQLiteBusy(func() error {
+		return r.applyResultOnce(ctx, result, status, column)
+	}, func() error {
+		return fmt.Errorf("apply result for command %s: sqlite busy after retries", result.CommandID)
+	})
+}
+
+func (r *CommandRepository) applyResultOnce(
+	ctx context.Context,
+	result domain.CommandResult,
+	status domain.CommandStatus,
+	column string,
+) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin apply result for command %s: %w", result.CommandID, err)
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		UPDATE commands
 		SET status = ?, %s = ?
-		WHERE command_id = ?
+		WHERE command_id = ? AND account_id = ? AND status = ?
 	`, column),
 		string(status),
-		formatTime(normalizeTime(ts)),
-		commandID,
+		formatTime(normalizeTime(result.CreatedAt)),
+		result.CommandID,
+		result.AccountID,
+		string(domain.CommandStatusDelivered),
 	)
 	if err != nil {
-		return fmt.Errorf("mark command %s from result: %w", commandID, err)
+		return fmt.Errorf("transition command %s from delivered: %w", result.CommandID, err)
 	}
 
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("rows affected for command %s: %w", commandID, err)
+		return fmt.Errorf("rows affected for command %s: %w", result.CommandID, err)
 	}
 	if rowsAffected == 0 {
 		return sql.ErrNoRows
 	}
 
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO command_results (
+			command_id,
+			account_id,
+			result,
+			ticket,
+			error_text,
+			created_at
+		) VALUES (?, ?, ?, ?, ?, ?)
+	`,
+		result.CommandID,
+		result.AccountID,
+		result.Result,
+		result.Ticket,
+		result.ErrorText,
+		formatTime(normalizeTime(result.CreatedAt)),
+	); err != nil {
+		return fmt.Errorf("save command result %s: %w", result.CommandID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit apply result for command %s: %w", result.CommandID, err)
+	}
+	tx = nil
 	return nil
 }
 
 func (r *CommandRepository) Get(ctx context.Context, commandID string) (domain.Command, error) {
-	row := r.db.QueryRowContext(ctx, `
-		SELECT
-			command_id,
-			account_id,
-			action,
-			payload_json,
-			status,
-			created_at,
-			delivered_at,
-			acked_at,
-			failed_at
-		FROM commands
-		WHERE command_id = ?
-	`, commandID)
+	return retrySQLiteBusyValue(func() (domain.Command, error) {
+		row := r.db.QueryRowContext(ctx, `
+			SELECT
+				command_id,
+				account_id,
+				action,
+				payload_json,
+				status,
+				created_at,
+				delivered_at,
+				acked_at,
+				failed_at
+			FROM commands
+			WHERE command_id = ?
+		`, commandID)
 
-	command, err := scanCommand(row)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return domain.Command{}, err
+		command, err := scanCommand(row)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return domain.Command{}, err
+			}
+			return domain.Command{}, fmt.Errorf("get command %s: %w", commandID, err)
 		}
-		return domain.Command{}, fmt.Errorf("get command %s: %w", commandID, err)
-	}
-	return command, nil
+		return command, nil
+	}, func() error {
+		return fmt.Errorf("get command %s: sqlite busy after retries", commandID)
+	})
 }
 
 func (r *AccountRepository) DB() *sql.DB {
@@ -241,4 +305,26 @@ func scanCommand(scanner rowScanner) (domain.Command, error) {
 		command.Payload = map[string]any{}
 	}
 	return command, nil
+}
+
+func retrySQLiteBusy(fn func() error, busyErr func() error) error {
+	_, err := retrySQLiteBusyValue(func() (struct{}, error) {
+		return struct{}{}, fn()
+	}, busyErr)
+	return err
+}
+
+func retrySQLiteBusyValue[T any](fn func() (T, error), busyErr func() error) (T, error) {
+	var zero T
+	for attempt := 0; attempt < 5; attempt++ {
+		value, err := fn()
+		if !isSQLiteBusy(err) {
+			return value, err
+		}
+		time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+	}
+	if busyErr == nil {
+		return zero, nil
+	}
+	return zero, busyErr()
 }
