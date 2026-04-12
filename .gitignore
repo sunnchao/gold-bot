@@ -22,6 +22,7 @@ Thumbs.db
 # Local config (secrets)
 *.local
 .env
+.worktrees/
 
 # AI tool temp dirs
 .codex/
