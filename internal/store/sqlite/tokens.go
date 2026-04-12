@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -81,78 +82,180 @@ func (r *TokenRepository) AuthorizeAccount(ctx context.Context, token, accountID
 		return false, nil
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	exists, err := r.tokenExists(ctx, token)
 	if err != nil {
-		return false, fmt.Errorf("begin authorize account transaction: %w", err)
+		return false, err
 	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	lockResult, err := tx.ExecContext(ctx, `
-		UPDATE tokens
-		SET name = name
-		WHERE token = ?
-	`, token)
-	if err != nil {
-		return false, fmt.Errorf("lock token row: %w", err)
-	}
-	rowsAffected, err := lockResult.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("inspect token lock result: %w", err)
-	}
-	if rowsAffected == 0 {
-		if err := tx.Commit(); err != nil {
-			return false, fmt.Errorf("commit missing token check: %w", err)
-		}
+	if !exists {
 		return false, nil
 	}
 
-	var existingCount int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(1)
-		FROM token_accounts
-		WHERE token = ?
-	`, token).Scan(&existingCount); err != nil {
-		return false, fmt.Errorf("count token accounts: %w", err)
+	authorized, err := r.tokenAccountExists(ctx, token, accountID)
+	if err != nil {
+		return false, err
 	}
-
-	if existingCount == 0 {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO token_accounts (
-				token,
-				account_id
-			) VALUES (?, ?)
-			ON CONFLICT(token, account_id) DO NOTHING
-		`, token, accountID); err != nil {
-			return false, fmt.Errorf("bind first account %s to token: %w", accountID, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return false, fmt.Errorf("commit first account binding: %w", err)
-		}
+	if authorized {
 		return true, nil
 	}
 
-	var matchedAccount string
-	err = tx.QueryRowContext(ctx, `
-		SELECT account_id
-		FROM token_accounts
-		WHERE token = ? AND account_id = ?
-	`, token, accountID).Scan(&matchedAccount)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		if err := tx.Commit(); err != nil {
-			return false, fmt.Errorf("commit rejected authorization check: %w", err)
-		}
+	bound, err := r.tokenHasAnyAccount(ctx, token)
+	if err != nil {
+		return false, err
+	}
+	if bound {
 		return false, nil
-	case err != nil:
-		return false, fmt.Errorf("check token account binding: %w", err)
-	default:
-		if err := tx.Commit(); err != nil {
-			return false, fmt.Errorf("commit authorized account check: %w", err)
-		}
+	}
+
+	inserted, err := r.bindFirstAccount(ctx, token, accountID)
+	if err == nil && inserted {
 		return true, nil
 	}
+	if err != nil && !isSQLiteBusy(err) {
+		return false, err
+	}
+
+	for attempt := 0; attempt < 5; attempt++ {
+		if err != nil {
+			time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+		}
+
+		authorized, err = r.tokenAccountExists(ctx, token, accountID)
+		if err != nil {
+			return false, err
+		}
+		if authorized {
+			return true, nil
+		}
+
+		bound, err = r.tokenHasAnyAccount(ctx, token)
+		if err != nil {
+			return false, err
+		}
+		if bound {
+			return false, nil
+		}
+
+		inserted, err = r.bindFirstAccount(ctx, token, accountID)
+		if err == nil && inserted {
+			return true, nil
+		}
+		if err != nil && !isSQLiteBusy(err) {
+			return false, err
+		}
+	}
+
+	authorized, err = r.tokenAccountExists(ctx, token, accountID)
+	if err != nil {
+		return false, err
+	}
+	return authorized, nil
+}
+
+func (r *TokenRepository) tokenExists(ctx context.Context, token string) (bool, error) {
+	for attempt := 0; attempt < 5; attempt++ {
+		var matchedToken string
+		err := r.db.QueryRowContext(ctx, `
+			SELECT token
+			FROM tokens
+			WHERE token = ?
+		`, token).Scan(&matchedToken)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return false, nil
+		case isSQLiteBusy(err):
+			time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+			continue
+		case err != nil:
+			return false, fmt.Errorf("lookup token %s: %w", token, err)
+		default:
+			return true, nil
+		}
+	}
+
+	return false, fmt.Errorf("lookup token %s: sqlite busy after retries", token)
+}
+
+func (r *TokenRepository) tokenAccountExists(ctx context.Context, token, accountID string) (bool, error) {
+	for attempt := 0; attempt < 5; attempt++ {
+		var matchedAccount string
+		err := r.db.QueryRowContext(ctx, `
+			SELECT account_id
+			FROM token_accounts
+			WHERE token = ? AND account_id = ?
+		`, token, accountID).Scan(&matchedAccount)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return false, nil
+		case isSQLiteBusy(err):
+			time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+			continue
+		case err != nil:
+			return false, fmt.Errorf("check token account binding: %w", err)
+		default:
+			return true, nil
+		}
+	}
+
+	return false, fmt.Errorf("check token account binding: sqlite busy after retries")
+}
+
+func (r *TokenRepository) tokenHasAnyAccount(ctx context.Context, token string) (bool, error) {
+	for attempt := 0; attempt < 5; attempt++ {
+		var matchedAccount string
+		err := r.db.QueryRowContext(ctx, `
+			SELECT account_id
+			FROM token_accounts
+			WHERE token = ?
+			LIMIT 1
+		`, token).Scan(&matchedAccount)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return false, nil
+		case isSQLiteBusy(err):
+			time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+			continue
+		case err != nil:
+			return false, fmt.Errorf("check token bindings for %s: %w", token, err)
+		default:
+			return true, nil
+		}
+	}
+
+	return false, fmt.Errorf("check token bindings for %s: sqlite busy after retries", token)
+}
+
+func (r *TokenRepository) bindFirstAccount(ctx context.Context, token, accountID string) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `
+		INSERT INTO token_accounts (
+			token,
+			account_id
+		)
+		SELECT ?, ?
+		WHERE EXISTS (
+			SELECT 1
+			FROM tokens
+			WHERE token = ?
+		)
+		AND NOT EXISTS (
+			SELECT 1
+			FROM token_accounts
+			WHERE token = ?
+		)
+	`, token, accountID, token, token)
+	if err != nil {
+		return false, fmt.Errorf("bind first account %s to token: %w", accountID, err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("inspect first account binding result: %w", err)
+	}
+
+	return rowsAffected == 1, nil
+}
+
+func isSQLiteBusy(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "SQLITE_BUSY")
 }
 
 func (r *TokenRepository) AccountsForToken(ctx context.Context, token string) ([]string, error) {

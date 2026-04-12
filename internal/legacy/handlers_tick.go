@@ -7,6 +7,7 @@ import (
 
 type TickHandler struct {
 	accounts AccountStore
+	tokens   TokenStore
 	now      func() time.Time
 }
 
@@ -25,6 +26,21 @@ func (h *TickHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	accountID, err := requireAccountID(req.AccountID)
 	if err != nil {
 		writeBadRequest(w, err.Error())
+		return
+	}
+	allowed, err := authorizeAccountWrite(r, h.tokens, accountID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"status":  "ERROR",
+			"message": err.Error(),
+		})
+		return
+	}
+	if !allowed {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"status":  "ERROR",
+			"message": "token not authorized for account",
+		})
 		return
 	}
 	if err := h.accounts.EnsureAccount(r.Context(), accountID, now); err != nil {

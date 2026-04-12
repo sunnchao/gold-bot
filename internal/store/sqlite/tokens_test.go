@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,6 +71,120 @@ func TestTokenRepositoryAuthorizeAccountBindsFirstAccountAndRejectsOthers(t *tes
 	}
 }
 
+func TestTokenRepositoryAuthorizeAccountRejectsMissingToken(t *testing.T) {
+	repo := newTestTokenRepository(t)
+
+	allowed, err := repo.AuthorizeAccount(context.Background(), "missing-token", "90011087")
+	if err != nil {
+		t.Fatalf("AuthorizeAccount returned error: %v", err)
+	}
+	if allowed {
+		t.Fatal("AuthorizeAccount returned true for missing token")
+	}
+}
+
+func TestTokenRepositoryAuthorizeAccountAllowsExistingBindingWithoutTokenWrite(t *testing.T) {
+	repo := newTestTokenRepository(t)
+	ctx := context.Background()
+
+	if err := repo.PutToken(ctx, "test-token", "test", false, time.Now().UTC()); err != nil {
+		t.Fatalf("PutToken returned error: %v", err)
+	}
+	if err := repo.BindAccount(ctx, "test-token", "90011087"); err != nil {
+		t.Fatalf("BindAccount returned error: %v", err)
+	}
+	installTokenUpdateCounter(t, repo)
+
+	allowed, err := repo.AuthorizeAccount(ctx, "test-token", "90011087")
+	if err != nil {
+		t.Fatalf("AuthorizeAccount returned error: %v", err)
+	}
+	if !allowed {
+		t.Fatal("AuthorizeAccount returned false for existing binding")
+	}
+	if got := tokenUpdateCount(t, repo); got != 0 {
+		t.Fatalf("token update count = %d, want 0", got)
+	}
+}
+
+func TestTokenRepositoryAuthorizeAccountRejectsDifferentBindingWithoutTokenWrite(t *testing.T) {
+	repo := newTestTokenRepository(t)
+	ctx := context.Background()
+
+	if err := repo.PutToken(ctx, "test-token", "test", false, time.Now().UTC()); err != nil {
+		t.Fatalf("PutToken returned error: %v", err)
+	}
+	if err := repo.BindAccount(ctx, "test-token", "90011087"); err != nil {
+		t.Fatalf("BindAccount returned error: %v", err)
+	}
+	installTokenUpdateCounter(t, repo)
+
+	allowed, err := repo.AuthorizeAccount(ctx, "test-token", "90022000")
+	if err != nil {
+		t.Fatalf("AuthorizeAccount returned error: %v", err)
+	}
+	if allowed {
+		t.Fatal("AuthorizeAccount returned true for different account")
+	}
+	if got := tokenUpdateCount(t, repo); got != 0 {
+		t.Fatalf("token update count = %d, want 0", got)
+	}
+}
+
+func TestTokenRepositoryAuthorizeAccountBindsOnlyOneAccountUnderConcurrency(t *testing.T) {
+	for i := 0; i < 25; i++ {
+		repo := newTestTokenRepository(t)
+		ctx := context.Background()
+
+		if err := repo.PutToken(ctx, "test-token", "test", false, time.Now().UTC()); err != nil {
+			t.Fatalf("PutToken returned error: %v", err)
+		}
+
+		start := make(chan struct{})
+		type result struct {
+			allowed bool
+			err     error
+		}
+		results := make(chan result, 2)
+
+		var wg sync.WaitGroup
+		for _, accountID := range []string{"90011087", "90022000"} {
+			wg.Add(1)
+			go func(accountID string) {
+				defer wg.Done()
+				<-start
+				allowed, err := repo.AuthorizeAccount(context.Background(), "test-token", accountID)
+				results <- result{allowed: allowed, err: err}
+			}(accountID)
+		}
+
+		close(start)
+		wg.Wait()
+		close(results)
+
+		allowedCount := 0
+		for result := range results {
+			if result.err != nil {
+				t.Fatalf("AuthorizeAccount returned error: %v", result.err)
+			}
+			if result.allowed {
+				allowedCount++
+			}
+		}
+		if allowedCount != 1 {
+			t.Fatalf("allowed count = %d, want 1", allowedCount)
+		}
+
+		accounts, err := repo.AccountsForToken(ctx, "test-token")
+		if err != nil {
+			t.Fatalf("AccountsForToken returned error: %v", err)
+		}
+		if len(accounts) != 1 {
+			t.Fatalf("AccountsForToken length = %d, want 1 (accounts=%v)", len(accounts), accounts)
+		}
+	}
+}
+
 func newTestTokenRepository(t *testing.T) *TokenRepository {
 	t.Helper()
 
@@ -89,4 +204,33 @@ func newTestTokenRepository(t *testing.T) *TokenRepository {
 	}
 
 	return NewTokenRepository(db)
+}
+
+func installTokenUpdateCounter(t *testing.T, repo *TokenRepository) {
+	t.Helper()
+
+	if _, err := repo.db.Exec(`
+		CREATE TABLE token_update_events (
+			count INTEGER NOT NULL
+		);
+		INSERT INTO token_update_events(count) VALUES (0);
+		CREATE TRIGGER token_update_counter
+		AFTER UPDATE ON tokens
+		BEGIN
+			UPDATE token_update_events SET count = count + 1;
+		END;
+	`); err != nil {
+		t.Fatalf("install token update counter returned error: %v", err)
+	}
+}
+
+func tokenUpdateCount(t *testing.T, repo *TokenRepository) int {
+	t.Helper()
+
+	var count int
+	if err := repo.db.QueryRow(`SELECT count FROM token_update_events`).Scan(&count); err != nil {
+		t.Fatalf("token update counter lookup returned error: %v", err)
+	}
+
+	return count
 }

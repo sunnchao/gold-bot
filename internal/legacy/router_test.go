@@ -235,6 +235,68 @@ func TestHeartbeatRejectsAccountOutsideTokenBinding(t *testing.T) {
 	assertTokenAccounts(t, tokens, "test-token", []string{"90011087"})
 }
 
+func TestStreamingHandlersRejectAccountOutsideTokenBinding(t *testing.T) {
+	testCases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "tick",
+			path: "/tick",
+			body: `{
+				"account_id":"90022000",
+				"symbol":"XAUUSD",
+				"bid":3344.1,
+				"ask":3344.3
+			}`,
+		},
+		{
+			name: "bars",
+			path: "/bars",
+			body: `{
+				"account_id":"90022000",
+				"timeframe":"H1",
+				"bars":[{"time":"2026.04.12 10:00","open":3300}]
+			}`,
+		},
+		{
+			name: "positions",
+			path: "/positions",
+			body: `{
+				"account_id":"90022000",
+				"positions":[{"ticket":1,"symbol":"XAUUSD","profit":12.5}]
+			}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, accounts, tokens := newTestServer(t)
+			ctx := context.Background()
+
+			if err := tokens.BindAccount(ctx, "test-token", "90011087"); err != nil {
+				t.Fatalf("BindAccount returned error: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tc.path, bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-API-Token", "test-token")
+
+			ts.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("POST %s status = %d, want %d", tc.path, rec.Code, http.StatusForbidden)
+			}
+
+			assertAccountMissing(t, accounts, "90022000")
+			assertRuntimeMissing(t, accounts, "90022000")
+			assertTokenAccounts(t, tokens, "test-token", []string{"90011087"})
+		})
+	}
+}
+
 func TestLegacyHandlersRejectBadRequestWithoutPersistingDefaultAccount(t *testing.T) {
 	testCases := []struct {
 		name string
@@ -331,5 +393,17 @@ func assertAccountMissing(t *testing.T, accounts *sqlitestore.AccountRepository,
 	}
 	if !errors.Is(err, sql.ErrNoRows) && !strings.Contains(err.Error(), "sql: no rows in result set") {
 		t.Fatalf("GetAccount(%q) returned unexpected error: %v", accountID, err)
+	}
+}
+
+func assertRuntimeMissing(t *testing.T, accounts *sqlitestore.AccountRepository, accountID string) {
+	t.Helper()
+
+	_, err := accounts.GetRuntime(context.Background(), accountID)
+	if err == nil {
+		t.Fatalf("GetRuntime(%q) unexpectedly succeeded", accountID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) && !strings.Contains(err.Error(), "sql: no rows in result set") {
+		t.Fatalf("GetRuntime(%q) returned unexpected error: %v", accountID, err)
 	}
 }

@@ -49,14 +49,17 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 	}))
 	mux.Handle("/tick", auth.RequireToken(&TickHandler{
 		accounts: deps.Accounts,
+		tokens:   deps.Tokens,
 		now:      time.Now,
 	}))
 	mux.Handle("/bars", auth.RequireToken(&BarsHandler{
 		accounts: deps.Accounts,
+		tokens:   deps.Tokens,
 		now:      time.Now,
 	}))
 	mux.Handle("/positions", auth.RequireToken(&PositionsHandler{
 		accounts: deps.Accounts,
+		tokens:   deps.Tokens,
 		now:      time.Now,
 	}))
 }

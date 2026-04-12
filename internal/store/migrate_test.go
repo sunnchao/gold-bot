@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,15 @@ func TestReadMigrationLoadsInitSQL(t *testing.T) {
 
 	if !strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS accounts") {
 		t.Fatal("embedded migration content does not create accounts table")
+	}
+	if strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS account_runtime") {
+		t.Fatal("embedded init migration unexpectedly creates account_runtime table")
+	}
+	if strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS tokens") {
+		t.Fatal("embedded init migration unexpectedly creates tokens table")
+	}
+	if strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS token_accounts") {
+		t.Fatal("embedded init migration unexpectedly creates token_accounts table")
 	}
 }
 
@@ -35,18 +45,10 @@ func TestRunMigrationsCreatesAccountsTable(t *testing.T) {
 		t.Fatalf("RunMigrations returned error: %v", err)
 	}
 
-	var tableName string
-	err = db.QueryRow(`
-		SELECT name
-		FROM sqlite_master
-		WHERE type = 'table' AND name = 'accounts'
-	`).Scan(&tableName)
-	if err != nil {
-		t.Fatalf("accounts table lookup failed: %v", err)
-	}
-	if tableName != "accounts" {
-		t.Fatalf("table name = %q, want %q", tableName, "accounts")
-	}
+	assertTableExists(t, db, "accounts")
+	assertTableExists(t, db, "account_runtime")
+	assertTableExists(t, db, "tokens")
+	assertTableExists(t, db, "token_accounts")
 }
 
 func TestRunMigrationsIsIdempotent(t *testing.T) {
@@ -77,18 +79,73 @@ func TestRunMigrationsIsIdempotent(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("migration count = %d, want %d", count, 1)
 	}
-
-	var tableName string
-	err = db.QueryRow(`
-		SELECT name
-		FROM sqlite_master
-		WHERE type = 'table' AND name = 'accounts'
-	`).Scan(&tableName)
+	err = db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE version = ?`, "0002_legacy_auth_runtime.sql").Scan(&count)
 	if err != nil {
-		t.Fatalf("accounts table lookup failed after rerun: %v", err)
+		t.Fatalf("schema_migrations lookup failed: %v", err)
 	}
-	if tableName != "accounts" {
-		t.Fatalf("table name = %q, want %q", tableName, "accounts")
+	if count != 1 {
+		t.Fatalf("migration count = %d, want %d", count, 1)
+	}
+
+	assertTableExists(t, db, "accounts")
+	assertTableExists(t, db, "account_runtime")
+	assertTableExists(t, db, "tokens")
+	assertTableExists(t, db, "token_accounts")
+}
+
+func TestRunMigrationsUpgradesLegacy0001Database(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "store.sqlite")
+
+	db, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+		  version TEXT PRIMARY KEY,
+		  applied_at TEXT NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS accounts (
+		  account_id TEXT PRIMARY KEY,
+		  broker TEXT NOT NULL DEFAULT '',
+		  server_name TEXT NOT NULL DEFAULT '',
+		  account_name TEXT NOT NULL DEFAULT '',
+		  account_type TEXT NOT NULL DEFAULT '',
+		  currency TEXT NOT NULL DEFAULT 'USD',
+		  leverage INTEGER NOT NULL DEFAULT 0,
+		  created_at TEXT NOT NULL,
+		  updated_at TEXT NOT NULL
+		);
+
+		INSERT INTO schema_migrations(version, applied_at)
+		VALUES ('0001_init.sql', '2026-04-12T00:00:00Z');
+	`); err != nil {
+		t.Fatalf("seed legacy database returned error: %v", err)
+	}
+
+	if err := RunMigrations(db); err != nil {
+		t.Fatalf("RunMigrations returned error: %v", err)
+	}
+
+	assertTableExists(t, db, "accounts")
+	assertTableExists(t, db, "account_runtime")
+	assertTableExists(t, db, "tokens")
+	assertTableExists(t, db, "token_accounts")
+
+	var count int
+	err = db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE version = ?`, "0002_legacy_auth_runtime.sql").Scan(&count)
+	if err != nil {
+		t.Fatalf("schema_migrations lookup failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("migration count = %d, want %d", count, 1)
 	}
 }
 
@@ -107,5 +164,22 @@ func TestOpenSQLiteCreatesParentDir(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Dir(dbPath)); err != nil {
 		t.Fatalf("parent dir stat returned error: %v", err)
+	}
+}
+
+func assertTableExists(t *testing.T, db *sql.DB, table string) {
+	t.Helper()
+
+	var tableName string
+	err := db.QueryRow(`
+		SELECT name
+		FROM sqlite_master
+		WHERE type = 'table' AND name = ?
+	`, table).Scan(&tableName)
+	if err != nil {
+		t.Fatalf("%s table lookup failed: %v", table, err)
+	}
+	if tableName != table {
+		t.Fatalf("table name = %q, want %q", tableName, table)
 	}
 }
