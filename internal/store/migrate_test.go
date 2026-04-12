@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,5 +89,23 @@ func TestRunMigrationsIsIdempotent(t *testing.T) {
 	}
 	if tableName != "accounts" {
 		t.Fatalf("table name = %q, want %q", tableName, "accounts")
+	}
+}
+
+func TestOpenSQLiteCreatesParentDir(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tmp", "subdir", "app.sqlite")
+
+	db, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Dir(dbPath)); err != nil {
+		t.Fatalf("parent dir stat returned error: %v", err)
 	}
 }
