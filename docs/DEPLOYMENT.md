@@ -1,85 +1,129 @@
 # 部署指南
 
-## 服务器要求
+## 目标形态
+
+当前推荐部署形态：
+
+- Go 二进制负责全部 HTTP 服务
+- SQLite 同时用于开发和生产
+- Next.js 控制台提前静态构建，产物由 Go 直接托管
+- 不再依赖 Python 运行时，也不需要 Node SSR 常驻进程
+
+## 依赖要求
 
 | 项目 | 要求 |
 |------|------|
-| 系统 | Ubuntu 18.04+ / Debian |
-| Python | 3.8+ |
-| 内存 | 2GB+ |
-| 网络 | 公网 IP 或内网穿透 |
+| Go | 1.24+ |
+| Node.js | 20+（仅用于构建前端） |
+| npm | 10+ |
+| 系统 | Ubuntu / Debian / macOS / Linux 通用环境 |
 
-## 快速部署
+## 环境变量
 
-### 1. 克隆代码
-
-```bash
-cd /home/node
-git clone https://github.com/sunnchao/gold-bot.git gold_bolt_server
-cd gold_bolt_server
-```
-
-### 2. 安装依赖
+Go 服务端当前只需要两项核心配置：
 
 ```bash
-pip install -r requirements.txt
+export GB_HTTP_ADDR=":8880"
+export GB_DB_PATH="data/gold_bolt.sqlite"
 ```
 
-**requirements.txt 内容：**
-```
-flask>=2.0
-flask-socketio>=5.0
-python-socketio>=5.0
-pandas>=1.3
-numpy>=1.21
-requests>=2.25
-```
+说明：
 
-### 3. 配置
+- 开发与生产都使用 SQLite
+- 路径可按环境调整
+- 上层业务通过 `database/sql` 访问数据库，未来可迁移 PostgreSQL，但当前不需要额外配置
 
-编辑 `config.py` 或设置环境变量：
+## 一次性构建
+
+### 1. 构建控制台
 
 ```bash
-export GBOLT_HOST="0.0.0.0"
-export GBOLT_PORT="8880"
-export GBOLT_ADMIN_TOKEN="your_secure_token"
+cd /path/to/gold-bot/web/dashboard
+npm install
+npm test
+npm run build
 ```
 
-### 4. 启动
+输出目录：
+
+```text
+web/dashboard/dist
+```
+
+### 2. 构建 Go 服务端
 
 ```bash
-# 直接运行
-python -m gold_bolt_server.app
-
-# 或使用 systemd
-cp gold-bolt.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable gold-bolt-server
-systemctl start gold-bolt-server
+cd /path/to/gold-bot
+go test ./...
+go build -o bin/gold-bot ./cmd/server
 ```
 
-### 5. 验证
+## 本地启动
 
 ```bash
-curl http://localhost:8880/api/status
+cd /path/to/gold-bot
+GB_HTTP_ADDR=":8880" \
+GB_DB_PATH="data/gold_bolt.sqlite" \
+./bin/gold-bot
 ```
 
----
+如果没有单独 build，也可以直接：
 
-## Systemd 服务配置
+```bash
+go run ./cmd/server
+```
 
-### gold-bolt-server.service
+## 启动后验证
+
+### 健康检查
+
+```bash
+curl http://127.0.0.1:8880/healthz
+```
+
+期望：
+
+```text
+ok
+```
+
+### Legacy 接口
+
+```bash
+curl -X POST http://127.0.0.1:8880/register \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Token: <token>' \
+  -d '{"account_id":"90011087","broker":"Demo Broker","server_name":"Demo-1"}'
+```
+
+### 控制台
+
+浏览器访问：
+
+```text
+http://127.0.0.1:8880/?token=<admin-token>
+```
+
+控制台会：
+
+- 加载静态页面
+- 通过 `/api/v1/*` 拉取数据
+- 通过 `/api/v1/events/stream?token=...` 建立 SSE 连接
+
+## systemd 示例
 
 ```ini
 [Unit]
-Description=Gold Bolt Server
+Description=Gold Bot Go Server
 After=network.target
 
 [Service]
 Type=simple
 User=node
-WorkingDirectory=/home/node/gold_bolt_server
-ExecStart=/home/node/gold_bolt_server/start.sh
+WorkingDirectory=/home/node/gold-bot
+Environment=GB_HTTP_ADDR=:8880
+Environment=GB_DB_PATH=/home/node/gold-bot/data/gold_bolt.sqlite
+ExecStart=/home/node/gold-bot/bin/gold-bot
 Restart=always
 RestartSec=5
 
@@ -87,227 +131,58 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-### start.sh
+部署流程示例：
 
 ```bash
-#!/bin/bash
-cd /home/node
-python3 -m gold_bolt_server.app
+cd /home/node/gold-bot
+git pull
+cd web/dashboard && npm ci && npm run build
+cd /home/node/gold-bot
+go build -o bin/gold-bot ./cmd/server
+systemctl daemon-reload
+systemctl restart gold-bot
+systemctl status gold-bot
 ```
 
----
+## Nginx 反向代理
 
-## MT4 EA 配置
-
-### 参数设置
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| ServerURL | `http://服务器IP:8880` | GB Server 地址 |
-| AccountID | `90011087` | 账户标识 |
-| ApiToken | `your_token` | API 认证 Token |
-| Symbol | `XAUUSD` | 交易品种 |
-| MaxRiskPercent | `2.0` | 单笔风险 % |
-| MaxPositions | `5` | 最大持仓数 |
-| MaxDailyLoss | `5.0` | 日亏损限制 % |
-| MaxSpread | `5.0` | 最大点差 |
-
-### MT4 图表设置
-
-1. **加载足够历史数据**
-   - 图表往左拖动，加载 150+ 根 H4 K线
-   - EA 初始化时会检测数据量
-
-2. **EA 加载**
-   - 将 EA 文件放入 `/experts/`
-   - 拖到 XAUUSD 图表
-   - 配置参数
-
----
-
-## Nginx 反向代理（可选）
-
-### 安装
-
-```bash
-apt install nginx
-```
-
-### 配置 `/etc/nginx/sites-available/gold-bolt`
+SSE 基于标准 HTTP，不需要 WebSocket upgrade。
 
 ```nginx
 server {
     listen 80;
-    server_name your-domain.com;
+    server_name your-domain.example;
 
     location / {
         proxy_pass http://127.0.0.1:8880;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
     }
 }
 ```
 
-### 启用
+## 数据与备份
+
+推荐至少备份：
+
+- SQLite 主库：`data/gold_bolt.sqlite`
+- EA 发布元数据与文件
+- `.env` / 部署脚本
+
+示例：
 
 ```bash
-ln -s /etc/nginx/sites-available/gold-bolt /etc/nginx/sites-enabled/
-nginx -t
-systemctl reload nginx
+tar czf gold-bot-backup.tar.gz \
+  data/gold_bolt.sqlite* \
+  mt4_ea \
+  .env
 ```
 
-### HTTPS (Let's Encrypt)
+## 已知部署边界
 
-```bash
-apt install certbot python3-certbot-nginx
-certbot --nginx -d your-domain.com
-```
-
----
-
-## 防火墙配置
-
-```bash
-# 开放端口
-ufw allow 22    # SSH
-ufw allow 80    # HTTP
-ufw allow 443   # HTTPS
-ufw allow 8880  # GB Server (可选，仅内部访问)
-
-# 启用防火墙
-ufw enable
-```
-
----
-
-## 日志管理
-
-### 日志位置
-
-```
-/home/node/gold_bolt_server/logs/
-├── server_YYYYMMDD.log  # 每日日志
-└── service.log         # systemd stdout
-```
-
-### 查看日志
-
-```bash
-# 实时日志
-journalctl -u gold-bolt-server -f
-
-# 搜索错误
-grep ERROR /home/node/gold_bolt_server/logs/server_*.log
-
-# 搜索 K线
-grep BARS /home/node/gold_bolt_server/logs/server_*.log
-```
-
-### 日志轮转
-
-配置 `logrotate`：
-
-```bash
-cat > /etc/logrotate.d/gold-bolt <<EOF
-/home/node/gold_bolt_server/logs/*.log {
-    daily
-    rotate 7
-    compress
-    delaycompress
-    notifempty
-}
-EOF
-```
-
----
-
-## 备份与恢复
-
-### 备份
-
-```bash
-# 打包项目
-tar czf gold_bolt_backup.tar.gz \
-    /home/node/gold_bolt_server \
-    --exclude='*.log' \
-    --exclude='__pycache__'
-```
-
-### 恢复
-
-```bash
-tar xzf gold_bolt_backup.tar.gz -C /
-```
-
----
-
-## 故障排查
-
-### 服务启动失败
-
-```bash
-# 检查语法
-python3 -m py_compile /home/node/gold_bolt_server/app.py
-
-# 查看错误
-journalctl -u gold-bolt-server -n 50
-```
-
-### EA 不连接
-
-1. 检查服务器防火墙
-2. 确认 ServerURL 正确
-3. 检查 EA 日志中的错误信息
-
-### K线数据为空
-
-```bash
-# 查看 EA 是否发送
-grep BARS /home/node/gold_bolt_server/logs/server_*.log
-
-# 检查历史数据量
-# MT4 图表上往左拖动加载更多历史
-```
-
-### AI 分析不触发
-
-```bash
-# 检查市场状态
-curl http://localhost:8880/api/market_status/90011087
-
-# 检查整点触发日志
-grep "整点触发" /home/node/gold_bolt_server/logs/service.log
-```
-
----
-
-## 更新部署
-
-### 1. 拉取新代码
-
-```bash
-cd /home/node/gold_bolt_server
-git pull origin main
-```
-
-### 2. 检查修改
-
-```bash
-git diff --stat
-```
-
-### 3. 重启服务
-
-```bash
-systemctl restart gold-bolt-server
-```
-
----
-
-## 相关文档
-
-- [架构文档](ARCHITECTURE.md)
-- [API 端点](API.md)
-- [策略描述](STRATEGIES.md)
+- 如果 `web/dashboard/dist` 不存在，Go 仍然可以提供 API，但不会返回新控制台页面
+- `/accounts/{account_id}` 通过静态占位页 + Go fallback 支持刷新直达
+- 当前 cutover readiness 默认仍会显示 `Baseline Only`，直到真实 shadow 流量统计接入

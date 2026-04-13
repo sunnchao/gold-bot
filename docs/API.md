@@ -1,359 +1,269 @@
-# API 端点文档
+# API 文档
 
 ## 认证
 
-所有 API 需要 `X-API-Token` header：
-```
-X-API-Token: your_token_here
-```
+所有受保护接口支持以下任一方式传递 Token：
 
-管理员 Token：
-```
-RbIzdutbQYFR_cAdZv1jZrN0MyKoLpyf0jb0vSqzhGI
-```
+- `X-API-Token: <token>`
+- `X-API-Key: <token>`
+- 查询参数 `?token=<token>`：主要给浏览器和 SSE 使用
 
----
+权限模型：
 
-## EA 端点（MT4 → Server）
+- 普通 Token：仅允许访问已绑定账户
+- Admin Token：可访问所有账户与 Admin API
 
-### POST `/register`
+## 1. Legacy EA 兼容接口
 
-EA 初始化时注册账户信息。
+这些接口保持 MQL 端协议兼容，Go 侧以 SQLite 持久化当前状态。
 
-**Request:**
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/register` | 注册账户元数据与策略映射 |
+| `POST` | `/heartbeat` | 写入余额、净值、市场开关、MT4 服务器时间 |
+| `POST` | `/tick` | 写入最新 tick 快照 |
+| `POST` | `/bars` | 写入指定 timeframe 的 K 线 |
+| `POST` | `/positions` | 写入当前持仓列表 |
+| `POST` | `/poll` | 拉取待执行命令 |
+| `POST` | `/order_result` | 回报命令执行结果 |
+
+### `POST /poll`
+
+返回示例：
+
 ```json
 {
-  "account_id": "90011087",
-  "broker": "Valutrades Limited",
-  "server": "MT4-Demo",
-  "account_name": "Demo Account",
-  "account_type": "standard",
-  "leverage": 500,
-  "currency": "USD"
-}
-```
-
-**Response:**
-```json
-{"status": "OK", "message": "registered"}
-```
-
----
-
-### POST `/heartbeat`
-
-EA 定期发送心跳，包含账户状态和市场状态。
-
-**Request:**
-```json
-{
-  "account_id": "90011087",
-  "symbol": "XAUUSD",
-  "server_time": "2026.03.30 12:00",
-  "is_trade_allowed": true,
-  "market_open": true,
-  "balance": 113893.72,
-  "equity": 88000.00,
-  "margin": 250.00,
-  "free_margin": 87750.00,
-  "strategies": {
-    "pullback": {"enabled": true, "magic": 20250231, "positions": 2},
-    "breakout_retest": {"enabled": true, "magic": 20250232, "positions": 0},
-    "divergence": {"enabled": true, "magic": 20250233, "positions": 0},
-    "breakout_pyramid": {"enabled": true, "magic": 20250234, "positions": 0},
-    "counter_pullback": {"enabled": false, "magic": 20250235, "positions": 0},
-    "range": {"enabled": false, "magic": 20250236, "positions": 0}
-  }
-}
-```
-
-**Response:**
-```json
-{"status": "OK", "server_time": 1740000000}
-```
-
----
-
-### POST `/tick`
-
-EA 发送实时报价。
-
-**Request:**
-```json
-{
-  "account_id": "90011087",
-  "symbol": "XAUUSD",
-  "bid": 4431.40,
-  "ask": 4431.59,
-  "spread": 0.19,
-  "symbols": {}
-}
-```
-
-**Response:**
-```json
-{"status": "OK"}
-```
-
----
-
-### POST `/bars`
-
-EA 发送 K 线数据。
-
-**Request:**
-```json
-{
-  "account_id": "90011087",
-  "symbol": "XAUUSD",
-  "timeframe": "H4",
-  "bars": [
-    {
-      "time": 1740000000,
-      "open": 4430.00,
-      "high": 4440.00,
-      "low": 4420.00,
-      "close": 4435.00,
-      "volume": 1000
-    }
-  ]
-}
-```
-
-**Response:**
-```json
-{"status": "OK", "received": 150}
-```
-
----
-
-### POST `/positions`
-
-EA 发送当前持仓列表。
-
-**Request:**
-```json
-{
-  "account_id": "90011087",
-  "positions": [
-    {
-      "ticket": 123456,
-      "symbol": "XAUUSD",
-      "type": "BUY",
-      "lots": 0.10,
-      "open_price": 4400.00,
-      "sl": 4350.00,
-      "tp": 4500.00,
-      "profit": 150.00,
-      "open_time": 1739900000,
-      "comment": "GB_pullback_S7",
-      "magic": 20250231
-    }
-  ]
-}
-```
-
-**Response:**
-```json
-{"status": "OK", "count": 1}
-```
-
----
-
-### POST `/poll`
-
-EA 轮询获取待执行指令。
-
-**Request:**
-```json
-{"account_id": "90011087"}
-```
-
-**Response:**
-```json
-{
+  "status": "OK",
   "commands": [
     {
       "command_id": "sig_1740000000_90011087",
       "action": "SIGNAL",
       "type": "BUY",
       "symbol": "XAUUSD",
-      "entry": 4435.00,
-      "sl": 4410.00,
-      "tp1": 4460.00,
-      "score": 7,
-      "strategy": "pullback"
+      "entry": 3335.75,
+      "sl": 3331.78,
+      "tp1": 3339.72,
+      "tp2": 3343.68,
+      "strategy": "pullback",
+      "score": 6
+    }
+  ],
+  "count": 1
+}
+```
+
+### `POST /order_result`
+
+请求示例：
+
+```json
+{
+  "account_id": "90011087",
+  "command_id": "sig_1740000000_90011087",
+  "result": "SUCCESS",
+  "ticket": 123456789,
+  "error": ""
+}
+```
+
+响应：
+
+```json
+{
+  "status": "OK"
+}
+```
+
+## 2. AI 兼容与运维接口
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| `GET` | `/api/analysis_payload/{account_id}` | token | 返回 AI 分析所需兼容 payload |
+| `POST` | `/api/ai_result/{account_id}` | token | 写入 AI 分析结果，可触发风控平仓命令 |
+| `POST` | `/api/trigger_ai` | token | 已废弃，占位返回 deprecated |
+| `GET` | `/api/ea/version` | public | EA 版本元数据 |
+| `GET` | `/api/ea/download` | token | 下载 EA 文件 |
+| `GET` | `/api/tokens` | admin | 查看 Token 列表 |
+| `POST` | `/api/tokens` | admin | 创建普通 Token 并绑定账户 |
+| `DELETE` | `/api/tokens/{prefix}` | admin | 按前缀吊销 Token |
+
+### `GET /api/analysis_payload/{account_id}`
+
+返回字段聚合自：
+
+- `accounts`
+- `account_runtime`
+- `account_state`
+- 运行时指标计算
+
+返回示例：
+
+```json
+{
+  "status": "OK",
+  "timestamp": "2026-04-13T08:00:00+08:00",
+  "account": {
+    "account_id": "90011087",
+    "equity": 1100.25,
+    "balance": 1000.5,
+    "margin": 100,
+    "free_margin": 1000.25,
+    "currency": "USD",
+    "leverage": 500,
+    "broker": "Demo Broker",
+    "server_name": "Demo-1",
+    "connected": true
+  },
+  "market": {
+    "symbol": "XAUUSD",
+    "bid": 3335.55,
+    "ask": 3335.75,
+    "spread": 0.2,
+    "time": "08:00:00"
+  },
+  "positions": [],
+  "indicators": {
+    "H1": {
+      "close": 3335.75,
+      "ema20": 3334.4,
+      "ema50": 3330.2,
+      "rsi": 52.1,
+      "adx": 71.5,
+      "atr": 2.64,
+      "macd_hist": -0.82,
+      "bb_upper": 3341.03,
+      "bb_middle": 0,
+      "bb_lower": 3330.8,
+      "stoch_k": 61.4,
+      "bars_count": 150
+    }
+  },
+  "market_status": {
+    "market_open": true,
+    "is_trade_allowed": true,
+    "mt4_server_time": "2026.04.13 08:00",
+    "tradeable": true
+  }
+}
+```
+
+注意：
+
+- `bb_middle` 当前故意保持与 Python 现网行为兼容，返回 `0`
+- 所有 `NaN` / `Inf` 会在 JSON 输出前被清洗为 `0`
+
+## 3. Admin API v1
+
+这些接口供新控制台直接消费。
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| `GET` | `/api/v1/overview` | admin | 概览卡片 + 账户表 |
+| `GET` | `/api/v1/accounts` | admin | 账户列表 |
+| `GET` | `/api/v1/accounts/{account_id}` | admin | 账户详情，结构与 AI 兼容 payload 对齐 |
+| `GET` | `/api/v1/audit` | admin | Cutover readiness 报告 |
+| `GET` | `/api/v1/events/stream` | admin | SSE 事件流 |
+
+### `GET /api/v1/overview`
+
+```json
+{
+  "status": "OK",
+  "generated_at": "2026-04-13T08:00:00Z",
+  "cards": [
+    {
+      "title": "System Health",
+      "value": "Healthy",
+      "detail": "SQLite + Go API online",
+      "tone": "green"
+    },
+    {
+      "title": "Cutover Health",
+      "value": "Baseline Only",
+      "detail": "Replay validated, shadow diff pending",
+      "tone": "orange"
+    }
+  ],
+  "accounts": [
+    {
+      "account_id": "90011087",
+      "broker": "Demo Broker",
+      "server_name": "Demo-1",
+      "connected": true,
+      "balance": 1000.5,
+      "equity": 1100.25,
+      "positions": 1,
+      "market_open": true,
+      "is_trade_allowed": true
     }
   ]
 }
 ```
 
----
+### `GET /api/v1/accounts/{account_id}`
 
-## 管理端点
+该接口返回：
 
-### GET `/api/status`
+- `account`
+- `market`
+- `positions`
+- `indicators`
+- `ai_result`
 
-全局状态概览。
+它适合控制台直接展示，也适合作为运维排障视图。
 
-**Response:**
+### `GET /api/v1/audit`
+
 ```json
 {
   "status": "OK",
-  "server_time": "2026-03-30 12:00:00",
-  "is_admin": true,
-  "accounts": {
-    "90011087": {
-      "account_name": "amazing",
-      "connected": true,
-      "balance": 113893.72,
-      "equity": 88000.00,
-      "positions": 2,
-      "market_open": true,
-      "is_trade_allowed": true
-    }
+  "generated_at": "2026-04-13T08:00:00Z",
+  "report": {
+    "ready": false,
+    "protocol_error_rate": 0,
+    "signal_drift_rate": 0,
+    "command_drift_rate": 0,
+    "last_shadow_event_at": "0001-01-01T00:00:00Z",
+    "missing_capabilities": ["shadow_traffic"],
+    "checks": [
+      {
+        "label": "Replay Parity",
+        "value": "validated",
+        "detail": "Replay fixture matched Python baseline",
+        "tone": "green"
+      }
+    ]
   },
-  "strategies": {
-    "pullback": "趋势回调",
-    "breakout_retest": "突破回踩",
-    "divergence": "RSI背离",
-    "breakout_pyramid": "突破加仓"
-  }
+  "summary": [],
+  "events": []
 }
 ```
 
----
+`ready == true` 的条件：
 
-### GET `/api/analysis_payload/<account_id>`
+- replay 已验证
+- shadow 流量存在
+- `protocol_error_rate == 0`
+- `signal_drift_rate <= 0.02`
+- `command_drift_rate <= 0.02`
 
-获取 AI 分析所需数据。
+## 4. SSE 事件流
 
-**Response:**
-```json
-{
-  "status": "OK",
-  "account": {
-    "account_id": "90011087",
-    "balance": 113893.72,
-    "equity": 88000.00
-  },
-  "market_status": {
-    "market_open": true,
-    "is_trade_allowed": true,
-    "mt4_server_time": "2026.03.30 12:00",
-    "tradeable": true
-  },
-  "indicators": {
-    "H4": {
-      "close": 4435.00,
-      "ema20": 4450.00,
-      "rsi": 55.0,
-      "adx": 25.0,
-      "bars_count": 150
-    }
-  },
-  "positions": [...],
-  "timestamp": "2026-03-30T12:00:00+08:00"
-}
+端点：`GET /api/v1/events/stream?token=<admin-token>`
+
+返回格式：
+
+```text
+data: {"event_id":"evt_ai_...","event_type":"ai_result","account_id":"90011087","source":"api.ai_result","timestamp":"2026-04-13T08:00:00Z","payload":{"bias":"bullish"}}
 ```
 
----
+事件 envelope 字段：
 
-### POST `/api/trigger_ai`
-
-手动触发 AI 分析（绕过整点调度）。
-
-**Response:**
-```json
-{
-  "status": "OK",
-  "triggered_accounts": ["90011087", "90974574"]
-}
-```
-
----
-
-### GET `/api/debug/dm/<account_id>`
-
-调试：检查 DataManager 状态。
-
-**Response:**
-```json
-{
-  "account_id": "90011087",
-  "bars_keys": ["M30", "H1", "H4", "D1"],
-  "market_open": true,
-  "dm_exists": true,
-  "dm_data": {
-    "H4": {"rows": 150, "has_ema20": true, "has_rsi": true}
-  }
-}
-```
-
----
-
-### POST `/api/market_status/<account_id>`
-
-获取交易时段状态。
-
-**Response:**
-```json
-{
-  "account_id": "90011087",
-  "market_open": true,
-  "is_trade_allowed": true,
-  "mt4_server_time": "2026.03.30 12:00",
-  "local_time": "12:00:00",
-  "in_skip_hours": false,
-  "is_trading_time": true,
-  "status": "OPEN"
-}
-```
-
----
-
-## WebSocket 事件
-
-### `account_update`
-
-账户状态更新（心跳响应）。
-
-### `analysis_log`
-
-技术/AI 分析日志。
-
-```json
-{
-  "account_id": "90011087",
-  "time": "12:00:00",
-  "logs": [
-    {"level": "info", "strategy": "H4", "msg": "EMA20 > EMA50 多头排列"},
-    {"level": "signal", "strategy": "汇总", "msg": "✅ BUY @ 4435.00 | SL=4410.00 | pullback | 评分=7"}
-  ],
-  "source": "technical"
-}
-```
-
-### `position_action`
-
-持仓操作（止损/平仓）。
-
-### `new_signal`
-
-新信号通知。
-
-### `ai_result`
-
-AI 分析结果。
-
----
-
-## 错误码
-
-| 状态码 | 说明 |
-|--------|------|
-| 200 | 成功 |
-| 401 | Token 无效 |
-| 403 | 无权访问该账户 |
-| 404 | 资源不存在 |
-| 500 | 服务器内部错误 |
+| 字段 | 说明 |
+|------|------|
+| `event_id` | 事件唯一 ID |
+| `event_type` | 事件类型，例如 `ai_result` |
+| `account_id` | 关联账户，可为空 |
+| `source` | 事件来源 |
+| `timestamp` | UTC 时间 |
+| `payload` | 原始 JSON 负载 |

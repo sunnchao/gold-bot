@@ -85,6 +85,16 @@ func (h aiHandler) aiResult(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
 		return
 	}
+	if h.deps.Events != nil {
+		h.deps.Events.Publish(domain.Event{
+			EventID:   fmt.Sprintf("evt_ai_%d", now.UnixNano()),
+			EventType: "ai_result",
+			AccountID: accountID,
+			Source:    "api.ai_result",
+			Timestamp: now,
+			Payload:   raw,
+		})
+	}
 
 	if shouldQueueRiskCommand(payload) {
 		commandID := fmt.Sprintf("ai_close_%d", now.Unix())

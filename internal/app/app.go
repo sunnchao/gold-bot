@@ -9,6 +9,8 @@ import (
 	"gold-bot/internal/config"
 	"gold-bot/internal/ea"
 	"gold-bot/internal/legacy"
+	"gold-bot/internal/realtime"
+	"gold-bot/internal/scheduler"
 	"gold-bot/internal/store"
 	sqlitestore "gold-bot/internal/store/sqlite"
 )
@@ -35,16 +37,29 @@ func New(cfg config.Config) (*App, error) {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	accounts := sqlitestore.NewAccountRepository(db)
+	tokens := sqlitestore.NewTokenRepository(db)
+	commands := sqlitestore.NewCommandRepository(db)
+	events := realtime.NewHub()
+	cutover := scheduler.NewCutoverService(scheduler.StaticShadowStatsSource{
+		Stats: scheduler.ShadowStats{
+			ReplayValidated: true,
+		},
+	})
+
 	legacy.RegisterRoutes(mux, legacy.Dependencies{
-		Accounts: sqlitestore.NewAccountRepository(db),
-		Tokens:   sqlitestore.NewTokenRepository(db),
+		Accounts: accounts,
+		Tokens:   tokens,
 	})
 	api.RegisterRoutes(mux, api.Dependencies{
-		Accounts: sqlitestore.NewAccountRepository(db),
-		Tokens:   sqlitestore.NewTokenRepository(db),
-		Commands: sqlitestore.NewCommandRepository(db),
+		Accounts: accounts,
+		Tokens:   tokens,
+		Commands: commands,
 		Releases: ea.NewLocalReleaseSource("."),
+		Events:   events,
+		Cutover:  cutover,
 	})
+	mux.Handle("/", newDashboardHandler(findDashboardDist()))
 
 	server := &http.Server{
 		Addr:    cfg.HTTPAddr,

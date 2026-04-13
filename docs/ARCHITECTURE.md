@@ -1,214 +1,154 @@
 # 系统架构
 
-## 整体架构
+## 当前架构概览
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      MT4 终端 (Windows)                      │
-│  ┌─────────────────────────────────────────────────┐    │
-│  │            Gold Bolt EA (MQL4)                   │    │
-│  │  - 风控参数执行                                   │    │
-│  │  - 下单/改单/平仓                                │    │
-│  │  - K线/持仓/心跳推送                             │    │
-│  └─────────────────────────────────────────────────┘    │
-└──────────────────────┬──────────────────────────────────┘
-                       │ HTTP
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  GB Server (Linux/OpenClaw)                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│  │  数据管理器  │  │  策略引擎    │  │  AI 分析器   │    │
-│  │  manager.py │  │  engine.py   │  │ai_analyzer  │    │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘    │
-│         │                │                │              │
-│         └────────────────┴────────────────┘              │
-│                          │                               │
-│                   ┌──────┴──────┐                       │
-│                   │  app.py    │                       │
-│                   │ (Flask+)   │                       │
-│                   └──────┬──────┘                       │
-│                          │                               │
-│         ┌───────────────┼───────────────┐               │
-│         ▼               ▼               ▼               │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐      │
-│  │  Discord   │  │   飞书    │  │   Web     │      │
-│  │  推送     │  │   推送    │  │   面板    │      │
-│  └────────────┘  └────────────┘  └────────────┘      │
-└─────────────────────────────────────────────────────────────┘
-```
+Gold Bot 已完成服务端向 Go 的主干迁移，MQL4/MQL5 EA 保持不变。当前系统由一个 Go 模块化单体统一承载：
 
-## 数据流
+- Legacy EA 兼容接口：保持 `/register`、`/heartbeat`、`/tick`、`/bars`、`/positions`、`/poll`、`/order_result` 协议不变
+- Admin/API v1：为新控制台和运维接口提供聚合查询与审计数据
+- SSE 实时流：取代旧的 Socket.IO 路径，供控制台订阅事件
+- Next.js + Tailwind CSS 控制台：静态导出后由 Go 直接托管
+- SQLite：开发和生产统一使用 SQLite，持久化层基于 `database/sql`，为 PostgreSQL 迁移预留接口边界
 
-### 1. EA → Server (推送)
+## 运行拓扑
 
-```
-MT4 OnTick()
-  ├── SendTick()        → /tick      (实时报价)
-  ├── SendHeartbeat()    → /heartbeat (账户+市场状态)
-  ├── SendPositions()    → /positions (持仓)
-  ├── SendAllBars()      → /bars      (K线)
-  └── PollAndExecute()   ← /poll     (指令轮询)
+```text
+┌────────────────────────────────────────────────────────────┐
+│ MT4 / MT5 Terminal (Windows)                              │
+│   Gold Bolt EA (MQL4/MQL5, unchanged)                     │
+└──────────────────────────────┬─────────────────────────────┘
+                               │ HTTP / JSON
+                               ▼
+┌────────────────────────────────────────────────────────────┐
+│ Go Server (`cmd/server`)                                  │
+│                                                            │
+│  internal/legacy      Legacy EA compatibility             │
+│  internal/api         Admin API / AI compatibility / EA   │
+│  internal/realtime    SSE hub                             │
+│  internal/strategy    Indicators / engine / position mgr  │
+│  internal/scheduler   Replay + cutover readiness          │
+│  internal/store       SQLite repositories + migrations    │
+│  internal/integration Discord / Feishu / Aurex adapter    │
+│                                                            │
+│  Serves `web/dashboard/dist` at `/`                       │
+└───────────────┬───────────────────────────┬────────────────┘
+                │                           │
+                ▼                           ▼
+       SQLite (`data/*.sqlite`)      Browser Dashboard
+                                      Next.js static export
+                                      `/api/v1/*` + SSE
 ```
 
-### 2. Server 内部处理
+## 模块边界
 
-```
-/bars 接收
-  └── DataManager.update_from_bars()
-        ├── 存储 K线数据
-        └── 计算技术指标 (EMA/RSI/ADX/MACD)
+| 模块 | 职责 |
+|------|------|
+| `internal/app` | 应用装配、HTTP 路由挂载、静态资源托管 |
+| `internal/config` | 环境变量配置加载 |
+| `internal/domain` | 账户、运行态、命令、事件、策略领域模型 |
+| `internal/store` | SQLite 连接与 migration runner |
+| `internal/store/sqlite` | 账户、Token、命令、AI 结果等仓储实现 |
+| `internal/legacy` | EA 兼容接口与鉴权 |
+| `internal/api` | Admin API、AI 兼容接口、Token Admin、EA 版本接口 |
+| `internal/realtime` | SSE 订阅/广播 |
+| `internal/strategy` | 技术指标、策略引擎、持仓管理 |
+| `internal/scheduler` | replay 校验、shadow/cutover readiness 汇总 |
+| `web/dashboard` | Next.js + Tailwind CSS 控制台工程 |
 
-/heartbeat 接收
-  ├── 账户状态更新
-  └── 市场状态 (server_time/market_open)
+## 核心数据流
 
-analysis_loop (30秒)
-  ├── 技术面分析 → strategy_engine.analyze()
-  └── 信号生成
+### 1. EA 兼容链路
 
-ai_analysis_loop (整点 0/15/30/45)
-  ├── AI 分析 → ai_analyzer.analyze_with_technicals()
-  └── 推送通知 → Discord/飞书
-```
-
-### 3. Server → EA (指令)
-
-```
-strategy_engine.analyze()
-  └── signal → pending_commands
-
-EA poll /poll
-  └── 返回 pending_commands
-      ├── SIGNAL  → OrderSend()
-      ├── MODIFY  → OrderModify()
-      ├── CLOSE   → OrderClose()
-      └── CLOSE_ALL → OrderClose()
+```text
+EA -> /register    -> accounts / strategy_mapping
+EA -> /heartbeat   -> account_runtime
+EA -> /tick        -> tick snapshot + runtime heartbeat
+EA -> /bars        -> account_state.bars
+EA -> /positions   -> account_state.positions
+EA -> /poll        -> commands pending -> delivered
+EA -> /order_result-> commands delivered -> success / error
 ```
 
-## 核心组件
+### 2. AI 兼容链路
 
-### 数据管理器 (data/manager.py)
+```text
+GET  /api/analysis_payload/{account_id}
+    -> account + runtime + bars + indicators + positions
 
-| 时间框架 | 数量 | 用途 |
-|----------|------|------|
-| M30 | 300根 | 短期信号 |
-| H1 | 200根 | 基准周期 |
-| H4 | 150根 | 主趋势 |
-| D1 | 60根 | 长周期结构 |
-
-指标计算：
-- EMA (20, 50)
-- RSI (14)
-- ADX (14)
-- MACD (12, 26, 9)
-- 布林带 (20, 2σ)
-- ATR (14)
-
-### 策略引擎 (strategy/engine.py)
-
-| 策略 | Magic | 描述 |
-|------|-------|------|
-| pullback | 20250231 | 趋势回调 |
-| breakout_retest | 20250232 | 突破回踩 |
-| divergence | 20250233 | RSI 背离 |
-| breakout_pyramid | 20250234 | 突破加仓 |
-| counter_pullback | 20250235 | 反向回调 |
-| range | 20250236 | 震荡市区间 |
-
-信号评分机制：
-- 基础分 5-6 分
-- 技术指标加成
-- AI 确认/否定调整
-- 最低阈值 5 分
-
-### AI 分析器 (strategy/ai_analyzer.py)
-
-调用外部 AI API，多周期综合分析：
-- M15/M30/H1/H4 分周期输出
-- 综合 bias (bullish/bearish/neutral)
-- confidence (0-100%)
-- exit_suggestion (hold/tighten/close_partial/close_all)
-
-### 持仓管理器 (strategy/position_mgr.py)
-
-自动风控处理：
-- 止损移动（跟踪）
-- 浮亏超限减仓
-- 日亏损限制
-
-## 通信协议
-
-### Heartbeat 字段
-
-```json
-{
-  "account_id": "90011087",
-  "symbol": "XAUUSD",
-  "server_time": "2026.03.30 12:00",
-  "is_trade_allowed": true,
-  "market_open": true,
-  "balance": 113893.72,
-  "equity": 88000.00,
-  "strategies": {
-    "pullback": {"enabled": true, "magic": 20250231, "positions": 2}
-  }
-}
+POST /api/ai_result/{account_id}
+    -> account_state.ai_result_json
+    -> optional risk-close command enqueue
+    -> publish SSE event `ai_result`
 ```
 
-### Bars 字段
+### 3. 控制台链路
 
-```json
-{
-  "account_id": "90011087",
-  "symbol": "XAUUSD",
-  "timeframe": "H4",
-  "bars": [
-    {"time": 1740000000, "open": 4430.00, "high": 4440.00, "low": 4420.00, "close": 4435.00, "volume": 1000}
-  ]
-}
+```text
+Browser -> GET /              -> Go serves Next static files
+Browser -> GET /api/v1/*      -> Admin aggregation APIs
+Browser -> GET /api/v1/events/stream?token=...
+       -> SSE event stream
 ```
 
-### Signal 指令
+控制台当前包含：
 
-```json
-{
-  "command_id": "sig_1740000000_90011087",
-  "action": "SIGNAL",
-  "type": "BUY",
-  "symbol": "XAUUSD",
-  "entry": 4435.00,
-  "sl": 4410.00,
-  "tp1": 4460.00,
-  "tp2": 4490.00,
-  "score": 7,
-  "strategy": "pullback",
-  "atr_mult": 1.5
-}
-```
+- `Overview`
+- `Accounts`
+- `Account Detail`
+- `Audit & Cutover`
 
-## 部署拓扑
+## 持久化模型
 
-```
-Internet
-   │
-   ├── Discord Webhook ──────→ Discord 频道
-   │
-   ├── 飞书 Webhook ─────────→ 飞书群
-   │
-   └── 用户浏览器 ──────────→ GB Server :8880
-                                │
-                                └── MT4 EA ──→ MT4 经纪商
-```
+SQLite 目前是系统记录源，开发和生产保持一致。当前持久化包含：
 
-## 服务端口
+- `accounts`
+- `account_runtime`
+- `account_state`
+- `tokens` / `token_accounts`
+- `commands` / `command_results`
+- `schema_migrations`
 
-| 端口 | 服务 | 说明 |
-|------|------|------|
-| 8880 | GB Server | Web + API |
-| 80/443 | 可选 | Nginx 反向代理 |
+虽然当前生产仍使用 SQLite，但持久化层已经限制在 `database/sql` + SQL migration 这一层，不把 SQLite 特性泄漏到上层业务接口，便于后续切换 PostgreSQL。
+
+## Cutover / Readiness
+
+双轨切换的两个核心能力已经进入 Go 主干：
+
+- `tests/replay/replay_test.go`：用固定快照验证策略和持仓管理输出
+- `internal/scheduler/shadow.go`：统一生成 cutover readiness 报告
+
+当前 readiness 规则：
+
+- `protocol_error_rate == 0`
+- `signal_drift_rate <= 0.02`
+- `command_drift_rate <= 0.02`
+- 已完成 replay 校验
+- 已具备 shadow 流量样本
+
+当前默认运行态仍是 `Baseline Only`：
+
+- replay 已验证
+- shadow 流量统计入口已就位
+- 但默认仓库还没有接入真实 mirrored traffic，因此 overview / audit 会显示待补 shadow 证据
+
+## 前端托管模型
+
+`web/dashboard` 使用 Next.js 静态导出：
+
+- `next build` 输出到 `web/dashboard/dist`
+- Go 在运行时直接托管该目录
+- `/accounts/{account_id}` 通过静态占位页面 + Go 路由 fallback 实现刷新可用
+- 生产环境不需要 Node SSR 进程
+
+## 外部集成
+
+- Discord：`internal/integration/discord`
+- 飞书：`internal/integration/feishu`
+- EA 版本分发：`internal/ea`
+- AI 兼容：`internal/integration/aurex`
 
 ## 相关文档
 
-- [API 端点](API.md)
-- [策略描述](STRATEGIES.md)
-- [部署指南](DEPLOYMENT.md)
+- [API 文档](./API.md)
+- [部署指南](./DEPLOYMENT.md)
+- [更新日志](./CHANGELOG.md)

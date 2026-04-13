@@ -216,6 +216,54 @@ func (r *AccountRepository) GetAccount(ctx context.Context, accountID string) (d
 	return account, nil
 }
 
+func (r *AccountRepository) ListAccounts(ctx context.Context) ([]domain.Account, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			account_id,
+			broker,
+			server_name,
+			account_name,
+			account_type,
+			currency,
+			leverage,
+			created_at,
+			updated_at
+		FROM accounts
+		ORDER BY account_id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list accounts: %w", err)
+	}
+	defer rows.Close()
+
+	accounts := make([]domain.Account, 0)
+	for rows.Next() {
+		var account domain.Account
+		var createdAt string
+		var updatedAt string
+		if err := rows.Scan(
+			&account.AccountID,
+			&account.Broker,
+			&account.ServerName,
+			&account.AccountName,
+			&account.AccountType,
+			&account.Currency,
+			&account.Leverage,
+			&createdAt,
+			&updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan account row: %w", err)
+		}
+		account.CreatedAt = parseTime(createdAt)
+		account.UpdatedAt = parseTime(updatedAt)
+		accounts = append(accounts, account)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate accounts: %w", err)
+	}
+	return accounts, nil
+}
+
 func (r *AccountRepository) GetRuntime(ctx context.Context, accountID string) (domain.AccountRuntime, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT

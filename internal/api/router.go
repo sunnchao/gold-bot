@@ -13,12 +13,15 @@ import (
 
 	"gold-bot/internal/domain"
 	"gold-bot/internal/ea"
+	"gold-bot/internal/realtime"
+	"gold-bot/internal/scheduler"
 )
 
 type AccountStore interface {
 	GetAccount(ctx context.Context, accountID string) (domain.Account, error)
 	GetRuntime(ctx context.Context, accountID string) (domain.AccountRuntime, error)
 	GetState(ctx context.Context, accountID string) (domain.AccountState, error)
+	ListAccounts(ctx context.Context) ([]domain.Account, error)
 	SaveAIResult(ctx context.Context, accountID string, payload json.RawMessage, updatedAt time.Time) error
 }
 
@@ -37,11 +40,17 @@ type CommandStore interface {
 	Enqueue(ctx context.Context, command domain.Command) error
 }
 
+type CutoverReporter interface {
+	BuildReport(ctx context.Context) (scheduler.CutoverReport, error)
+}
+
 type Dependencies struct {
 	Accounts AccountStore
 	Tokens   TokenStore
 	Commands CommandStore
 	Releases ea.ReleaseSource
+	Events   *realtime.Hub
+	Cutover  CutoverReporter
 }
 
 func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
@@ -49,6 +58,8 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 	aiHandler := aiHandler{deps: deps, now: time.Now}
 	tokenHandler := tokenHandler{tokens: deps.Tokens, now: time.Now}
 	eaHandler := eaHandler{tokens: deps.Tokens, releases: deps.Releases}
+	accountsHandler := accountsHandler{deps: deps, now: time.Now}
+	cutoverHandler := cutoverHandler{deps: deps, now: time.Now}
 
 	mux.Handle("/api/analysis_payload/", auth.requireToken(http.HandlerFunc(aiHandler.analysisPayload)))
 	mux.Handle("/api/ai_result/", auth.requireToken(http.HandlerFunc(aiHandler.aiResult)))
@@ -57,6 +68,13 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 	mux.Handle("/api/tokens/", auth.requireAdmin(http.HandlerFunc(tokenHandler.delete)))
 	mux.Handle("/api/ea/version", http.HandlerFunc(eaHandler.version))
 	mux.Handle("/api/ea/download", auth.requireToken(http.HandlerFunc(eaHandler.download)))
+	mux.Handle("/api/v1/overview", auth.requireAdmin(http.HandlerFunc(accountsHandler.overview)))
+	mux.Handle("/api/v1/accounts", auth.requireAdmin(http.HandlerFunc(accountsHandler.list)))
+	mux.Handle("/api/v1/accounts/", auth.requireAdmin(http.HandlerFunc(accountsHandler.detail)))
+	mux.Handle("/api/v1/audit", auth.requireAdmin(http.HandlerFunc(cutoverHandler.audit)))
+	if deps.Events != nil {
+		mux.Handle("/api/v1/events/stream", auth.requireAdmin(deps.Events))
+	}
 }
 
 type middleware struct {
