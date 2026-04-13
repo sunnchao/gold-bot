@@ -91,6 +91,14 @@ func (r *TokenRepository) AuthorizeAccount(ctx context.Context, token, accountID
 		return false, nil
 	}
 
+	isAdmin, err := r.IsAdmin(ctx, token)
+	if err != nil {
+		return false, err
+	}
+	if isAdmin {
+		return true, nil
+	}
+
 	exists, err := r.tokenExists(ctx, token)
 	if err != nil {
 		return false, err

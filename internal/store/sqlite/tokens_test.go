@@ -91,6 +91,33 @@ func TestTokenRepositoryAuthorizeAccountRejectsMissingToken(t *testing.T) {
 	}
 }
 
+func TestTokenRepositoryAuthorizeAccountAllowsAdminTokenForMultipleAccounts(t *testing.T) {
+	repo := newTestTokenRepository(t)
+	ctx := context.Background()
+
+	if err := repo.PutToken(ctx, "admin-token", "admin", true, time.Now().UTC()); err != nil {
+		t.Fatalf("PutToken returned error: %v", err)
+	}
+
+	for _, accountID := range []string{"90011087", "90022000"} {
+		allowed, err := repo.AuthorizeAccount(ctx, "admin-token", accountID)
+		if err != nil {
+			t.Fatalf("AuthorizeAccount(%s) returned error: %v", accountID, err)
+		}
+		if !allowed {
+			t.Fatalf("AuthorizeAccount(%s) returned false, want true", accountID)
+		}
+	}
+
+	accounts, err := repo.AccountsForToken(ctx, "admin-token")
+	if err != nil {
+		t.Fatalf("AccountsForToken returned error: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("AccountsForToken(admin-token) = %v, want []", accounts)
+	}
+}
+
 func TestTokenRepositoryAuthorizeAccountAllowsExistingBindingWithoutTokenWrite(t *testing.T) {
 	repo := newTestTokenRepository(t)
 	ctx := context.Background()

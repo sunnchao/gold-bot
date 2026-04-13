@@ -1,0 +1,15 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gold-bot:local
+    container_name: gold-bot
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8880:8880"
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    restart: unless-stopped
