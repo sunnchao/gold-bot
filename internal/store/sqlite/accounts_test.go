@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,6 +71,63 @@ func TestAccountRepositoryPersistsAccountAndRuntime(t *testing.T) {
 	}
 	if runtime.LastTickAt != now.Add(time.Minute) {
 		t.Fatalf("LastTickAt = %v, want %v", runtime.LastTickAt, now.Add(time.Minute))
+	}
+}
+
+func TestAccountRepositorySaveBarsHandlesConcurrentWrites(t *testing.T) {
+	repo := newTestAccountRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 13, 6, 49, 41, 0, time.UTC)
+
+	if err := repo.EnsureAccount(ctx, "900110872", now); err != nil {
+		t.Fatalf("EnsureAccount returned error: %v", err)
+	}
+
+	timeframes := []string{"M30", "H1", "H4", "D1"}
+	bars := []domain.Bar{
+		{
+			Time:   "1712988000",
+			Open:   3235.1,
+			High:   3237.2,
+			Low:    3232.8,
+			Close:  3236.6,
+			Volume: 42,
+		},
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(timeframes)*8)
+
+	for i := 0; i < 8; i++ {
+		for _, tf := range timeframes {
+			wg.Add(1)
+			go func(timeframe string, offset int) {
+				defer wg.Done()
+				<-start
+				errCh <- repo.SaveBars(ctx, "900110872", timeframe, bars, now.Add(time.Duration(offset)*time.Millisecond))
+			}(tf, i)
+		}
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("SaveBars returned error: %v", err)
+		}
+	}
+
+	state, err := repo.GetState(ctx, "900110872")
+	if err != nil {
+		t.Fatalf("GetState returned error: %v", err)
+	}
+	for _, tf := range timeframes {
+		if len(state.Bars[tf]) == 0 {
+			t.Fatalf("state.Bars[%s] is empty", tf)
+		}
 	}
 }
 

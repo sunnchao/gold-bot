@@ -26,6 +26,9 @@ func (r *AccountRepository) SaveBars(ctx context.Context, accountID, timeframe s
 		return fmt.Errorf("marshal bars %s/%s: %w", accountID, timeframe, err)
 	}
 
+	r.stateWriteMu.Lock()
+	defer r.stateWriteMu.Unlock()
+
 	return retrySQLiteBusy(func() error {
 		tx, err := r.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -178,6 +181,9 @@ func (r *AccountRepository) updateStateColumn(ctx context.Context, accountID, co
 		SET %s = ?, updated_at = ?
 		WHERE account_id = ?
 	`, column)
+
+	r.stateWriteMu.Lock()
+	defer r.stateWriteMu.Unlock()
 
 	return retrySQLiteBusy(func() error {
 		tx, err := r.db.BeginTx(ctx, nil)

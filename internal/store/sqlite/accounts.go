@@ -4,13 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	"gold-bot/internal/domain"
 )
 
 type AccountRepository struct {
-	db *sql.DB
+	db           *sql.DB
+	stateWriteMu sync.Mutex
 }
 
 func NewAccountRepository(db *sql.DB) *AccountRepository {
