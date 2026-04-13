@@ -157,6 +157,36 @@ func TestBarsReturnsReceivedCount(t *testing.T) {
 	}
 }
 
+func TestBarsAcceptsMQLUnixTimestampTimeField(t *testing.T) {
+	ts, accounts, _ := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bars", bytes.NewBufferString(`{
+		"account_id":"90011087",
+		"timeframe":"H1",
+		"bars":[{"time":1712971200,"open":3300,"high":3310,"low":3290,"close":3305,"volume":123}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "test-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /bars status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	state, err := accounts.GetState(context.Background(), "90011087")
+	if err != nil {
+		t.Fatalf("GetState returned error: %v", err)
+	}
+	if len(state.Bars["H1"]) != 1 {
+		t.Fatalf("len(state.Bars[H1]) = %d, want 1", len(state.Bars["H1"]))
+	}
+	if state.Bars["H1"][0].Time != "1712971200" {
+		t.Fatalf("state.Bars[H1][0].Time = %q, want %q", state.Bars["H1"][0].Time, "1712971200")
+	}
+}
+
 func TestPositionsReturnsCount(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 

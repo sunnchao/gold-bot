@@ -1,6 +1,11 @@
 package domain
 
-import "time"
+import (
+	"bytes"
+	"encoding/json"
+	"strconv"
+	"time"
+)
 
 type Bar struct {
 	Time   string  `json:"time"`
@@ -27,6 +32,84 @@ type Bar struct {
 
 	StochK float64 `json:"stoch_k,omitempty"`
 	StochD float64 `json:"stoch_d,omitempty"`
+}
+
+func (b *Bar) UnmarshalJSON(data []byte) error {
+	type rawBar struct {
+		Time   json.RawMessage `json:"time"`
+		Open   float64         `json:"open"`
+		High   float64         `json:"high"`
+		Low    float64         `json:"low"`
+		Close  float64         `json:"close"`
+		Volume int64           `json:"volume,omitempty"`
+
+		EMA20  float64 `json:"ema20,omitempty"`
+		EMA50  float64 `json:"ema50,omitempty"`
+		EMA200 float64 `json:"ema200,omitempty"`
+
+		ATR        float64 `json:"atr,omitempty"`
+		RSI        float64 `json:"rsi,omitempty"`
+		MACD       float64 `json:"macd,omitempty"`
+		MACDSignal float64 `json:"macd_signal,omitempty"`
+		MACDHist   float64 `json:"macd_hist,omitempty"`
+		ADX        float64 `json:"adx,omitempty"`
+
+		BBUpper float64 `json:"bb_upper,omitempty"`
+		BBLower float64 `json:"bb_lower,omitempty"`
+		BBMid   float64 `json:"bb_mid,omitempty"`
+
+		StochK float64 `json:"stoch_k,omitempty"`
+		StochD float64 `json:"stoch_d,omitempty"`
+	}
+
+	var raw rawBar
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*b = Bar{
+		Open:       raw.Open,
+		High:       raw.High,
+		Low:        raw.Low,
+		Close:      raw.Close,
+		Volume:     raw.Volume,
+		EMA20:      raw.EMA20,
+		EMA50:      raw.EMA50,
+		EMA200:     raw.EMA200,
+		ATR:        raw.ATR,
+		RSI:        raw.RSI,
+		MACD:       raw.MACD,
+		MACDSignal: raw.MACDSignal,
+		MACDHist:   raw.MACDHist,
+		ADX:        raw.ADX,
+		BBUpper:    raw.BBUpper,
+		BBLower:    raw.BBLower,
+		BBMid:      raw.BBMid,
+		StochK:     raw.StochK,
+		StochD:     raw.StochD,
+	}
+
+	if len(raw.Time) == 0 || bytes.Equal(raw.Time, []byte("null")) {
+		return nil
+	}
+
+	if raw.Time[0] == '"' {
+		return json.Unmarshal(raw.Time, &b.Time)
+	}
+
+	var unixSeconds int64
+	if err := json.Unmarshal(raw.Time, &unixSeconds); err == nil {
+		b.Time = strconv.FormatInt(unixSeconds, 10)
+		return nil
+	}
+
+	var unixFloat float64
+	if err := json.Unmarshal(raw.Time, &unixFloat); err == nil {
+		b.Time = strconv.FormatInt(int64(unixFloat), 10)
+		return nil
+	}
+
+	return json.Unmarshal(raw.Time, &b.Time)
 }
 
 type Position struct {
