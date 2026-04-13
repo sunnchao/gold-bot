@@ -60,8 +60,8 @@ func (r *AccountRepository) SaveBars(ctx context.Context, accountID, timeframe s
 
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE account_state
-			SET bars_json = ?, updated_at = ?
-			WHERE account_id = ?
+			SET bars_json = ` + ph(1) + `, updated_at = ` + ph(2) + `
+			WHERE account_id = ` + ph(3) + `
 		`,
 			string(merged),
 			formatTime(normalizeTime(updatedAt)),
@@ -116,7 +116,7 @@ func (r *AccountRepository) GetState(ctx context.Context, accountID string) (dom
 				strategy_mapping_json,
 				ai_result_json
 			FROM account_state
-			WHERE account_id = ?
+			WHERE account_id = ` + ph(4) + `
 		`, accountID)
 
 		var state domain.AccountState
@@ -178,8 +178,8 @@ func (r *AccountRepository) GetState(ctx context.Context, accountID string) (dom
 func (r *AccountRepository) updateStateColumn(ctx context.Context, accountID, column, value string, updatedAt time.Time) error {
 	query := fmt.Sprintf(`
 		UPDATE account_state
-		SET %s = ?, updated_at = ?
-		WHERE account_id = ?
+		SET %s = ` + ph(5) + `, updated_at = ` + ph(6) + `
+		WHERE account_id = ` + ph(7) + `
 	`, column)
 
 	r.stateWriteMu.Lock()
@@ -200,7 +200,7 @@ func (r *AccountRepository) updateStateColumn(ctx context.Context, accountID, co
 			INSERT INTO account_state (
 				account_id,
 				updated_at
-			) VALUES (?, ?)
+			) VALUES (` + ph(8) + `, ` + ph(9) + `)
 			ON CONFLICT(account_id) DO NOTHING
 		`,
 			accountID,
@@ -228,7 +228,7 @@ func loadStateJSON(ctx context.Context, tx *sql.Tx, accountID, column, fallback 
 		INSERT INTO account_state (
 			account_id,
 			updated_at
-		) VALUES (?, ?)
+		) VALUES (` + ph(10) + `, ` + ph(11) + `)
 		ON CONFLICT(account_id) DO NOTHING
 	`,
 		accountID,

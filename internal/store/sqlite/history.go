@@ -26,7 +26,7 @@ func (r *HistoryRepository) SaveCommandResult(ctx context.Context, result domain
 				ticket,
 				error_text,
 				created_at
-			) VALUES (?, ?, ?, ?, ?, ?)
+			) VALUES (` + ph(1) + `, ` + ph(2) + `, ` + ph(3) + `, ` + ph(4) + `, ` + ph(5) + `, ` + ph(6) + `)
 		`,
 			result.CommandID,
 			result.AccountID,

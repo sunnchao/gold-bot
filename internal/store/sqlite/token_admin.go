@@ -16,7 +16,7 @@ func (r *TokenRepository) IsAdmin(ctx context.Context, token string) (bool, erro
 		err := r.db.QueryRowContext(ctx, `
 			SELECT is_admin
 			FROM tokens
-			WHERE token = ?
+			WHERE token = ` + ph(1) + `
 		`, token).Scan(&isAdmin)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
@@ -68,7 +68,7 @@ func (r *TokenRepository) FindByPrefix(ctx context.Context, prefix string) (stri
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT token
 		FROM tokens
-		WHERE token = ? OR token LIKE ?
+		WHERE token = ` + ph(2) + ` OR token LIKE ` + ph(3) + `
 		ORDER BY token
 	`, prefix, prefix+"%")
 	if err != nil {
@@ -98,10 +98,10 @@ func (r *TokenRepository) Delete(ctx context.Context, token string) error {
 			}
 		}()
 
-		if _, err := tx.ExecContext(ctx, `DELETE FROM token_accounts WHERE token = ?`, token); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM token_accounts WHERE token = ` + ph(1), token); err != nil {
 			return fmt.Errorf("delete token accounts for %s: %w", token, err)
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM tokens WHERE token = ?`, token); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM tokens WHERE token = ` + ph(2), token); err != nil {
 			return fmt.Errorf("delete token %s: %w", token, err)
 		}
 

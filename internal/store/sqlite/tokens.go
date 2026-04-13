@@ -24,7 +24,7 @@ func (r *TokenRepository) PutToken(ctx context.Context, token, name string, isAd
 			name,
 			is_admin,
 			created_at
-		) VALUES (?, ?, ?, ?)
+		) VALUES (` + ph(1) + `, ` + ph(2) + `, ` + ph(3) + `, ` + ph(4) + `)
 		ON CONFLICT(token) DO UPDATE SET
 			name = excluded.name,
 			is_admin = excluded.is_admin
@@ -51,7 +51,7 @@ func (r *TokenRepository) Validate(ctx context.Context, token string) (bool, err
 		err := r.db.QueryRowContext(ctx, `
 			SELECT COUNT(1)
 			FROM tokens
-			WHERE token = ?
+			WHERE token = ` + ph(5) + `
 		`, token).Scan(&count)
 		switch {
 		case isSQLiteBusy(err):
@@ -76,7 +76,7 @@ func (r *TokenRepository) BindAccount(ctx context.Context, token, accountID stri
 		INSERT INTO token_accounts (
 			token,
 			account_id
-		) VALUES (?, ?)
+		) VALUES (` + ph(6) + `, ` + ph(7) + `)
 		ON CONFLICT(token, account_id) DO NOTHING
 	`, token, accountID)
 	if err != nil {
@@ -196,7 +196,7 @@ func (r *TokenRepository) tokenExists(ctx context.Context, token string) (bool, 
 		err := r.db.QueryRowContext(ctx, `
 			SELECT token
 			FROM tokens
-			WHERE token = ?
+			WHERE token = ` + ph(8) + `
 		`, token).Scan(&matchedToken)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
@@ -220,7 +220,7 @@ func (r *TokenRepository) tokenAccountExists(ctx context.Context, token, account
 		err := r.db.QueryRowContext(ctx, `
 			SELECT account_id
 			FROM token_accounts
-			WHERE token = ? AND account_id = ?
+			WHERE token = ` + ph(9) + ` AND account_id = ` + ph(10) + `
 		`, token, accountID).Scan(&matchedAccount)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
@@ -244,7 +244,7 @@ func (r *TokenRepository) tokenHasAnyAccount(ctx context.Context, token string) 
 		err := r.db.QueryRowContext(ctx, `
 			SELECT account_id
 			FROM token_accounts
-			WHERE token = ?
+			WHERE token = ` + ph(11) + `
 			LIMIT 1
 		`, token).Scan(&matchedAccount)
 		switch {
@@ -269,16 +269,16 @@ func (r *TokenRepository) bindFirstAccount(ctx context.Context, token, accountID
 			token,
 			account_id
 		)
-		SELECT ?, ?
+		SELECT ` + ph(12) + `, ` + ph(13) + `
 		WHERE EXISTS (
 			SELECT 1
 			FROM tokens
-			WHERE token = ?
+			WHERE token = ` + ph(14) + `
 		)
 		AND NOT EXISTS (
 			SELECT 1
 			FROM token_accounts
-			WHERE token = ?
+			WHERE token = ` + ph(15) + `
 		)
 	`, token, accountID, token, token)
 	if err != nil {
@@ -301,7 +301,7 @@ func (r *TokenRepository) AccountsForToken(ctx context.Context, token string) ([
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT account_id
 		FROM token_accounts
-		WHERE token = ?
+		WHERE token = ` + ph(16) + `
 		ORDER BY account_id
 	`, token)
 	if err != nil {

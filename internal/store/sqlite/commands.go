@@ -42,7 +42,7 @@ func (r *CommandRepository) Enqueue(ctx context.Context, command domain.Command)
 				delivered_at,
 				acked_at,
 				failed_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (` + ph(1) + `, ` + ph(2) + `, ` + ph(3) + `, ` + ph(4) + `, ` + ph(5) + `, ` + ph(6) + `, ` + ph(7) + `, ` + ph(8) + `, ` + ph(9) + `)
 		`,
 			command.CommandID,
 			command.AccountID,
@@ -94,7 +94,7 @@ func (r *CommandRepository) takePendingOnce(ctx context.Context, accountID strin
 			acked_at,
 			failed_at
 		FROM commands
-		WHERE account_id = ? AND status = ?
+		WHERE account_id = ` + ph(10) + ` AND status = ` + ph(11) + `
 		ORDER BY created_at, command_id
 	`, accountID, string(domain.CommandStatusPending))
 	if err != nil {
@@ -112,8 +112,8 @@ func (r *CommandRepository) takePendingOnce(ctx context.Context, accountID strin
 
 		result, err := tx.ExecContext(ctx, `
 			UPDATE commands
-			SET status = ?, delivered_at = ?
-			WHERE command_id = ? AND status = ?
+			SET status = ` + ph(12) + `, delivered_at = ` + ph(13) + `
+			WHERE command_id = ` + ph(14) + ` AND status = ` + ph(15) + `
 		`,
 			string(domain.CommandStatusDelivered),
 			formatTime(ts),
@@ -181,8 +181,8 @@ func (r *CommandRepository) applyResultOnce(
 
 	res, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		UPDATE commands
-		SET status = ?, %s = ?
-		WHERE command_id = ? AND account_id = ? AND status = ?
+		SET status = ` + ph(16) + `, %s = ` + ph(17) + `
+		WHERE command_id = ` + ph(18) + ` AND account_id = ` + ph(19) + ` AND status = ` + ph(20) + `
 	`, column),
 		string(status),
 		formatTime(normalizeTime(result.CreatedAt)),
@@ -210,7 +210,7 @@ func (r *CommandRepository) applyResultOnce(
 			ticket,
 			error_text,
 			created_at
-		) VALUES (?, ?, ?, ?, ?, ?)
+		) VALUES (` + ph(21) + `, ` + ph(22) + `, ` + ph(23) + `, ` + ph(24) + `, ` + ph(25) + `, ` + ph(26) + `)
 	`,
 		result.CommandID,
 		result.AccountID,
@@ -243,7 +243,7 @@ func (r *CommandRepository) Get(ctx context.Context, commandID string) (domain.C
 				acked_at,
 				failed_at
 			FROM commands
-			WHERE command_id = ?
+			WHERE command_id = ` + ph(27) + `
 		`, commandID)
 
 		command, err := scanCommand(row)

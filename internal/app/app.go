@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"gold-bot/internal/api"
@@ -26,13 +27,20 @@ type App struct {
 func New(cfg config.Config) (*App, error) {
 	log.Printf("[APP] 🚀 初始化 Gold Bolt Server...")
 	log.Printf("[APP] 📂 DB path: %s", cfg.DBPath)
+	if cfg.DSN != "" {
+		log.Printf("[APP] 🐘 PostgreSQL DSN: %s", maskDSN(cfg.DSN))
+	}
 	log.Printf("[APP] 🌐 HTTP addr: %s", cfg.HTTPAddr)
 
-	db, err := store.OpenSQLite(cfg.DBPath)
+	db, err := store.OpenDB(struct{ DBPath, DSN string }{DBPath: cfg.DBPath, DSN: cfg.DSN})
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[APP] ✅ SQLite 数据库已打开")
+	if store.IsPostgres() {
+		log.Printf("[APP] ✅ PostgreSQL 数据库已连接")
+	} else {
+		log.Printf("[APP] ✅ SQLite 数据库已打开")
+	}
 
 	if err := store.RunMigrations(db); err != nil {
 		_ = db.Close()
@@ -109,4 +117,17 @@ func (a *App) Close() error {
 	}
 
 	return err
+}
+
+func maskDSN(dsn string) string {
+	// postgres://user:***@host:5432/db
+	if i := strings.Index(dsn, "://"); i >= 0 {
+		rest := dsn[i+3:]
+		if j := strings.Index(rest, "@"); j >= 0 {
+			if k := strings.Index(rest[:j], ":"); k >= 0 {
+				return dsn[:i+3+k+1] + "***" + rest[j:]
+			}
+		}
+	}
+	return dsn
 }
