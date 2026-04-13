@@ -1,6 +1,7 @@
 package legacy
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -27,18 +28,24 @@ type HeartbeatRequest struct {
 func (h *HeartbeatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req HeartbeatRequest
 	if err := decodeJSONBody(r, &req); err != nil {
+		log.Printf("[HEARTBEAT] ❌ 解析请求失败: %v", err)
 		writeBadRequest(w, "invalid JSON")
 		return
 	}
 
+	log.Printf("[HEARTBEAT] 💓 account=%s | balance=%.2f equity=%.2f margin=%.2f free_margin=%.2f",
+		req.AccountID, req.Balance, req.Equity, req.Margin, req.FreeMargin)
+
 	now := h.now().UTC()
 	accountID, err := requireAccountID(req.AccountID)
 	if err != nil {
+		log.Printf("[HEARTBEAT] ❌ %v", err)
 		writeBadRequest(w, err.Error())
 		return
 	}
 	allowed, err := authorizeAccountWrite(r, h.tokens, accountID)
 	if err != nil {
+		log.Printf("[HEARTBEAT] ❌ account=%s | 授权错误: %v", accountID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),
@@ -46,6 +53,7 @@ func (h *HeartbeatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !allowed {
+		log.Printf("[HEARTBEAT] 🔒 account=%s | token 无权限", accountID)
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"status":  "ERROR",
 			"message": "token not authorized for account",
@@ -53,6 +61,7 @@ func (h *HeartbeatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.accounts.EnsureAccount(r.Context(), accountID, now); err != nil {
+		log.Printf("[HEARTBEAT] ❌ account=%s | EnsureAccount 失败: %v", accountID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),
@@ -73,6 +82,7 @@ func (h *HeartbeatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		LastHeartbeatAt: now,
 		UpdatedAt:       now,
 	}); err != nil {
+		log.Printf("[HEARTBEAT] ❌ account=%s | SaveHeartbeat 失败: %v", accountID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),
@@ -80,6 +90,7 @@ func (h *HeartbeatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[HEARTBEAT] ✅ account=%s | 已更新", accountID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":      "OK",
 		"server_time": now.Unix(),

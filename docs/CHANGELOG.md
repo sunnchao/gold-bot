@@ -2,6 +2,27 @@
 
 ## 2026-04-13
 
+### v1.1.1
+
+- 全面增加服务端日志输出，覆盖所有 Legacy/API 接口的请求/响应生命周期
+- Legacy 接口日志：register、heartbeat、tick、bars、positions、poll、order_result
+  - 每个请求记录：账户ID、关键参数、授权状态、操作结果
+  - 错误场景详细记录：解析失败、授权拒绝、数据库错误
+- 策略引擎日志：技术面分析全流程
+  - 市场状态：Price、ATR、RSI、ADX、EMA趋势、H4趋势、MACD柱
+  - 四种策略逐一输出：pullback、breakout_retest、divergence、breakout_pyramid
+  - H4 趋势过滤结果
+  - 防重复持仓检查
+  - 最终信号输出：方向、入场、止损、止盈、策略名、评分
+- 持仓管理器日志：
+  - 每个持仓的状态：入场价、浮盈ATR、最大利润、保本状态
+  - 每个管理决策：保本、TP1分批止盈、关键位止损、TP2止盈、趋势反转、动态追踪止损
+- AI 分析日志：
+  - analysis_payload 请求记录
+  - ai_result 接收：bias、confidence、exit_suggestion
+  - 风险警报触发详情
+- App 启动日志增强：DB路径、HTTP地址、路由注册清单
+
 ### v1.0.10
 
 - 修复 Legacy `/bars` 接口与 MQL 客户端的时间字段兼容性，接受 Unix 时间戳整数 `time`

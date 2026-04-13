@@ -1,6 +1,7 @@
 package legacy
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -25,18 +26,24 @@ type TickRequest struct {
 func (h *TickHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req TickRequest
 	if err := decodeJSONBody(r, &req); err != nil {
+		log.Printf("[TICK] ❌ 解析请求失败: %v", err)
 		writeBadRequest(w, "invalid JSON")
 		return
 	}
 
+	log.Printf("[TICK] 📊 account=%s | symbol=%s bid=%.5f ask=%.5f spread=%.3f time=%s",
+		req.AccountID, req.Symbol, req.Bid, req.Ask, req.Spread, req.Time)
+
 	now := h.now().UTC()
 	accountID, err := requireAccountID(req.AccountID)
 	if err != nil {
+		log.Printf("[TICK] ❌ %v", err)
 		writeBadRequest(w, err.Error())
 		return
 	}
 	allowed, err := authorizeAccountWrite(r, h.tokens, accountID)
 	if err != nil {
+		log.Printf("[TICK] ❌ account=%s | 授权错误: %v", accountID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),
@@ -44,6 +51,7 @@ func (h *TickHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !allowed {
+		log.Printf("[TICK] 🔒 account=%s | token 无权限", accountID)
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"status":  "ERROR",
 			"message": "token not authorized for account",

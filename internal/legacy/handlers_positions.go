@@ -1,6 +1,7 @@
 package legacy
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -21,13 +22,16 @@ type PositionsRequest struct {
 func (h *PositionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req PositionsRequest
 	if err := decodeJSONBody(r, &req); err != nil {
+		log.Printf("[POSITIONS] ❌ 解析请求失败: %v", err)
 		writeBadRequest(w, "invalid JSON")
 		return
 	}
 
+	log.Printf("[POSITIONS] 📋 account=%s | positions_count=%d", req.AccountID, len(req.Positions))
 	now := h.now().UTC()
 	accountID, err := requireAccountID(req.AccountID)
 	if err != nil {
+		log.Printf("[POSITIONS] ❌ %v", err)
 		writeBadRequest(w, err.Error())
 		return
 	}

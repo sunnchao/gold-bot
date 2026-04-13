@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"strings"
 
@@ -18,12 +19,15 @@ func New() Engine {
 
 func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []domain.AnalysisLog) {
 	logs := make([]domain.AnalysisLog, 0, 8)
+	log.Printf("[STRATEGY] 🔍 开始分析 account=%s | price=%.2f | H1 bars=%d | positions=%d",
+		snapshot.AccountID, snapshot.CurrentPrice, len(snapshot.Bars["H1"]), len(snapshot.Positions))
 
 	h1 := snapshot.Bars["H1"]
 	m30 := snapshot.Bars["M30"]
 	h4 := snapshot.Bars["H4"]
 
 	if len(h1) < 50 {
+		log.Printf("[STRATEGY] ⚠️ H1数据不足: %d/50", len(h1))
 		logs = append(logs, domain.AnalysisLog{
 			Level:    "warn",
 			Strategy: "系统",
@@ -35,6 +39,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	price := snapshot.CurrentPrice
 	atr := h1[len(h1)-1].ATR
 	if price <= 0 || atr <= 0 || math.IsNaN(price) || math.IsNaN(atr) {
+		log.Printf("[STRATEGY] ⚠️ 价格或ATR异常: price=%.2f, ATR=%.2f", price, atr)
 		logs = append(logs, domain.AnalysisLog{
 			Level:    "warn",
 			Strategy: "系统",
@@ -84,12 +89,15 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 			price, atr, last.RSI, last.ADX, trend, h4Trend, h4ADX, last.MACDHist,
 		),
 	})
+	log.Printf("[STRATEGY] 📊 市场状态 | Price=%.2f | ATR=%.2f | RSI=%.1f | ADX=%.1f | EMA趋势(H1)=%s | H4=%s(ADX=%.1f) | MACD柱=%.2f",
+		price, atr, last.RSI, last.ADX, trend, h4Trend, h4ADX, last.MACDHist)
 
 	signals := make([]domain.Signal, 0, 4)
 
 	if signal, detail := e.checkPullback(h1, price, atr); signal != nil {
 		signals = append(signals, *signal)
 		logs = append(logs, detail)
+		log.Printf("[STRATEGY] %s", detail.Message)
 	} else {
 		logs = append(logs, detail)
 	}
@@ -97,6 +105,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	if signal, detail := e.checkBreakoutRetest(h1, price, atr); signal != nil {
 		signals = append(signals, *signal)
 		logs = append(logs, detail)
+		log.Printf("[STRATEGY] %s", detail.Message)
 	} else {
 		logs = append(logs, detail)
 	}
@@ -104,6 +113,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	if signal, detail := e.checkDivergence(h1, m30, price, atr); signal != nil {
 		signals = append(signals, *signal)
 		logs = append(logs, detail)
+		log.Printf("[STRATEGY] %s", detail.Message)
 	} else {
 		logs = append(logs, detail)
 	}
@@ -111,11 +121,13 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	if signal, detail := e.checkBreakoutPyramid(h1, price, atr); signal != nil {
 		signals = append(signals, *signal)
 		logs = append(logs, detail)
+		log.Printf("[STRATEGY] %s", detail.Message)
 	} else {
 		logs = append(logs, detail)
 	}
 
 	if len(signals) == 0 {
+		log.Printf("[STRATEGY] 📭 本轮无信号触发")
 		logs = append(logs, domain.AnalysisLog{
 			Level:    "info",
 			Strategy: "汇总",
@@ -132,6 +144,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 			}
 		}
 		if removed := len(signals) - len(filtered); removed > 0 {
+			log.Printf("[STRATEGY] 🔄 H4=%s | 过滤掉 %d 个逆势信号,保留 %d 个", h4Trend, removed, len(filtered))
 			logs = append(logs, domain.AnalysisLog{
 				Level:    "warn",
 				Strategy: "H4过滤",
@@ -157,6 +170,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	}
 
 	if best.Score < e.MinScore {
+		log.Printf("[STRATEGY] ⏭ 最优信号评分 %d < 最低要求 %d,过滤", best.Score, e.MinScore)
 		logs = append(logs, domain.AnalysisLog{
 			Level:    "info",
 			Strategy: "汇总",
@@ -167,6 +181,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 
 	for _, position := range snapshot.Positions {
 		if math.Abs(best.Entry-position.OpenPrice) < atr && strings.ToUpper(position.Type) == best.Side {
+			log.Printf("[STRATEGY] 🔒 防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice)
 			logs = append(logs, domain.AnalysisLog{
 				Level:    "warn",
 				Strategy: "汇总",
@@ -196,6 +211,8 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 			best.Side, best.Entry, best.StopLoss, best.Strategy, best.Score,
 		),
 	})
+	log.Printf("[STRATEGY] ✅ 发出信号: %s @ %.2f | SL=%.2f | TP1=%.2f | TP2=%.2f | 策略=%s | 评分=%d",
+		best.Side, best.Entry, best.StopLoss, best.TP1, best.TP2, best.Strategy, best.Score)
 	return &best, logs
 }
 

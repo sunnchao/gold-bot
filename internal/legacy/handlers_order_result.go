@@ -3,6 +3,7 @@ package legacy
 import (
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ type OrderResultRequest struct {
 func (h *OrderResultHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req OrderResultRequest
 	if err := decodeJSONBody(r, &req); err != nil {
+		log.Printf("[ORDER_RESULT] ❌ 解析请求失败: %v", err)
 		writeBadRequest(w, "invalid JSON")
 		return
 	}
@@ -69,6 +71,7 @@ func (h *OrderResultHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ts := h.now().UTC()
+	log.Printf("[ORDER_RESULT] 📝 account=%s | cmd=%s | result=%s ticket=%d error=%s", req.AccountID, req.CommandID, req.Result, req.Ticket, req.Error)
 	if err := h.commands.ApplyResult(r.Context(), domain.CommandResult{
 		CommandID: req.CommandID,
 		AccountID: accountID,
@@ -84,5 +87,6 @@ func (h *OrderResultHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[ORDER_RESULT] ✅ cmd=%s | 已处理", req.CommandID)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "OK"})
 }

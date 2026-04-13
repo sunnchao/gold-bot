@@ -1,6 +1,7 @@
 package legacy
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -27,18 +28,24 @@ type RegisterRequest struct {
 func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 	if err := decodeJSONBody(r, &req); err != nil {
+		log.Printf("[REGISTER] ❌ account=%s | 解析请求失败: %v", req.AccountID, err)
 		writeBadRequest(w, "invalid JSON")
 		return
 	}
 
+	log.Printf("[REGISTER] 📥 account=%s | broker=%s server=%s leverage=%d currency=%s",
+		req.AccountID, req.Broker, req.ServerName, req.Leverage, req.Currency)
+
 	now := h.now().UTC()
 	accountID, err := requireAccountID(req.AccountID)
 	if err != nil {
+		log.Printf("[REGISTER] ❌ %v", err)
 		writeBadRequest(w, err.Error())
 		return
 	}
 	allowed, err := authorizeAccountWrite(r, h.tokens, accountID)
 	if err != nil {
+		log.Printf("[REGISTER] ❌ account=%s | 授权错误: %v", accountID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),
@@ -46,6 +53,7 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !allowed {
+		log.Printf("[REGISTER] 🔒 account=%s | token 无权限", accountID)
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"status":  "ERROR",
 			"message": "token not authorized for account",
@@ -62,6 +70,7 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Leverage:    req.Leverage,
 		UpdatedAt:   now,
 	}); err != nil {
+		log.Printf("[REGISTER] ❌ account=%s | UpsertAccount 失败: %v", accountID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),
@@ -70,6 +79,7 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.StrategyMapping) > 0 {
 		if err := h.accounts.SaveStrategyMapping(r.Context(), accountID, req.StrategyMapping, now); err != nil {
+			log.Printf("[REGISTER] ❌ account=%s | SaveStrategyMapping 失败: %v", accountID, err)
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"status":  "ERROR",
 				"message": err.Error(),
@@ -78,6 +88,7 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	log.Printf("[REGISTER] ✅ account=%s | 注册成功", accountID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "OK",
 		"message": "registered",

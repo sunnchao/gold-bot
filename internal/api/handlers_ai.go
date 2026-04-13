@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -22,6 +23,8 @@ func (h aiHandler) analysisPayload(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
+	log.Printf("[AI] 📊 analysis_payload 请求 | account=%s", accountID)
 
 	allowed, err := authorizeAccount(r.Context(), h.deps.Tokens, tokenFromContext(r.Context()), accountID)
 	if err != nil {
@@ -59,6 +62,8 @@ func (h aiHandler) aiResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[AI] 🤖 ai_result 请求 | account=%s", accountID)
+
 	allowed, err := authorizeAccount(r.Context(), h.deps.Tokens, tokenFromContext(r.Context()), accountID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
@@ -82,9 +87,24 @@ func (h aiHandler) aiResult(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.now().UTC()
 	if err := h.deps.Accounts.SaveAIResult(r.Context(), accountID, raw, now); err != nil {
+		log.Printf("[AI] ❌ account=%s | SaveAIResult 失败: %v", accountID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
 		return
 	}
+
+	log.Printf("[AI] ✅ account=%s | AI 分析结果已保存 | payload_size=%d bytes", accountID, len(raw))
+
+	// Log AI analysis summary if available
+	if bias, ok := payload["bias"].(string); ok {
+		confidence := payload["confidence"]
+		exitSug := payload["exit_suggestion"]
+		log.Printf("[AI] 📈 account=%s | bias=%s confidence=%v exit_suggestion=%v", accountID, bias, confidence, exitSug)
+	}
+	if riskAlert, ok := payload["risk_alert"].(bool); ok && riskAlert {
+		log.Printf("[AI] 🚨 account=%s | 风险警报触发! reason=%s exit=%s",
+			accountID, asString(payload["alert_reason"]), asString(payload["exit_suggestion"]))
+	}
+
 	if h.deps.Events != nil {
 		h.deps.Events.Publish(domain.Event{
 			EventID:   fmt.Sprintf("evt_ai_%d", now.UnixNano()),
@@ -102,6 +122,7 @@ func (h aiHandler) aiResult(w http.ResponseWriter, r *http.Request) {
 		if strings.EqualFold(asString(payload["exit_suggestion"]), "close_all") {
 			action = domain.CommandActionCloseAll
 		}
+		log.Printf("[AI] 🚨 account=%s | 触发风控指令: %s | reason=%s", accountID, action, asString(payload["alert_reason"]))
 		command := domain.Command{
 			CommandID: commandID,
 			AccountID: accountID,

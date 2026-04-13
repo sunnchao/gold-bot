@@ -2,6 +2,7 @@ package positionmgr
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -51,6 +52,9 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 		return nil
 	}
 
+	log.Printf("[POSMGR] 🔍 分析 %d 个持仓 | price=%.2f ATR=%.2f",
+		len(snapshot.Positions), snapshot.CurrentPrice, snapshot.CurrentATR)
+
 	tp1Multi, tp2Multi := adaptiveATRMultis(snapshot.H1Bars)
 	commands := make([]domain.PositionCommand, 0, len(snapshot.Positions))
 	active := make(map[int64]struct{}, len(snapshot.Positions))
@@ -83,41 +87,52 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			state.MaxProfitATR = profitATR
 		}
 
+		log.Printf("[POSMGR] 📋 #%d %s %.2f手 | entry=%.2f profit=%.2f (%.2f ATR) | max_profit=%.2f ATR | BE=%v",
+			position.Ticket, side, position.Lots, position.OpenPrice,
+			profitPips, profitATR, state.MaxProfitATR, state.BEMoved)
+
 		if command, ok := m.checkTimeStop(position, state, side, profitATR); ok {
+			log.Printf("[POSMGR] ⏰ #%d | 时间止损: %s", position.Ticket, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
 			continue
 		}
 
 		if command, ok := m.checkBreakeven(position, &state, profitATR); ok {
+			log.Printf("[POSMGR] 🛡️ #%d | 保本止损: SL→%.2f | reason=%s", position.Ticket, command.NewSL, command.Reason)
 			commands = append(commands, command)
 		}
 
 		if command, ok := m.checkTP1(position, &state, side, snapshot.CurrentATR, profitATR, tp1Multi, snapshot.H1Bars); ok {
+			log.Printf("[POSMGR] 🎯 #%d | TP1: %s %.2f手 | reason=%s", position.Ticket, command.Action, command.Lots, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
 			continue
 		}
 
 		if command, ok := m.checkKeyLevel(position, &state, side, snapshot.CurrentPrice, snapshot.CurrentATR, profitATR); ok {
+			log.Printf("[POSMGR] 📍 #%d | 关键位止损: %s | reason=%s", position.Ticket, command.Action, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
 			continue
 		}
 
 		if command, ok := m.checkTP2(position, &state, side, profitATR, tp2Multi, snapshot.H1Bars); ok {
+			log.Printf("[POSMGR] 🎯 #%d | TP2: %s %.2f手 | reason=%s", position.Ticket, command.Action, command.Lots, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
 			continue
 		}
 
 		if command, ok := m.checkTrendReversal(position, state, side, snapshot.CurrentPrice, profitATR, snapshot.H1Bars); ok {
+			log.Printf("[POSMGR] 🔄 #%d | 趋势反转: %s | reason=%s", position.Ticket, command.Action, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
 			continue
 		}
 
 		if command, ok := m.checkDynamicTrailing(position, state, profitATR); ok {
+			log.Printf("[POSMGR] 📐 #%d | 动态追踪: SL→%.2f | reason=%s", position.Ticket, command.NewSL, command.Reason)
 			commands = append(commands, command)
 		}
 
@@ -130,6 +145,9 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 		}
 	}
 
+	if len(commands) > 0 {
+		log.Printf("[POSMGR] ✅ 生成 %d 条持仓管理指令", len(commands))
+	}
 	return commands
 }
 

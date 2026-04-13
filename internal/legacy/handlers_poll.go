@@ -1,6 +1,7 @@
 package legacy
 
 import (
+	"log"
 	"net/http"
 	"time"
 )
@@ -18,6 +19,7 @@ type PollRequest struct {
 func (h *PollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req PollRequest
 	if err := decodeJSONBody(r, &req); err != nil {
+		log.Printf("[POLL] ❌ 解析请求失败: %v", err)
 		writeBadRequest(w, "invalid JSON")
 		return
 	}
@@ -29,6 +31,7 @@ func (h *PollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	allowed, err := authorizeAccountWrite(r, h.tokens, accountID)
 	if err != nil {
+		log.Printf("[POLL] ❌ account=%s | TakePending 失败: %v", req.AccountID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),
@@ -50,8 +53,10 @@ func (h *PollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[POLL] 📡 account=%s | 拉取待执行命令", req.AccountID)
 	commands, err := h.commands.TakePending(r.Context(), accountID, h.now().UTC())
 	if err != nil {
+		log.Printf("[POLL] ❌ account=%s | TakePending 失败: %v", req.AccountID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),
