@@ -101,7 +101,7 @@ func (r *TokenRepository) Delete(ctx context.Context, token string) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM token_accounts WHERE token = `+ph(1)+pgText(), token); err != nil {
 			return fmt.Errorf("delete token accounts for %s: %w", token, err)
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM tokens WHERE token = `+ph(2)+pgText(), token); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM tokens WHERE token = `+ph(1)+pgText(), token); err != nil {
 			return fmt.Errorf("delete token %s: %w", token, err)
 		}
 

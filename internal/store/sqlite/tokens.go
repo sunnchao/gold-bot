@@ -17,15 +17,6 @@ func NewTokenRepository(db *sql.DB) *TokenRepository {
 	return &TokenRepository{db: db}
 }
 
-// pgText returns a PostgreSQL-compatible text cast suffix.
-// For SQLite it returns an empty string; for PostgreSQL it returns "::text".
-func pgText() string {
-	if Dialect() == "postgres" {
-		return "::text"
-	}
-	return ""
-}
-
 func (r *TokenRepository) PutToken(ctx context.Context, token, name string, isAdmin bool, createdAt time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO tokens (
@@ -85,7 +76,7 @@ func (r *TokenRepository) BindAccount(ctx context.Context, token, accountID stri
 		INSERT INTO token_accounts (
 			token,
 			account_id
-		) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`)
+		) VALUES (`+ph(1)+pgText()+`, `+ph(2)+pgText()+`)
 		ON CONFLICT(token, account_id) DO NOTHING
 	`, token, accountID)
 	if err != nil {
@@ -229,7 +220,7 @@ func (r *TokenRepository) tokenAccountExists(ctx context.Context, token, account
 		err := r.db.QueryRowContext(ctx, `
 			SELECT account_id
 			FROM token_accounts
-			WHERE token = `+ph(1)+pgText()+` AND account_id = `+ph(2)+`
+			WHERE token = `+ph(1)+pgText()+` AND account_id = `+ph(2)+pgText()+`
 		`, token, accountID).Scan(&matchedAccount)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):

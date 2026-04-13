@@ -39,6 +39,17 @@ func phs(n int) string {
 	return strings.Join(parts, ", ")
 }
 
+// pgText returns a PostgreSQL-compatible text cast suffix.
+// For SQLite it returns an empty string; for PostgreSQL it returns "::text".
+// Use this when a WHERE clause compares a TEXT column against a string parameter
+// to avoid PostgreSQL's "could not determine data type of parameter" error.
+func pgText() string {
+	if isPg() {
+		return "::text"
+	}
+	return ""
+}
+
 // Dialect returns "postgres" or "sqlite" based on DSN env var.
 func Dialect() string {
 	if isPg() {

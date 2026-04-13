@@ -60,8 +60,8 @@ func (r *AccountRepository) SaveBars(ctx context.Context, accountID, timeframe s
 
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE account_state
-			SET bars_json = ` + ph(1) + `, updated_at = ` + ph(2) + `
-			WHERE account_id = ` + ph(3) + `
+			SET bars_json = `+ph(1)+`, updated_at = `+ph(2)+`
+			WHERE account_id = `+ph(3)+pgText()+`
 		`,
 			string(merged),
 			formatTime(normalizeTime(updatedAt)),
@@ -116,7 +116,7 @@ func (r *AccountRepository) GetState(ctx context.Context, accountID string) (dom
 				strategy_mapping_json,
 				ai_result_json
 			FROM account_state
-			WHERE account_id = ` + ph(4) + `
+			WHERE account_id = `+ph(1)+pgText()+`
 		`, accountID)
 
 		var state domain.AccountState
@@ -178,8 +178,8 @@ func (r *AccountRepository) GetState(ctx context.Context, accountID string) (dom
 func (r *AccountRepository) updateStateColumn(ctx context.Context, accountID, column, value string, updatedAt time.Time) error {
 	query := fmt.Sprintf(`
 		UPDATE account_state
-		SET %s = ` + ph(5) + `, updated_at = ` + ph(6) + `
-		WHERE account_id = ` + ph(7) + `
+		SET %s = `+ph(1)+`, updated_at = `+ph(2)+`
+		WHERE account_id = `+ph(3)+pgText()+`
 	`, column)
 
 	r.stateWriteMu.Lock()
@@ -200,7 +200,7 @@ func (r *AccountRepository) updateStateColumn(ctx context.Context, accountID, co
 			INSERT INTO account_state (
 				account_id,
 				updated_at
-			) VALUES (` + ph(8) + `, ` + ph(9) + `)
+			) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`)
 			ON CONFLICT(account_id) DO NOTHING
 		`,
 			accountID,
@@ -228,7 +228,7 @@ func loadStateJSON(ctx context.Context, tx *sql.Tx, accountID, column, fallback 
 		INSERT INTO account_state (
 			account_id,
 			updated_at
-		) VALUES (` + ph(10) + `, ` + ph(11) + `)
+		) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`)
 		ON CONFLICT(account_id) DO NOTHING
 	`,
 		accountID,
@@ -237,7 +237,7 @@ func loadStateJSON(ctx context.Context, tx *sql.Tx, accountID, column, fallback 
 		return "", fmt.Errorf("ensure account state %s: %w", accountID, err)
 	}
 
-	query := fmt.Sprintf("SELECT %s FROM account_state WHERE account_id = ?", column)
+	query := fmt.Sprintf("SELECT %s FROM account_state WHERE account_id = "+ph(1)+pgText(), column)
 	var raw string
 	if err := tx.QueryRowContext(ctx, query, accountID).Scan(&raw); err != nil {
 		return "", fmt.Errorf("load account state %s/%s: %w", accountID, column, err)

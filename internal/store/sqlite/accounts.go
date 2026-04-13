@@ -37,7 +37,7 @@ func (r *AccountRepository) UpsertAccount(ctx context.Context, account domain.Ac
 			leverage,
 			created_at,
 			updated_at
-		) VALUES (` + ph(1) + `, ` + ph(2) + `, ` + ph(3) + `, ` + ph(4) + `, ` + ph(5) + `, ` + ph(6) + `, ` + ph(7) + `, ` + ph(8) + `, ` + ph(9) + `)
+		) VALUES (`+ph(1)+`, `+ph(2)+`, `+ph(3)+`, `+ph(4)+`, `+ph(5)+`, `+ph(6)+`, `+ph(7)+`, `+ph(8)+`, `+ph(9)+`)
 		ON CONFLICT(account_id) DO UPDATE SET
 			broker = excluded.broker,
 			server_name = excluded.server_name,
@@ -70,7 +70,7 @@ func (r *AccountRepository) EnsureAccount(ctx context.Context, accountID string,
 			account_id,
 			created_at,
 			updated_at
-		) VALUES (` + ph(10) + `, ` + ph(11) + `, ` + ph(12) + `)
+		) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`, `+ph(3)+`)
 		ON CONFLICT(account_id) DO UPDATE SET
 			updated_at = excluded.updated_at
 	`,
@@ -103,7 +103,7 @@ func (r *AccountRepository) SaveHeartbeat(ctx context.Context, runtime domain.Ac
 			last_heartbeat_at,
 			last_tick_at,
 			updated_at
-		) VALUES (` + ph(13) + `, ` + ph(14) + `, ` + ph(15) + `, ` + ph(16) + `, ` + ph(17) + `, ` + ph(18) + `, ` + ph(19) + `, ` + ph(20) + `, ` + ph(21) + `, ` + ph(22) + `, '', ` + ph(23) + `)
+		) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`, `+ph(3)+`, `+ph(4)+`, `+ph(5)+`, `+ph(6)+`, `+ph(7)+`, `+ph(8)+`, `+ph(9)+`, `+ph(10)+`, '', `+ph(11)+`)
 		ON CONFLICT(account_id) DO UPDATE SET
 			connected = excluded.connected,
 			balance = excluded.balance,
@@ -143,7 +143,7 @@ func (r *AccountRepository) SaveTick(ctx context.Context, accountID string, upda
 			account_id,
 			last_tick_at,
 			updated_at
-		) VALUES (` + ph(24) + `, ` + ph(25) + `, ` + ph(26) + `)
+		) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`, `+ph(3)+`)
 		ON CONFLICT(account_id) DO UPDATE SET
 			last_tick_at = excluded.last_tick_at,
 			updated_at = excluded.updated_at
@@ -166,7 +166,7 @@ func (r *AccountRepository) TouchRuntime(ctx context.Context, accountID string, 
 		INSERT INTO account_runtime (
 			account_id,
 			updated_at
-		) VALUES (` + ph(27) + `, ` + ph(28) + `)
+		) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`)
 		ON CONFLICT(account_id) DO UPDATE SET
 			updated_at = excluded.updated_at
 	`,
@@ -193,7 +193,7 @@ func (r *AccountRepository) GetAccount(ctx context.Context, accountID string) (d
 			created_at,
 			updated_at
 		FROM accounts
-		WHERE account_id = ` + ph(29) + `
+		WHERE account_id = `+ph(1)+pgText()+`
 	`, accountID)
 
 	var account domain.Account
@@ -282,7 +282,7 @@ func (r *AccountRepository) GetRuntime(ctx context.Context, accountID string) (d
 			last_tick_at,
 			updated_at
 		FROM account_runtime
-		WHERE account_id = ` + ph(30) + `
+		WHERE account_id = `+ph(1)+pgText()+`
 	`, accountID)
 
 	var runtime domain.AccountRuntime
