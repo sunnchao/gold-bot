@@ -299,9 +299,9 @@ func isSQLiteBusy(err error) bool {
 
 func (r *TokenRepository) AccountsForToken(ctx context.Context, token string) ([]string, error) {
 	// PostgreSQL needs explicit type cast for text parameters
-	whereClause := "WHERE token = " + ph(16)
+	whereClause := "WHERE token = " + ph(1)
 	if Dialect() == "postgres" {
-		whereClause = "WHERE token = " + ph(16) + "::text"
+		whereClause = "WHERE token = " + ph(1) + "::text"
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT account_id
