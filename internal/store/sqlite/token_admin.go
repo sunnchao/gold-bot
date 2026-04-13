@@ -68,7 +68,7 @@ func (r *TokenRepository) FindByPrefix(ctx context.Context, prefix string) (stri
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT token
 		FROM tokens
-		WHERE token = `+ph(1)+pgText()+` OR token LIKE `+ph(2)+`
+		WHERE token = `+ph(1)+pgText()+` OR token LIKE `+ph(2)+pgText()+`
 		ORDER BY token
 	`, prefix, prefix+"%")
 	if err != nil {
