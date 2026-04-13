@@ -46,7 +46,11 @@ func RunMigrations(db *sql.DB) error {
 
 func migrationSource() fs.FS {
 	if isPostgres {
-		return pgMigrationsFS
+		sub, err := fs.Sub(pgMigrationsFS, "pg")
+		if err != nil {
+			panic(fmt.Sprintf("embedded pg migrations: %v", err))
+		}
+		return sub
 	}
 	return migrationfs.Files
 }
