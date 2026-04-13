@@ -38,3 +38,11 @@ func phs(n int) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// Dialect returns "postgres" or "sqlite" based on DSN env var.
+func Dialect() string {
+	if isPg() {
+		return "postgres"
+	}
+	return "sqlite"
+}
