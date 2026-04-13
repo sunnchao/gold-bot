@@ -17,6 +17,15 @@ func NewTokenRepository(db *sql.DB) *TokenRepository {
 	return &TokenRepository{db: db}
 }
 
+// pgText returns a PostgreSQL-compatible text cast suffix.
+// For SQLite it returns an empty string; for PostgreSQL it returns "::text".
+func pgText() string {
+	if Dialect() == "postgres" {
+		return "::text"
+	}
+	return ""
+}
+
 func (r *TokenRepository) PutToken(ctx context.Context, token, name string, isAdmin bool, createdAt time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO tokens (
@@ -24,7 +33,7 @@ func (r *TokenRepository) PutToken(ctx context.Context, token, name string, isAd
 			name,
 			is_admin,
 			created_at
-		) VALUES (` + ph(1) + `, ` + ph(2) + `, ` + ph(3) + `, ` + ph(4) + `)
+		) VALUES (`+ph(1)+`, `+ph(2)+`, `+ph(3)+`, `+ph(4)+`)
 		ON CONFLICT(token) DO UPDATE SET
 			name = excluded.name,
 			is_admin = excluded.is_admin
@@ -51,7 +60,7 @@ func (r *TokenRepository) Validate(ctx context.Context, token string) (bool, err
 		err := r.db.QueryRowContext(ctx, `
 			SELECT COUNT(1)
 			FROM tokens
-			WHERE token = ` + ph(5) + `
+			WHERE token = `+ph(1)+pgText()+`
 		`, token).Scan(&count)
 		switch {
 		case isSQLiteBusy(err):
@@ -76,7 +85,7 @@ func (r *TokenRepository) BindAccount(ctx context.Context, token, accountID stri
 		INSERT INTO token_accounts (
 			token,
 			account_id
-		) VALUES (` + ph(6) + `, ` + ph(7) + `)
+		) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`)
 		ON CONFLICT(token, account_id) DO NOTHING
 	`, token, accountID)
 	if err != nil {
@@ -196,7 +205,7 @@ func (r *TokenRepository) tokenExists(ctx context.Context, token string) (bool, 
 		err := r.db.QueryRowContext(ctx, `
 			SELECT token
 			FROM tokens
-			WHERE token = ` + ph(8) + `
+			WHERE token = `+ph(1)+pgText()+`
 		`, token).Scan(&matchedToken)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
@@ -220,7 +229,7 @@ func (r *TokenRepository) tokenAccountExists(ctx context.Context, token, account
 		err := r.db.QueryRowContext(ctx, `
 			SELECT account_id
 			FROM token_accounts
-			WHERE token = ` + ph(9) + ` AND account_id = ` + ph(10) + `
+			WHERE token = `+ph(1)+pgText()+` AND account_id = `+ph(2)+`
 		`, token, accountID).Scan(&matchedAccount)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
@@ -244,7 +253,7 @@ func (r *TokenRepository) tokenHasAnyAccount(ctx context.Context, token string) 
 		err := r.db.QueryRowContext(ctx, `
 			SELECT account_id
 			FROM token_accounts
-			WHERE token = ` + ph(11) + `
+			WHERE token = `+ph(1)+pgText()+`
 			LIMIT 1
 		`, token).Scan(&matchedAccount)
 		switch {
@@ -269,16 +278,16 @@ func (r *TokenRepository) bindFirstAccount(ctx context.Context, token, accountID
 			token,
 			account_id
 		)
-		SELECT ` + ph(12) + `, ` + ph(13) + `
+		SELECT `+ph(1)+pgText()+`, `+ph(2)+`
 		WHERE EXISTS (
 			SELECT 1
 			FROM tokens
-			WHERE token = ` + ph(14) + `
+			WHERE token = `+ph(3)+pgText()+`
 		)
 		AND NOT EXISTS (
 			SELECT 1
 			FROM token_accounts
-			WHERE token = ` + ph(15) + `
+			WHERE token = `+ph(4)+pgText()+`
 		)
 	`, token, accountID, token, token)
 	if err != nil {
@@ -298,15 +307,10 @@ func isSQLiteBusy(err error) bool {
 }
 
 func (r *TokenRepository) AccountsForToken(ctx context.Context, token string) ([]string, error) {
-	// PostgreSQL needs explicit type cast for text parameters
-	whereClause := "WHERE token = " + ph(1)
-	if Dialect() == "postgres" {
-		whereClause = "WHERE token = " + ph(1) + "::text"
-	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT account_id
 		FROM token_accounts
-		` + whereClause + `
+		WHERE token = `+ph(1)+pgText()+`
 		ORDER BY account_id
 	`, token)
 	if err != nil {
