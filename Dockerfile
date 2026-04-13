@@ -1,12 +1,52 @@
-FROM python:3.11-slim
+FROM node:20-bookworm-slim AS dashboard-builder
+
+ENV NEXT_TELEMETRY_DISABLED=1
+
+WORKDIR /src/web/dashboard
+
+COPY web/dashboard/package.json web/dashboard/package-lock.json ./
+RUN npm ci
+
+COPY web/dashboard/ ./
+RUN npm run build
+
+FROM golang:1.24-bookworm AS go-builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+COPY --from=dashboard-builder /src/web/dashboard/dist ./web/dashboard/dist
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -o /out/gold-bot ./cmd/server
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN useradd --system --create-home --uid 10001 goldbot && \
+    mkdir -p /data /app/web/dashboard && \
+    chown -R goldbot:goldbot /app /data
 
-COPY . /app/gold_bolt_server
+COPY --from=go-builder /out/gold-bot /app/gold-bot
+COPY --from=go-builder /src/web/dashboard/dist /app/web/dashboard/dist
+COPY --from=go-builder /src/mt4_ea /app/mt4_ea
+COPY --from=go-builder /src/mt5_ea /app/mt5_ea
+
+ENV GB_HTTP_ADDR=:8880
+ENV GB_DB_PATH=/data/gold_bolt.sqlite
 
 EXPOSE 8880
 
-CMD ["python3", "-m", "gold_bolt_server.app"]
+USER goldbot
+
+CMD ["/app/gold-bot"]

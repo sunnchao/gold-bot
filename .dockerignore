@@ -1,0 +1,17 @@
+.git
+.github
+.codex
+.superpowers
+.worktrees
+.DS_Store
+__pycache__
+*.pyc
+*.pyo
+*.swp
+coverage.out
+*.test
+gold_bolt.db
+data/*.sqlite*
+web/dashboard/node_modules
+web/dashboard/.next
+web/dashboard/dist
