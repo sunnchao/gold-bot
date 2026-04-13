@@ -14,4 +14,3 @@ gold_bolt.db
 data/*.sqlite*
 web/dashboard/node_modules
 web/dashboard/.next
-web/dashboard/dist

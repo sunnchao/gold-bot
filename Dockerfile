@@ -1,14 +1,14 @@
 FROM node:22-bookworm-slim AS dashboard-builder
 
+ARG PREBUILT_DASHBOARD=false
 ENV NEXT_TELEMETRY_DISABLED=1
 
 WORKDIR /src/web/dashboard
 
 COPY web/dashboard/package.json web/dashboard/package-lock.json ./
-RUN npm ci
-
+RUN if [ "$PREBUILT_DASHBOARD" = "false" ]; then npm ci; fi
 COPY web/dashboard/ ./
-RUN npm run build
+RUN if [ "$PREBUILT_DASHBOARD" = "false" ]; then npm run build; fi
 
 FROM golang:1.24-bookworm AS go-builder
 
