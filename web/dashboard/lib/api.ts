@@ -176,7 +176,7 @@ async function requestJSON<T>(path: string): Promise<T> {
     } catch {}
 
     if (!token && (response.status === 401 || response.status === 403)) {
-      message = 'Access denied. Open the dashboard with ?token=... first.'
+      message = '访问被拒绝，请使用 ?token=... 参数打开面板。'
     }
     throw new Error(message)
   }

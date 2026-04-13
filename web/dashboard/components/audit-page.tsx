@@ -26,7 +26,7 @@ export function AuditPage({ initialData }: { initialData?: AuditResponse }) {
       })
       .catch((reason: unknown) => {
         if (!cancelled) {
-          setError(reason instanceof Error ? reason.message : 'Failed to load cutover audit.')
+          setError(reason instanceof Error ? reason.message : '加载审计数据失败。')
         }
       })
     return () => {
@@ -39,10 +39,10 @@ export function AuditPage({ initialData }: { initialData?: AuditResponse }) {
   return (
     <DashboardShell
       active="audit"
-      eyebrow="Dual-Track Cutover"
-      title="Audit & Readiness"
-      description="Keep Python-vs-Go parity visible. Replay validation, mirrored traffic drift and protocol error rates all roll up into a single go-live readiness view."
-      status={data?.status ?? 'CONNECTING'}
+      eyebrow="双轨切换"
+      title="审计与就绪"
+      description="Python 与 Go 一致性可见化：回放验证、镜像流量偏差和协议错误率汇总为上线就绪视图。"
+      status={data?.status ?? '连接中'}
     >
       {error ? (
         <div className="rounded-3xl border border-rose-300/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
@@ -51,24 +51,24 @@ export function AuditPage({ initialData }: { initialData?: AuditResponse }) {
       ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-        <Panel title="Readiness" subtitle={data ? `Snapshot generated ${formatTimestamp(data.generated_at)}.` : 'Waiting for cutover report.'}>
+        <Panel title="就绪状态" subtitle={data ? `快照生成于 ${formatTimestamp(data.generated_at)}。` : '等待审计报告...'}>
           {report ? (
             <div className="space-y-5">
               <div className="flex flex-wrap items-center gap-3">
-                <ToneBadge tone={report.ready ? 'green' : 'orange'}>{report.ready ? 'ready' : 'not ready'}</ToneBadge>
+                <ToneBadge tone={report.ready ? 'green' : 'orange'}>{report.ready ? '就绪' : '未就绪'}</ToneBadge>
                 {report.last_shadow_event_at ? (
-                  <span className="text-sm text-stone-400">Last shadow event: {formatTimestamp(report.last_shadow_event_at)}</span>
+                  <span className="text-sm text-stone-400">最近镜像事件: {formatTimestamp(report.last_shadow_event_at)}</span>
                 ) : (
-                  <span className="text-sm text-stone-500">No mirrored traffic observed yet.</span>
+                  <span className="text-sm text-stone-500">尚未观察到镜像流量。</span>
                 )}
               </div>
               <div className="metric-grid">
-                <Metric label="Protocol Error Rate" value={formatPercent(report.protocol_error_rate)} />
-                <Metric label="Signal Drift" value={formatPercent(report.signal_drift_rate)} />
-                <Metric label="Command Drift" value={formatPercent(report.command_drift_rate)} />
+                <Metric label="协议错误率" value={formatPercent(report.protocol_error_rate)} />
+                <Metric label="信号偏差率" value={formatPercent(report.signal_drift_rate)} />
+                <Metric label="指令偏差率" value={formatPercent(report.command_drift_rate)} />
               </div>
               <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Missing capabilities</p>
+                <p className="text-xs uppercase tracking-[0.18em] text-stone-500">缺失能力</p>
                 {report.missing_capabilities.length > 0 ? (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {report.missing_capabilities.map((item) => (
@@ -78,16 +78,16 @@ export function AuditPage({ initialData }: { initialData?: AuditResponse }) {
                     ))}
                   </div>
                 ) : (
-                  <p className="mt-3 text-sm text-stone-400">All required capabilities are present. Only threshold compliance decides readiness.</p>
+                  <p className="mt-3 text-sm text-stone-400">所有必要能力均已就绪，仅阈值合规性决定最终就绪状态。</p>
                 )}
               </div>
             </div>
           ) : (
-            <EmptyState title="No report yet" detail="The Go API has not returned an audit payload yet." />
+            <EmptyState title="暂无报告" detail="Go API 尚未返回审计数据。" />
           )}
         </Panel>
 
-        <Panel title="Cutover Summary" subtitle="Direct reflection of the Go cutover service checks.">
+        <Panel title="切换摘要" subtitle="直接反映 Go 切换服务的检查结果。">
           {data && data.summary.length > 0 ? (
             <div className="space-y-3">
               {data.summary.map((item) => (
@@ -101,7 +101,7 @@ export function AuditPage({ initialData }: { initialData?: AuditResponse }) {
               ))}
             </div>
           ) : (
-            <EmptyState title="No summary" detail="The cutover service has not published readiness checks yet." />
+            <EmptyState title="暂无摘要" detail="切换服务尚未发布就绪检查结果。" />
           )}
         </Panel>
       </div>

@@ -13,9 +13,9 @@ type ShellProps = {
 }
 
 const navItems = [
-  { key: 'overview', href: '/', label: 'Overview' },
-  { key: 'accounts', href: '/accounts/', label: 'Accounts' },
-  { key: 'audit', href: '/audit/', label: 'Audit & Cutover' }
+  { key: 'overview', href: '/', label: '总览' },
+  { key: 'accounts', href: '/accounts/', label: '账户' },
+  { key: 'audit', href: '/audit/', label: '审计' }
 ] as const
 
 export function DashboardShell({ active, eyebrow, title, description, status, children }: ShellProps) {
@@ -44,7 +44,7 @@ export function DashboardShell({ active, eyebrow, title, description, status, ch
             <div className="space-y-3">
               <ToneBadge tone="amber">{status}</ToneBadge>
               <p className="max-w-xs text-sm leading-6 text-stone-400">
-                Static Next.js console backed by the Go admin API. Legacy token semantics remain unchanged.
+                Next.js 静态面板，数据来自 Go 管理 API。Token 认证方式不变。
               </p>
             </div>
           </div>

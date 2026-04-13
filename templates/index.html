@@ -238,7 +238,7 @@
     <!-- Main App (hidden until auth) -->
     <div class="main-app" id="mainApp">
         <div class="header">
-            <h1>⚡ Gold Bolt <span>v1.1 — XAUUSD</span></h1>
+            <h1>⚡ Gold Bolt <span>v1.1.7 — XAUUSD</span></h1>
             <div class="server-status">
                 <div class="status-dot" id="serverDot"></div>
                 <span id="serverStatus">连接中...</span>
@@ -676,7 +676,7 @@
         }
         
         function fmt(n) {
-            return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            return Number(n).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
         
         setInterval(() => {

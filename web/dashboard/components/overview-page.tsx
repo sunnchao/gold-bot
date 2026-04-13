@@ -38,7 +38,7 @@ export function OverviewPage({ initialData }: { initialData?: OverviewResponse }
         if (cancelled) {
           return
         }
-        setError(reason instanceof Error ? reason.message : 'Failed to load overview.')
+        setError(reason instanceof Error ? reason.message : '加载总览数据失败。')
       })
       .finally(() => {
         if (!cancelled) {
@@ -65,9 +65,9 @@ export function OverviewPage({ initialData }: { initialData?: OverviewResponse }
     <DashboardShell
       active="overview"
       eyebrow="Gold Bolt"
-      title="Operational Control Surface"
-      description="Track account connectivity, market eligibility and cutover readiness from the same snapshot the Go server exposes to operators."
-      status={data?.status ?? 'CONNECTING'}
+      title="运营总览"
+      description="实时监控账户连接状态、市场交易资格和切换就绪状态。"
+      status={data?.status ?? '连接中'}
     >
       {error ? (
         <div className="rounded-3xl border border-rose-300/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
@@ -88,23 +88,23 @@ export function OverviewPage({ initialData }: { initialData?: OverviewResponse }
 
       <div className="grid gap-6 xl:grid-cols-[1.45fr_0.9fr]">
         <Panel
-          title="Accounts"
+          title="账户列表"
           subtitle={
-            data ? `Snapshot generated ${formatTimestamp(data.generated_at)} from /api/v1/overview.` : 'Waiting for the first server snapshot.'
+            data ? `数据生成于 ${formatTimestamp(data.generated_at)}，来源 /api/v1/overview。` : '等待服务器返回首次快照数据...'
           }
         >
           {!data && loading ? (
-            <EmptyState title="Loading snapshot" detail="Waiting for the Go API to return the first overview payload." />
+            <EmptyState title="加载中" detail="正在等待 Go API 返回首次总览数据..." />
           ) : data && data.accounts.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.2em] text-stone-500">
                   <tr>
-                    <th className="pb-3">Account</th>
-                    <th className="pb-3">Status</th>
-                    <th className="pb-3">Balance</th>
-                    <th className="pb-3">Equity</th>
-                    <th className="pb-3">Positions</th>
+                    <th className="pb-3">账户</th>
+                    <th className="pb-3">状态</th>
+                    <th className="pb-3">余额</th>
+                    <th className="pb-3">净值</th>
+                    <th className="pb-3">持仓</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
@@ -120,10 +120,10 @@ export function OverviewPage({ initialData }: { initialData?: OverviewResponse }
                       <td className="py-4 pr-4">
                         <div className="flex flex-wrap gap-2">
                           <ToneBadge tone={account.connected ? 'green' : 'red'}>
-                            {account.connected ? 'connected' : 'offline'}
+                            {account.connected ? '已连接' : '离线'}
                           </ToneBadge>
                           <ToneBadge tone={account.market_open && account.is_trade_allowed ? 'blue' : 'orange'}>
-                            {account.market_open && account.is_trade_allowed ? 'tradeable' : 'restricted'}
+                            {account.market_open && account.is_trade_allowed ? '可交易' : '受限'}
                           </ToneBadge>
                         </div>
                       </td>
@@ -136,11 +136,11 @@ export function OverviewPage({ initialData }: { initialData?: OverviewResponse }
               </table>
             </div>
           ) : (
-            <EmptyState title="No accounts" detail="No MT4 terminals have reported a runtime snapshot yet." />
+            <EmptyState title="暂无账户" detail="尚未收到任何 MT4 终端上报的快照数据。" />
           )}
         </Panel>
 
-        <Panel title="Live Event Rail" subtitle="SSE stream from /api/v1/events/stream using the same admin token.">
+        <Panel title="实时事件流" subtitle="通过 SSE 推送的事件，使用同一个管理 Token 认证。">
           {events.length > 0 ? (
             <div className="space-y-3">
               {events.map((event) => (
@@ -150,13 +150,13 @@ export function OverviewPage({ initialData }: { initialData?: OverviewResponse }
                     <ToneBadge tone="blue">{event.source}</ToneBadge>
                   </div>
                   <p className="mt-2 text-xs uppercase tracking-[0.18em] text-stone-500">
-                    {event.account_id || 'system'} • {formatTimestamp(event.timestamp)}
+                    {event.account_id || '系统'} · {formatTimestamp(event.timestamp)}
                   </p>
                 </article>
               ))}
             </div>
           ) : (
-            <EmptyState title="No live events yet" detail="When AI results or cutover events are published, they will appear here without reloading the page." />
+            <EmptyState title="暂无实时事件" detail="AI 分析结果或切换事件发布后将自动显示，无需刷新页面。" />
           )}
         </Panel>
       </div>

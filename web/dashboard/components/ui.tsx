@@ -16,6 +16,15 @@ const toneClasses: Record<string, string> = {
   neutral: 'bg-stone-200/10 text-stone-100 ring-1 ring-white/10'
 }
 
+const toneLabels: Record<string, string> = {
+  green: '正常',
+  amber: '警告',
+  blue: '信息',
+  orange: '注意',
+  red: '异常',
+  neutral: '中性'
+}
+
 export function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(' ')
 }
@@ -57,7 +66,7 @@ export function EmptyState({ title, detail }: { title: string; detail: string })
 }
 
 export function formatMoney(value: number, currency = 'USD') {
-  return new Intl.NumberFormat('en-US', {
+  return new Intl.NumberFormat('zh-CN', {
     style: 'currency',
     currency,
     maximumFractionDigits: 2
@@ -65,7 +74,7 @@ export function formatMoney(value: number, currency = 'USD') {
 }
 
 export function formatNumber(value: number) {
-  return new Intl.NumberFormat('en-US', {
+  return new Intl.NumberFormat('zh-CN', {
     maximumFractionDigits: 2
   }).format(value)
 }
@@ -76,13 +85,13 @@ export function formatPercent(value: number) {
 
 export function formatTimestamp(value: string) {
   if (!value) {
-    return 'n/a'
+    return '无'
   }
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) {
     return value
   }
-  return new Intl.DateTimeFormat('en-US', {
+  return new Intl.DateTimeFormat('zh-CN', {
     dateStyle: 'medium',
     timeStyle: 'short'
   }).format(parsed)
