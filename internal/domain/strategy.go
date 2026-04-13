@@ -31,10 +31,15 @@ type Bar struct {
 
 type Position struct {
 	Ticket    int64   `json:"ticket"`
+	Symbol    string  `json:"symbol,omitempty"`
 	Type      string  `json:"type"`
-	OpenPrice float64 `json:"open_price"`
 	Lots      float64 `json:"lots"`
+	OpenPrice float64 `json:"open_price"`
+	SL        float64 `json:"sl,omitempty"`
+	TP        float64 `json:"tp,omitempty"`
 	Profit    float64 `json:"profit,omitempty"`
+	OpenTime  int64   `json:"open_time,omitempty"`
+	Comment   string  `json:"comment,omitempty"`
 	Magic     int     `json:"magic,omitempty"`
 }
 

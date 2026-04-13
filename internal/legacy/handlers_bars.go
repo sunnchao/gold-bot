@@ -1,9 +1,10 @@
 package legacy
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
+
+	"gold-bot/internal/domain"
 )
 
 type BarsHandler struct {
@@ -13,9 +14,9 @@ type BarsHandler struct {
 }
 
 type BarsRequest struct {
-	AccountID string            `json:"account_id"`
-	Timeframe string            `json:"timeframe"`
-	Bars      []json.RawMessage `json:"bars"`
+	AccountID string       `json:"account_id"`
+	Timeframe string       `json:"timeframe"`
+	Bars      []domain.Bar `json:"bars"`
 }
 
 func (h *BarsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +55,13 @@ func (h *BarsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.accounts.TouchRuntime(r.Context(), accountID, now); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"status":  "ERROR",
+			"message": err.Error(),
+		})
+		return
+	}
+	if err := h.accounts.SaveBars(r.Context(), accountID, req.Timeframe, req.Bars, now); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),

@@ -16,6 +16,10 @@ type AccountStore interface {
 	EnsureAccount(ctx context.Context, accountID string, updatedAt time.Time) error
 	SaveHeartbeat(ctx context.Context, runtime domain.AccountRuntime) error
 	SaveTick(ctx context.Context, accountID string, updatedAt time.Time) error
+	SaveTickSnapshot(ctx context.Context, accountID string, tick domain.TickSnapshot, updatedAt time.Time) error
+	SaveBars(ctx context.Context, accountID, timeframe string, bars []domain.Bar, updatedAt time.Time) error
+	SavePositions(ctx context.Context, accountID string, positions []domain.Position, updatedAt time.Time) error
+	SaveStrategyMapping(ctx context.Context, accountID string, mapping map[string]string, updatedAt time.Time) error
 	TouchRuntime(ctx context.Context, accountID string, updatedAt time.Time) error
 }
 

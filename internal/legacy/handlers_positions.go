@@ -1,9 +1,10 @@
 package legacy
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
+
+	"gold-bot/internal/domain"
 )
 
 type PositionsHandler struct {
@@ -14,7 +15,7 @@ type PositionsHandler struct {
 
 type PositionsRequest struct {
 	AccountID string            `json:"account_id"`
-	Positions []json.RawMessage `json:"positions"`
+	Positions []domain.Position `json:"positions"`
 }
 
 func (h *PositionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +54,13 @@ func (h *PositionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.accounts.TouchRuntime(r.Context(), accountID, now); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"status":  "ERROR",
+			"message": err.Error(),
+		})
+		return
+	}
+	if err := h.accounts.SavePositions(r.Context(), accountID, req.Positions, now); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),

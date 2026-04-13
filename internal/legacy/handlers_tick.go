@@ -3,6 +3,8 @@ package legacy
 import (
 	"net/http"
 	"time"
+
+	"gold-bot/internal/domain"
 )
 
 type TickHandler struct {
@@ -12,7 +14,12 @@ type TickHandler struct {
 }
 
 type TickRequest struct {
-	AccountID string `json:"account_id"`
+	AccountID string  `json:"account_id"`
+	Symbol    string  `json:"symbol"`
+	Bid       float64 `json:"bid"`
+	Ask       float64 `json:"ask"`
+	Spread    float64 `json:"spread"`
+	Time      string  `json:"time"`
 }
 
 func (h *TickHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +58,19 @@ func (h *TickHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.accounts.SaveTick(r.Context(), accountID, now); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"status":  "ERROR",
+			"message": err.Error(),
+		})
+		return
+	}
+	if err := h.accounts.SaveTickSnapshot(r.Context(), accountID, domain.TickSnapshot{
+		Symbol: req.Symbol,
+		Bid:    req.Bid,
+		Ask:    req.Ask,
+		Spread: req.Spread,
+		Time:   req.Time,
+	}, now); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),

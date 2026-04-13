@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 
+	"gold-bot/internal/api"
 	"gold-bot/internal/config"
+	"gold-bot/internal/ea"
 	"gold-bot/internal/legacy"
 	"gold-bot/internal/store"
 	sqlitestore "gold-bot/internal/store/sqlite"
@@ -36,6 +38,12 @@ func New(cfg config.Config) (*App, error) {
 	legacy.RegisterRoutes(mux, legacy.Dependencies{
 		Accounts: sqlitestore.NewAccountRepository(db),
 		Tokens:   sqlitestore.NewTokenRepository(db),
+	})
+	api.RegisterRoutes(mux, api.Dependencies{
+		Accounts: sqlitestore.NewAccountRepository(db),
+		Tokens:   sqlitestore.NewTokenRepository(db),
+		Commands: sqlitestore.NewCommandRepository(db),
+		Releases: ea.NewLocalReleaseSource("."),
 	})
 
 	server := &http.Server{

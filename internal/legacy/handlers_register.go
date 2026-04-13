@@ -14,13 +14,14 @@ type RegisterHandler struct {
 }
 
 type RegisterRequest struct {
-	AccountID   string `json:"account_id"`
-	Broker      string `json:"broker"`
-	ServerName  string `json:"server_name"`
-	AccountName string `json:"account_name"`
-	AccountType string `json:"account_type"`
-	Currency    string `json:"currency"`
-	Leverage    int    `json:"leverage"`
+	AccountID       string            `json:"account_id"`
+	Broker          string            `json:"broker"`
+	ServerName      string            `json:"server_name"`
+	AccountName     string            `json:"account_name"`
+	AccountType     string            `json:"account_type"`
+	Currency        string            `json:"currency"`
+	Leverage        int               `json:"leverage"`
+	StrategyMapping map[string]string `json:"strategy_mapping"`
 }
 
 func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -66,6 +67,15 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"message": err.Error(),
 		})
 		return
+	}
+	if len(req.StrategyMapping) > 0 {
+		if err := h.accounts.SaveStrategyMapping(r.Context(), accountID, req.StrategyMapping, now); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"status":  "ERROR",
+				"message": err.Error(),
+			})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
