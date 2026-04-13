@@ -36,7 +36,8 @@ func main() {
 }
 
 func run(ctx context.Context, loadConfig func() config.Config, newApp func(config.Config) (runner, error)) error {
-	server, err := newApp(loadConfig())
+	cfg := loadConfig()
+	server, err := newApp(cfg)
 	if err != nil {
 		return err
 	}
@@ -52,6 +53,7 @@ func run(ctx context.Context, loadConfig func() config.Config, newApp func(confi
 
 	runErrCh := make(chan error, 1)
 	go func() {
+		log.Printf("gold-bot listening on %s (db=%s admin_token=%t)", cfg.HTTPAddr, cfg.DBPath, cfg.AdminToken != "")
 		runErrCh <- server.Run()
 	}()
 

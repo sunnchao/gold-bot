@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,6 +77,70 @@ func TestNewAppMountsLegacyRoutes(t *testing.T) {
 	}
 	if account.ServerName != "Demo-1" {
 		t.Fatalf("ServerName = %q, want %q", account.ServerName, "Demo-1")
+	}
+}
+
+func TestNewAppBootstrapsAdminTokenCompatibility(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.AdminToken = "legacy-admin-token"
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := app.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tokens", nil)
+	req.Header.Set("X-API-Token", "legacy-admin-token")
+	rec := httptest.NewRecorder()
+
+	app.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/tokens status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestNewAppImportsLegacyTokensJSONFromDatabaseDirectory(t *testing.T) {
+	cfg := testConfig(t)
+
+	legacyTokens := `{
+		"legacy-user-token": {
+			"accounts": ["90011087"],
+			"name": "legacy-user"
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(filepath.Dir(cfg.DBPath), "tokens.json"), []byte(legacyTokens), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := app.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{
+		"account_id":"90011087",
+		"broker":"Demo Broker",
+		"server_name":"Demo-1"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "legacy-user-token")
+	rec := httptest.NewRecorder()
+
+	app.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /register with imported token status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }
 

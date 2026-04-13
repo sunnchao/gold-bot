@@ -1,9 +1,11 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
+	"time"
 
 	"gold-bot/internal/api"
 	"gold-bot/internal/config"
@@ -31,6 +33,8 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
+	now := time.Now().UTC()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -40,6 +44,10 @@ func New(cfg config.Config) (*App, error) {
 	accounts := sqlitestore.NewAccountRepository(db)
 	tokens := sqlitestore.NewTokenRepository(db)
 	commands := sqlitestore.NewCommandRepository(db)
+	if err := bootstrapTokens(context.Background(), tokens, cfg, now); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	events := realtime.NewHub()
 	cutover := scheduler.NewCutoverService(scheduler.StaticShadowStatsSource{
 		Stats: scheduler.ShadowStats{
