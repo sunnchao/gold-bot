@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS dashboard-builder
+FROM node:22-bookworm-slim AS dashboard-builder
 
 ENV NEXT_TELEMETRY_DISABLED=1
 

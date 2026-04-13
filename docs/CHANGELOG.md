@@ -2,6 +2,13 @@
 
 ## 2026-04-13
 
+### v1.0.7
+
+- Web 控制台测试工具链显式升级到 `Vite 8.0.8` + `Vitest 4.1.4`
+- 保持 `Next.js 15` 生产构建入口不变，`npm run build` 继续使用 `next build`
+- 新增前端工具链契约测试，锁定 `Vite 8`、`Vitest 4` 和 Docker Node 基线
+- Docker 前端构建镜像升级到 `node:22-bookworm-slim`，满足 `Vite 8` 的 Node 版本要求
+
 ### Go Rewrite Milestone
 
 - 完成 Go 服务端主干迁移，MQL4/MQL5 EA 协议保持兼容
