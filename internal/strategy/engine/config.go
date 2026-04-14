@@ -90,3 +90,51 @@ func DefaultStrategyConfig() StrategyConfig {
 		MinScore: 5,
 	}
 }
+
+// GetStrategyConfigBySymbol returns the strategy config for a given base symbol.
+// Falls back to default config if no specific config is found.
+func GetStrategyConfigBySymbol(baseSymbol string) StrategyConfig {
+	switch baseSymbol {
+	case "XAUUSD", "GOLD":
+		return GoldStrategyConfig()
+	case "GBPJPY":
+		return GBPJPYStrategyConfig()
+	case "EURUSD":
+		return EURUSDStrategyConfig()
+	default:
+		return DefaultStrategyConfig()
+	}
+}
+
+// GoldStrategyConfig returns strategy parameters optimized for gold trading.
+func GoldStrategyConfig() StrategyConfig {
+	cfg := DefaultStrategyConfig()
+	// Gold-specific adjustments
+	cfg.PullbackMinADX = 25.0
+	cfg.PullbackSLATR = 1.5
+	cfg.PullbackTP1ATR = 1.5
+	cfg.PullbackTP2ATR = 3.0
+	return cfg
+}
+
+// GBPJPYStrategyConfig returns strategy parameters optimized for GBPJPY trading.
+func GBPJPYStrategyConfig() StrategyConfig {
+	cfg := DefaultStrategyConfig()
+	// GBPJPY-specific adjustments
+	cfg.PullbackMinADX = 22.0
+	cfg.PullbackSLATR = 1.2
+	cfg.PullbackTP1ATR = 1.2
+	cfg.PullbackTP2ATR = 2.5
+	return cfg
+}
+
+// EURUSDStrategyConfig returns strategy parameters optimized for EURUSD trading.
+func EURUSDStrategyConfig() StrategyConfig {
+	cfg := DefaultStrategyConfig()
+	// EURUSD-specific adjustments
+	cfg.PullbackMinADX = 20.0
+	cfg.PullbackSLATR = 1.0
+	cfg.PullbackTP1ATR = 1.0
+	cfg.PullbackTP2ATR = 2.0
+	return cfg
+}

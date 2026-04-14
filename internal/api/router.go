@@ -42,6 +42,12 @@ type CommandStore interface {
 	Enqueue(ctx context.Context, command domain.Command) error
 }
 
+type PendingSignalStore interface {
+	GetPendingSignals(ctx context.Context, accountID, symbol string) ([]domain.PendingSignal, error)
+	UpdateArbitration(ctx context.Context, signalID int64, result, reason string) error
+	ExpireStaleSignals(ctx context.Context) (int64, error)
+}
+
 type CutoverReporter interface {
 	BuildReport(ctx context.Context) (scheduler.CutoverReport, error)
 }
@@ -53,6 +59,7 @@ type Dependencies struct {
 	Releases ea.ReleaseSource
 	Events   *realtime.Hub
 	Cutover  CutoverReporter
+	Arbitration PendingSignalStore // Add arbitration store
 }
 
 func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
@@ -63,6 +70,7 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 	accountsHandler := accountsHandler{deps: deps, now: time.Now}
 	cutoverHandler := cutoverHandler{deps: deps, now: time.Now}
 	symbolHandler := symbolHandler{deps: deps, now: time.Now}
+	arbitrationHandler := arbitrationHandler{deps: deps, now: time.Now}
 
 	// Legacy endpoints (default symbol XAUUSD)
 	mux.Handle("/api/analysis_payload/", auth.requireToken(http.HandlerFunc(aiHandler.analysisPayload)))
@@ -72,6 +80,11 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 	mux.Handle("/api/symbols/", auth.requireToken(http.HandlerFunc(symbolHandler.listSymbols)))
 	mux.Handle("/api/v2/analysis_payload/", auth.requireToken(http.HandlerFunc(aiHandler.analysisPayloadSymbol)))
 	mux.Handle("/api/v2/ai_result/", auth.requireToken(http.HandlerFunc(aiHandler.aiResultSymbol)))
+
+	// Arbitration endpoints
+	mux.Handle("/api/pending_signal/", auth.requireToken(http.HandlerFunc(arbitrationHandler.getPendingSignals)))
+	mux.Handle("/api/arbitration/", auth.requireAdmin(http.HandlerFunc(arbitrationHandler.postArbitrationResult)))
+	mux.Handle("/api/arbitration/expire", auth.requireAdmin(http.HandlerFunc(arbitrationHandler.expireStaleSignals)))
 
 	mux.Handle("/api/trigger_ai", auth.requireToken(http.HandlerFunc(aiHandler.triggerAI)))
 	mux.Handle("/api/tokens", auth.requireAdmin(http.HandlerFunc(tokenHandler.handle)))

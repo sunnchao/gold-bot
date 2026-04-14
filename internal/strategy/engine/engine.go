@@ -40,6 +40,14 @@ func WithMinScore(score int) func(*Engine) {
 	}
 }
 
+// NewForSymbol creates a new Engine with configuration optimized for the given symbol.
+func NewForSymbol(symbol string, options ...func(*Engine)) Engine {
+	baseSymbol := domain.BaseSymbol(symbol)
+	cfg := GetStrategyConfigBySymbol(baseSymbol)
+	e := New(append([]func(*Engine){WithConfig(cfg)}, options...)...)
+	return e
+}
+
 // checkM15Entry checks M15 bars for early entry confirmation.
 // Returns true if M15 RSI confirms the signal direction and price is near a Fib level.
 func (e Engine) checkM15Entry(m15 []domain.Bar, side string, price float64) (bool, string) {

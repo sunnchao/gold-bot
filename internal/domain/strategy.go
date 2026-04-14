@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -163,6 +164,7 @@ type Position struct {
 
 type AnalysisSnapshot struct {
 	AccountID    string           `json:"account_id"`
+	Symbol       string           `json:"symbol,omitempty"`
 	CurrentPrice float64          `json:"current_price"`
 	Bars         map[string][]Bar `json:"bars"`
 	Positions    []Position       `json:"positions"`
@@ -228,4 +230,12 @@ type PositionSnapshot struct {
 	AvgATR       float64    `json:"avg_atr,omitempty"`
 	H1Bars       []Bar      `json:"h1_bars"`
 	Positions    []Position `json:"positions"`
+}
+
+// BaseSymbol extracts the base symbol from a raw symbol string by removing broker suffixes.
+// Examples: "GOLDm#" -> "GOLD", "XAUUSD" -> "XAUUSD", "GBPJPYm#" -> "GBPJPY"
+func BaseSymbol(raw string) string {
+	s := strings.TrimSuffix(raw, "m#")
+	s = strings.TrimSuffix(s, "#")
+	return s
 }
