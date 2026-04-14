@@ -166,6 +166,17 @@ export function AccountDetailPage({
                           <Metric label="RSI" value={formatNumber(pack.rsi)} />
                           <Metric label="ADX" value={formatNumber(pack.adx)} />
                           <Metric label="ATR" value={formatNumber(pack.atr)} />
+                          {pack.macd_hist != null && <Metric label="MACD柱" value={formatNumber(pack.macd_hist)} />}
+                          {pack.stoch_k != null && <Metric label="StochK" value={formatNumber(pack.stoch_k)} />}
+                          {pack.stoch_d != null && <Metric label="StochD" value={formatNumber(pack.stoch_d)} />}
+                          {pack.vol_sma != null && <Metric label="VolSMA" value={formatNumber(pack.vol_sma)} />}
+                          {pack.bb_upper != null && <Metric label="BB上轨" value={formatNumber(pack.bb_upper)} />}
+                          {pack.bb_lower != null && <Metric label="BB下轨" value={formatNumber(pack.bb_lower)} />}
+                          {pack.fib_382 != null && <Metric label="Fib38.2%" value={formatNumber(pack.fib_382)} />}
+                          {pack.fib_618 != null && <Metric label="Fib61.8%" value={formatNumber(pack.fib_618)} />}
+                          {pack.pp != null && <Metric label="枢轴PP" value={formatNumber(pack.pp)} />}
+                          {pack.r1 != null && <Metric label="R1" value={formatNumber(pack.r1)} />}
+                          {pack.s1 != null && <Metric label="S1" value={formatNumber(pack.s1)} />}
                         </div>
                       </article>
                     ) : null

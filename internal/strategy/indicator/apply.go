@@ -57,5 +57,39 @@ func EnrichBars(bars []domain.Bar) []domain.Bar {
 		}
 	}
 
+	// Fibonacci retracement (using last 50 bars for swing high/low)
+	fibWindow := 50
+	if len(out) < fibWindow {
+		fibWindow = len(out)
+	}
+	for i := range out {
+		start := i - fibWindow
+		if start < 0 {
+			start = 0
+		}
+		windowHighs := make([]float64, i-start+1)
+		windowLows := make([]float64, i-start+1)
+		for j := start; j <= i; j++ {
+			windowHighs[j-start] = out[j].High
+			windowLows[j-start] = out[j].Low
+		}
+		fib := Fibonacci(windowHighs, windowLows, len(windowHighs))
+		out[i].Fib236 = fib.Fib236
+		out[i].Fib382 = fib.Fib382
+		out[i].Fib500 = fib.Fib500
+		out[i].Fib618 = fib.Fib618
+		out[i].Fib786 = fib.Fib786
+	}
+
+	// Pivot Points (using previous bar's HLC)
+	for i := 1; i < len(out); i++ {
+		piv := PivotPoints(out[i-1].High, out[i-1].Low, out[i-1].Close)
+		out[i].PP = piv.PP
+		out[i].R1 = piv.R1
+		out[i].R2 = piv.R2
+		out[i].S1 = piv.S1
+		out[i].S2 = piv.S2
+	}
+
 	return out
 }

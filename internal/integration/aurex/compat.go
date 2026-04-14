@@ -52,21 +52,34 @@ type PositionSummary struct {
 }
 
 type IndicatorPack struct {
-	Close     float64 `json:"close"`
-	Open      float64 `json:"open"`
-	High      float64 `json:"high"`
-	Low       float64 `json:"low"`
-	EMA20     float64 `json:"ema20"`
-	EMA50     float64 `json:"ema50"`
-	RSI       float64 `json:"rsi"`
-	ADX       float64 `json:"adx"`
-	ATR       float64 `json:"atr"`
-	MACDHist  float64 `json:"macd_hist"`
-	BBUpper   float64 `json:"bb_upper"`
-	BBMiddle  float64 `json:"bb_middle"`
-	BBLower   float64 `json:"bb_lower"`
-	StochK    float64 `json:"stoch_k"`
-	BarsCount int     `json:"bars_count"`
+	Close      float64 `json:"close"`
+	Open       float64 `json:"open"`
+	High       float64 `json:"high"`
+	Low        float64 `json:"low"`
+	EMA20      float64 `json:"ema20"`
+	EMA50      float64 `json:"ema50"`
+	EMA200     float64 `json:"ema200"`
+	RSI        float64 `json:"rsi"`
+	ADX        float64 `json:"adx"`
+	ATR        float64 `json:"atr"`
+	MACDLine   float64 `json:"macd"`
+	MACDSignal float64 `json:"macd_signal"`
+	MACDHist   float64 `json:"macd_hist"`
+	BBUpper    float64 `json:"bb_upper"`
+	BBMiddle   float64 `json:"bb_middle"`
+	BBLower    float64 `json:"bb_lower"`
+	StochK     float64 `json:"stoch_k"`
+	StochD     float64 `json:"stoch_d"`
+	VolSMA     float64 `json:"vol_sma"`
+	Fib236     float64 `json:"fib_236"`
+	Fib382     float64 `json:"fib_382"`
+	Fib500     float64 `json:"fib_500"`
+	Fib618     float64 `json:"fib_618"`
+	Fib786     float64 `json:"fib_786"`
+	PP         float64 `json:"pp"`
+	R1         float64 `json:"r1"`
+	S1         float64 `json:"s1"`
+	BarsCount  int     `json:"bars_count"`
 }
 
 type MarketStatus struct {
@@ -92,7 +105,7 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 	}
 
 	indicators := map[string]*IndicatorPack{}
-	for _, timeframe := range []string{"M15", "M30", "H1", "H4", "D1"} {
+	for _, timeframe := range []string{"M15", "M30", "H1", "H4"} {
 		bars := state.Bars[timeframe]
 		if len(bars) < 20 {
 			indicators[timeframe] = nil
@@ -101,21 +114,34 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 		enriched := indicator.EnrichBars(bars)
 		last := enriched[len(enriched)-1]
 		indicators[timeframe] = &IndicatorPack{
-			Close:     safeFloat(last.Close),
-			Open:      safeFloat(last.Open),
-			High:      safeFloat(last.High),
-			Low:       safeFloat(last.Low),
-			EMA20:     safeFloat(last.EMA20),
-			EMA50:     safeFloat(last.EMA50),
-			RSI:       safeFloat(last.RSI),
-			ADX:       safeFloat(last.ADX),
-			ATR:       safeFloat(last.ATR),
-			MACDHist:  safeFloat(last.MACDHist),
-			BBUpper:   safeFloat(last.BBUpper),
-			BBMiddle:  0,
-			BBLower:   safeFloat(last.BBLower),
-			StochK:    safeFloat(last.StochK),
-			BarsCount: len(enriched),
+			Close:      safeFloat(last.Close),
+			Open:       safeFloat(last.Open),
+			High:       safeFloat(last.High),
+			Low:        safeFloat(last.Low),
+			EMA20:      safeFloat(last.EMA20),
+			EMA50:      safeFloat(last.EMA50),
+			EMA200:     safeFloat(last.EMA200),
+			RSI:        safeFloat(last.RSI),
+			ADX:        safeFloat(last.ADX),
+			ATR:        safeFloat(last.ATR),
+			MACDLine:   safeFloat(last.MACD),
+			MACDSignal: safeFloat(last.MACDSignal),
+			MACDHist:   safeFloat(last.MACDHist),
+			BBUpper:    safeFloat(last.BBUpper),
+			BBMiddle:   safeFloat(last.BBMid),
+			BBLower:    safeFloat(last.BBLower),
+			StochK:     safeFloat(last.StochK),
+			StochD:     safeFloat(last.StochD),
+			VolSMA:     safeFloat(last.VolSMA),
+			Fib236:     safeFloat(last.Fib236),
+			Fib382:     safeFloat(last.Fib382),
+			Fib500:     safeFloat(last.Fib500),
+			Fib618:     safeFloat(last.Fib618),
+			Fib786:     safeFloat(last.Fib786),
+			PP:         safeFloat(last.PP),
+			R1:         safeFloat(last.R1),
+			S1:         safeFloat(last.S1),
+			BarsCount:  len(enriched),
 		}
 	}
 

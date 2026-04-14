@@ -40,6 +40,48 @@ func WithMinScore(score int) func(*Engine) {
 	}
 }
 
+// checkM15Entry checks M15 bars for early entry confirmation.
+// Returns true if M15 RSI confirms the signal direction and price is near a Fib level.
+func (e Engine) checkM15Entry(m15 []domain.Bar, side string, price float64) (bool, string) {
+	cfg := e.Config
+	if len(m15) < 14 {
+		return false, "M15数据不足"
+	}
+	last := m15[len(m15)-1]
+
+	// RSI confirmation thresholds
+	bullishThreshold := cfg.M15ConfirmRSIThreshold
+	bearishThreshold := 100 - bullishThreshold
+
+	switch side {
+	case "BUY":
+		if last.RSI > 0 && last.RSI < bullishThreshold {
+			detail := fmt.Sprintf("M15确认: RSI=%.1f<%.0f(多头)", last.RSI, bullishThreshold)
+			// Bonus: price near a Fib support level
+			if last.Fib382 > 0 && math.Abs(price-last.Fib382) < last.ATR*0.5 {
+				detail += fmt.Sprintf(" | 近Fib382=%.2f", last.Fib382)
+			} else if last.Fib618 > 0 && math.Abs(price-last.Fib618) < last.ATR*0.5 {
+				detail += fmt.Sprintf(" | 近Fib618=%.2f", last.Fib618)
+			}
+			return true, detail
+		}
+		return false, fmt.Sprintf("M15未确认: RSI=%.1f≥%.0f", last.RSI, bullishThreshold)
+	case "SELL":
+		if last.RSI > 0 && last.RSI > bearishThreshold {
+			detail := fmt.Sprintf("M15确认: RSI=%.1f>%.0f(空头)", last.RSI, bearishThreshold)
+			if last.Fib382 > 0 && math.Abs(price-last.Fib382) < last.ATR*0.5 {
+				detail += fmt.Sprintf(" | 近Fib382=%.2f", last.Fib382)
+			} else if last.Fib618 > 0 && math.Abs(price-last.Fib618) < last.ATR*0.5 {
+				detail += fmt.Sprintf(" | 近Fib618=%.2f", last.Fib618)
+			}
+			return true, detail
+		}
+		return false, fmt.Sprintf("M15未确认: RSI=%.1f≤%.0f", last.RSI, bearishThreshold)
+	default:
+		return false, ""
+	}
+}
+
 func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []domain.AnalysisLog) {
 	logs := make([]domain.AnalysisLog, 0, 8)
 	log.Printf("[STRATEGY] 🔍 开始分析 account=%s | price=%.2f | H1 bars=%d | positions=%d",
@@ -48,6 +90,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	h1 := snapshot.Bars["H1"]
 	m30 := snapshot.Bars["M30"]
 	h4 := snapshot.Bars["H4"]
+	m15 := snapshot.Bars["M15"]
 
 	if len(h1) < 50 {
 		log.Printf("[STRATEGY] ⚠️ H1数据不足: %d/50", len(h1))
@@ -221,6 +264,27 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 				Message:  "H4趋势过滤后无信号",
 			})
 			return nil, logs
+		}
+	}
+
+	// M15 confirmation: boost score if M15 confirms direction
+	if len(m15) >= 14 {
+		for i, signal := range signals {
+			confirmed, detail := e.checkM15Entry(m15, signal.Side, price)
+			if confirmed {
+				signals[i].Score = min(signal.Score+1, 10)
+				logs = append(logs, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: "M15确认",
+					Message:  fmt.Sprintf("✅ %s | %s | 评分+1→%d", signal.Strategy, detail, signals[i].Score),
+				})
+			} else {
+				logs = append(logs, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: "M15确认",
+					Message:  fmt.Sprintf("⏭ %s | %s", signal.Strategy, detail),
+				})
+			}
 		}
 	}
 

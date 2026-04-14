@@ -77,14 +77,29 @@ export type AccountDetail = {
         low?: number
         ema20: number
         ema50: number
+        ema200?: number
         rsi: number
         adx: number
         atr: number
+        macd?: number
+        macd_signal?: number
         macd_hist: number
         bb_upper: number
         bb_middle: number
         bb_lower: number
         stoch_k: number
+        stoch_d?: number
+        vol_sma?: number
+        fib_236?: number
+        fib_382?: number
+        fib_500?: number
+        fib_618?: number
+        fib_786?: number
+        pp?: number
+        r1?: number
+        r2?: number
+        s1?: number
+        s2?: number
         bars_count: number
       }
     | null

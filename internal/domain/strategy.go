@@ -33,6 +33,17 @@ type Bar struct {
 	StochK float64 `json:"stoch_k,omitempty"`
 	StochD float64 `json:"stoch_d,omitempty"`
 	VolSMA float64 `json:"vol_sma,omitempty"`
+
+	Fib236 float64 `json:"fib_236,omitempty"`
+	Fib382 float64 `json:"fib_382,omitempty"`
+	Fib500 float64 `json:"fib_500,omitempty"`
+	Fib618 float64 `json:"fib_618,omitempty"`
+	Fib786 float64 `json:"fib_786,omitempty"`
+	PP     float64 `json:"pp,omitempty"`
+	R1     float64 `json:"r1,omitempty"`
+	R2     float64 `json:"r2,omitempty"`
+	S1     float64 `json:"s1,omitempty"`
+	S2     float64 `json:"s2,omitempty"`
 }
 
 func (b *Bar) UnmarshalJSON(data []byte) error {
@@ -62,6 +73,17 @@ func (b *Bar) UnmarshalJSON(data []byte) error {
 		StochK float64 `json:"stoch_k,omitempty"`
 		StochD float64 `json:"stoch_d,omitempty"`
 		VolSMA float64 `json:"vol_sma,omitempty"`
+
+		Fib236 float64 `json:"fib_236,omitempty"`
+		Fib382 float64 `json:"fib_382,omitempty"`
+		Fib500 float64 `json:"fib_500,omitempty"`
+		Fib618 float64 `json:"fib_618,omitempty"`
+		Fib786 float64 `json:"fib_786,omitempty"`
+		PP     float64 `json:"pp,omitempty"`
+		R1     float64 `json:"r1,omitempty"`
+		R2     float64 `json:"r2,omitempty"`
+		S1     float64 `json:"s1,omitempty"`
+		S2     float64 `json:"s2,omitempty"`
 	}
 
 	var raw rawBar
@@ -90,6 +112,16 @@ func (b *Bar) UnmarshalJSON(data []byte) error {
 		StochK:     raw.StochK,
 		StochD:     raw.StochD,
 		VolSMA:     raw.VolSMA,
+		Fib236:     raw.Fib236,
+		Fib382:     raw.Fib382,
+		Fib500:     raw.Fib500,
+		Fib618:     raw.Fib618,
+		Fib786:     raw.Fib786,
+		PP:         raw.PP,
+		R1:         raw.R1,
+		R2:         raw.R2,
+		S1:         raw.S1,
+		S2:         raw.S2,
 	}
 
 	if len(raw.Time) == 0 || bytes.Equal(raw.Time, []byte("null")) {

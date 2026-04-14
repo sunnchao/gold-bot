@@ -83,7 +83,7 @@ func TestAccountRepositorySaveBarsHandlesConcurrentWrites(t *testing.T) {
 		t.Fatalf("EnsureAccount returned error: %v", err)
 	}
 
-	timeframes := []string{"M30", "H1", "H4", "D1"}
+	timeframes := []string{"M15", "M30", "H1", "H4"}
 	bars := []domain.Bar{
 		{
 			Time:   "1712988000",

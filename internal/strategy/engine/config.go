@@ -38,6 +38,9 @@ type StrategyConfig struct {
 	H4ADXThreshold          float64 `json:"h4_adx_threshold" yaml:"h4_adx_threshold"`
 	H4RequireConsecutive    int     `json:"h4_require_consecutive" yaml:"h4_require_consecutive"`
 
+	// M15 confirmation
+	M15ConfirmRSIThreshold float64 `json:"m15_confirm_rsi_threshold" yaml:"m15_confirm_rsi_threshold"`
+
 	// Minimum signal score
 	MinScore int `json:"min_score" yaml:"min_score"`
 }
@@ -80,6 +83,9 @@ func DefaultStrategyConfig() StrategyConfig {
 		// H4 trend - higher threshold, require 3 bars
 		H4ADXThreshold:       30.0,
 		H4RequireConsecutive: 3,
+
+		// M15 confirmation - RSI threshold for early entry (40=bullish, 60=bearish)
+		M15ConfirmRSIThreshold: 40.0,
 
 		MinScore: 5,
 	}
