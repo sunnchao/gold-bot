@@ -86,6 +86,31 @@ func rollingMax(values []float64, period int) []float64 {
 	return out
 }
 
+func WildersSmoothing(values []float64, period int) []float64 {
+	out := make([]float64, len(values))
+	for i := range out {
+		out[i] = math.NaN()
+	}
+	if len(values) < period || period <= 0 {
+		return out
+	}
+	// Calculate initial SMA
+	sum := 0.0
+	for i := 0; i < period; i++ {
+		sum += values[i]
+	}
+	out[period-1] = sum / float64(period)
+	// Wilder's smoothing: prev * (period-1)/period + current/period
+	for i := period; i < len(values); i++ {
+		if math.IsNaN(values[i]) {
+			out[i] = out[i-1]
+			continue
+		}
+		out[i] = out[i-1]*(float64(period-1)/float64(period)) + values[i]/float64(period)
+	}
+	return out
+}
+
 func rollingStd(values []float64, period int) []float64 {
 	out := make([]float64, len(values))
 	for i := range out {

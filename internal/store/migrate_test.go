@@ -9,9 +9,10 @@ import (
 )
 
 func TestReadMigrationLoadsInitSQL(t *testing.T) {
-	content, err := readMigration("0001_init.sql")
+	mfs := migrationSource()
+	content, err := readMigrationFS(mfs, "0001_init.sql")
 	if err != nil {
-		t.Fatalf("readMigration returned error: %v", err)
+		t.Fatalf("readMigrationFS returned error: %v", err)
 	}
 
 	if !strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS accounts") {

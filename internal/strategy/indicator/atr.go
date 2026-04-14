@@ -14,5 +14,5 @@ func ATR(high, low, close []float64, period int) []float64 {
 			math.Abs(low[i]-close[i-1]),
 		))
 	}
-	return rollingMean(tr, period)
+	return WildersSmoothing(tr, period)
 }

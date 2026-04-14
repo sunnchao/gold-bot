@@ -32,6 +32,7 @@ type Bar struct {
 
 	StochK float64 `json:"stoch_k,omitempty"`
 	StochD float64 `json:"stoch_d,omitempty"`
+	VolSMA float64 `json:"vol_sma,omitempty"`
 }
 
 func (b *Bar) UnmarshalJSON(data []byte) error {
@@ -60,6 +61,7 @@ func (b *Bar) UnmarshalJSON(data []byte) error {
 
 		StochK float64 `json:"stoch_k,omitempty"`
 		StochD float64 `json:"stoch_d,omitempty"`
+		VolSMA float64 `json:"vol_sma,omitempty"`
 	}
 
 	var raw rawBar
@@ -87,6 +89,7 @@ func (b *Bar) UnmarshalJSON(data []byte) error {
 		BBMid:      raw.BBMid,
 		StochK:     raw.StochK,
 		StochD:     raw.StochD,
+		VolSMA:     raw.VolSMA,
 	}
 
 	if len(raw.Time) == 0 || bytes.Equal(raw.Time, []byte("null")) {
@@ -187,8 +190,10 @@ type PositionState struct {
 }
 
 type PositionSnapshot struct {
+	AccountID    string     `json:"account_id,omitempty"`
 	CurrentPrice float64    `json:"current_price"`
 	CurrentATR   float64    `json:"current_atr"`
+	AvgATR       float64    `json:"avg_atr,omitempty"`
 	H1Bars       []Bar      `json:"h1_bars"`
 	Positions    []Position `json:"positions"`
 }

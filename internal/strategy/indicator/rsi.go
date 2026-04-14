@@ -16,7 +16,7 @@ func RSI(close []float64, period int) []float64 {
 	losses := make([]float64, len(close))
 	for i := range close {
 		if i == 0 {
-			delta[i] = math.NaN()
+			delta[i] = 0
 			gains[i] = 0
 			losses[i] = 0
 			continue
@@ -34,8 +34,8 @@ func RSI(close []float64, period int) []float64 {
 		}
 	}
 
-	avgGain := rollingMean(gains, period)
-	avgLoss := rollingMean(losses, period)
+	avgGain := WildersSmoothing(gains, period)
+	avgLoss := WildersSmoothing(losses, period)
 	for i := range close {
 		if math.IsNaN(avgGain[i]) || math.IsNaN(avgLoss[i]) || avgLoss[i] == 0 {
 			continue

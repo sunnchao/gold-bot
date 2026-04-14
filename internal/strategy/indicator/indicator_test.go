@@ -50,13 +50,14 @@ func TestATR14MatchesPythonFixture(t *testing.T) {
 		t.Fatalf("ATR length = %d, want %d", len(got), len(closes))
 	}
 
+	// Wilder's smoothing expected values
 	wantTail := []float64{
-		6.142857142857,
-		6.428571428571,
-		6.214285714286,
-		6.214285714286,
-		6.428571428571,
-		6.285714285714,
+		6.033163265306,
+		6.280794460641,
+		6.153594856310,
+		6.071195223716,
+		6.173252707737,
+		6.125163228613,
 	}
 	assertTailClose(t, "ATR14", got, wantTail, 1e-9)
 }
@@ -75,12 +76,12 @@ func TestRSI14MatchesPythonFixture(t *testing.T) {
 	}
 
 	wantTail := []float64{
-		69.811320754717,
-		71.929824561404,
-		70.37037037037,
-		70.37037037037,
-		71.929824561404,
-		70.909090909091,
+		69.408369408369,
+		73.451497928909,
+		74.488931294992,
+		70.066064531286,
+		72.948963703115,
+		74.533735777533,
 	}
 	assertTailClose(t, "RSI14", got, wantTail, 1e-9)
 }

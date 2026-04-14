@@ -1,6 +1,7 @@
 package positionmgr
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -12,15 +13,24 @@ import (
 
 type Option func(*Manager)
 
+// StateStore persists position states across restarts.
+type StateStore interface {
+	SavePositionState(ctx context.Context, accountID string, state domain.PositionState) error
+	LoadPositionStates(ctx context.Context, accountID string) (map[int64]domain.PositionState, error)
+}
+
 type Manager struct {
 	states map[int64]domain.PositionState
 	now    func() time.Time
+	store  StateStore
+	ctx    context.Context
 }
 
 func New(options ...Option) *Manager {
 	manager := &Manager{
 		states: make(map[int64]domain.PositionState),
 		now:    time.Now,
+		ctx:    context.Background(),
 	}
 	for _, option := range options {
 		option(manager)
@@ -34,9 +44,37 @@ func WithNow(now func() time.Time) Option {
 	}
 }
 
+func WithStore(store StateStore) Option {
+	return func(manager *Manager) {
+		manager.store = store
+	}
+}
+
+func WithContext(ctx context.Context) Option {
+	return func(manager *Manager) {
+		manager.ctx = ctx
+	}
+}
+
+// LoadStates loads position states from the persistent store for a given account.
+func (m *Manager) LoadStates(accountID string) error {
+	if m.store == nil {
+		return nil
+	}
+	states, err := m.store.LoadPositionStates(m.ctx, accountID)
+	if err != nil {
+		return fmt.Errorf("load position states: %w", err)
+	}
+	for ticket, state := range states {
+		m.states[ticket] = state
+	}
+	log.Printf("[POSMGR] 📂 Loaded %d position states for account=%s", len(states), accountID)
+	return nil
+}
+
 func (m *Manager) SeedState(state domain.PositionState) {
 	if state.BETriggerATR == 0 {
-		state.BETriggerATR = 1.0
+		state.BETriggerATR = 1.5
 	}
 	if state.OpenTime.IsZero() {
 		state.OpenTime = m.now()
@@ -70,11 +108,11 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			state = domain.PositionState{
 				Ticket:       position.Ticket,
 				OpenTime:     m.now(),
-				BETriggerATR: 1.0,
+				BETriggerATR: 1.5,
 			}
 		}
 		if state.BETriggerATR == 0 {
-			state.BETriggerATR = 1.0
+			state.BETriggerATR = 1.5
 		}
 
 		side := strings.ToUpper(position.Type)
@@ -91,10 +129,11 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			position.Ticket, side, position.Lots, position.OpenPrice,
 			profitPips, profitATR, state.MaxProfitATR, state.BEMoved)
 
-		if command, ok := m.checkTimeStop(position, state, side, profitATR); ok {
+		if command, ok := m.checkTimeStop(position, state, side, profitATR, snapshot.CurrentATR, snapshot.AvgATR); ok {
 			log.Printf("[POSMGR] ⏰ #%d | 时间止损: %s", position.Ticket, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
+			m.persistState(snapshot.AccountID, state)
 			continue
 		}
 
@@ -107,13 +146,15 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			log.Printf("[POSMGR] 🎯 #%d | TP1: %s %.2f手 | reason=%s", position.Ticket, command.Action, command.Lots, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
+			m.persistState(snapshot.AccountID, state)
 			continue
 		}
 
-		if command, ok := m.checkKeyLevel(position, &state, side, snapshot.CurrentPrice, snapshot.CurrentATR, profitATR); ok {
+		if command, ok := m.checkKeyLevel(position, &state, side, snapshot.CurrentPrice, snapshot.CurrentATR, profitATR, snapshot.H1Bars); ok {
 			log.Printf("[POSMGR] 📍 #%d | 关键位止损: %s | reason=%s", position.Ticket, command.Action, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
+			m.persistState(snapshot.AccountID, state)
 			continue
 		}
 
@@ -121,6 +162,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			log.Printf("[POSMGR] 🎯 #%d | TP2: %s %.2f手 | reason=%s", position.Ticket, command.Action, command.Lots, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
+			m.persistState(snapshot.AccountID, state)
 			continue
 		}
 
@@ -128,6 +170,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			log.Printf("[POSMGR] 🔄 #%d | 趋势反转: %s | reason=%s", position.Ticket, command.Action, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
+			m.persistState(snapshot.AccountID, state)
 			continue
 		}
 
@@ -137,6 +180,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 		}
 
 		m.states[position.Ticket] = state
+		m.persistState(snapshot.AccountID, state)
 	}
 
 	for ticket := range m.states {
@@ -149,6 +193,15 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 		log.Printf("[POSMGR] ✅ 生成 %d 条持仓管理指令", len(commands))
 	}
 	return commands
+}
+
+func (m *Manager) persistState(accountID string, state domain.PositionState) {
+	if m.store == nil || accountID == "" {
+		return
+	}
+	if err := m.store.SavePositionState(m.ctx, accountID, state); err != nil {
+		log.Printf("[POSMGR] ⚠️ 保存持仓状态失败 account=%s ticket=%d: %v", accountID, state.Ticket, err)
+	}
 }
 
 func adaptiveATRMultis(h1 []domain.Bar) (float64, float64) {
@@ -190,7 +243,7 @@ func adaptiveATRMultis(h1 []domain.Bar) (float64, float64) {
 	}
 }
 
-func (m *Manager) checkTimeStop(position domain.Position, state domain.PositionState, _ string, profitATR float64) (domain.PositionCommand, bool) {
+func (m *Manager) checkTimeStop(position domain.Position, state domain.PositionState, _ string, profitATR, currentATR, avgATR float64) (domain.PositionCommand, bool) {
 	hours := m.now().Sub(state.OpenTime).Hours()
 
 	switch {
@@ -205,19 +258,19 @@ func (m *Manager) checkTimeStop(position domain.Position, state domain.PositionS
 			Lots:   closeLots,
 			Reason: fmt.Sprintf("time_72h_%.1fATR", profitATR),
 		}, true
-	case hours > 48 && profitATR < 1.0:
+	case hours > 48 && profitATR < 0.5:
 		return domain.PositionCommand{
 			Action: domain.PositionActionClose,
 			Ticket: position.Ticket,
 			Lots:   position.Lots,
 			Reason: fmt.Sprintf("time_48h_%.1fATR", profitATR),
 		}, true
-	case hours > 24 && profitATR < 0.3:
+	case hours > 24 && profitATR < 0.1 && avgATR > 0 && currentATR < avgATR*0.7:
 		return domain.PositionCommand{
 			Action: domain.PositionActionClose,
 			Ticket: position.Ticket,
 			Lots:   position.Lots,
-			Reason: fmt.Sprintf("time_24h_%.1fATR", profitATR),
+			Reason: fmt.Sprintf("time_24h_%.1fATR_lowvol", profitATR),
 		}, true
 	default:
 		return domain.PositionCommand{}, false
@@ -246,13 +299,25 @@ func (m *Manager) checkTP1(position domain.Position, state *domain.PositionState
 	shouldTP1 := profitATR >= tp1Multi
 	earlyThreshold := tp1Multi * 0.6
 	if !shouldTP1 && profitATR >= earlyThreshold && len(h1) >= 3 {
-		last := h1[len(h1)-1]
-		prev := h1[len(h1)-2]
+		candle1 := h1[len(h1)-1]
+		candle2 := h1[len(h1)-2]
+		divergenceCount := 0
 		if side == "BUY" {
-			if prev.RSI > 65 && last.RSI < 55 {
-				shouldTP1 = true
+			if candle2.RSI > 65 && candle1.RSI < 55 {
+				divergenceCount++
 			}
-		} else if prev.RSI < 35 && last.RSI > 45 {
+			if candle1.RSI < candle2.RSI {
+				divergenceCount++
+			}
+		} else {
+			if candle2.RSI < 35 && candle1.RSI > 45 {
+				divergenceCount++
+			}
+			if candle1.RSI > candle2.RSI {
+				divergenceCount++
+			}
+		}
+		if divergenceCount >= 2 {
 			shouldTP1 = true
 		}
 	}
@@ -274,12 +339,12 @@ func (m *Manager) checkTP1(position domain.Position, state *domain.PositionState
 	}, true
 }
 
-func (m *Manager) checkKeyLevel(position domain.Position, state *domain.PositionState, side string, price, atr, profitATR float64) (domain.PositionCommand, bool) {
+func (m *Manager) checkKeyLevel(position domain.Position, state *domain.PositionState, side string, price, atr, profitATR float64, h1 []domain.Bar) (domain.PositionCommand, bool) {
 	if profitATR < 1.0 {
 		return domain.PositionCommand{}, false
 	}
 
-	keyLevel := nearestKeyLevel(price, side)
+	keyLevel := nearestKeyLevel(price, side, h1)
 	if math.Abs(price-keyLevel) >= atr*0.2 {
 		return domain.PositionCommand{}, false
 	}
@@ -396,9 +461,10 @@ func (m *Manager) checkTrendReversal(position domain.Position, state domain.Posi
 			score++
 			reasons = append(reasons, fmt.Sprintf("ADX=%.0f<20", last.ADX))
 		}
-		if last.EMA20 < last.EMA50 && prev.EMA20 >= prev.EMA50 {
+		// Require 2 consecutive candles showing EMA bearish cross
+		if last.EMA20 < last.EMA50 && prev.EMA20 < prev.EMA50 {
 			score += 2
-			reasons = append(reasons, "EMA死叉")
+			reasons = append(reasons, "EMA死叉确认(2根)")
 		}
 	} else {
 		ema20 := last.EMA20
@@ -421,9 +487,10 @@ func (m *Manager) checkTrendReversal(position domain.Position, state domain.Posi
 			score++
 			reasons = append(reasons, fmt.Sprintf("ADX=%.0f<20", last.ADX))
 		}
-		if last.EMA20 > last.EMA50 && prev.EMA20 <= prev.EMA50 {
+		// Require 2 consecutive candles showing EMA bullish cross
+		if last.EMA20 > last.EMA50 && prev.EMA20 > prev.EMA50 {
 			score += 2
-			reasons = append(reasons, "EMA金叉")
+			reasons = append(reasons, "EMA金叉确认(2根)")
 		}
 	}
 
@@ -446,7 +513,8 @@ func (m *Manager) checkDynamicTrailing(position domain.Position, state domain.Po
 
 	drawdown := state.MaxProfitATR - profitATR
 	if state.TP2Hit {
-		if drawdown > state.MaxProfitATR*0.4 {
+		// P1-6: Widen TP2 trailing drawdown tolerance from 40% to 55%
+		if drawdown > state.MaxProfitATR*0.55 {
 			return domain.PositionCommand{
 				Action: domain.PositionActionClose,
 				Ticket: position.Ticket,
@@ -457,7 +525,8 @@ func (m *Manager) checkDynamicTrailing(position domain.Position, state domain.Po
 		return domain.PositionCommand{}, false
 	}
 
-	if drawdown > state.MaxProfitATR*0.5 && profitATR < 0.5 {
+	// P1-6: Widen TP1 trailing from 50%+0.5ATR to 60%+0.8ATR
+	if drawdown > state.MaxProfitATR*0.6 && profitATR < state.MaxProfitATR-0.8 {
 		return domain.PositionCommand{
 			Action: domain.PositionActionClose,
 			Ticket: position.Ticket,
@@ -468,9 +537,33 @@ func (m *Manager) checkDynamicTrailing(position domain.Position, state domain.Po
 	return domain.PositionCommand{}, false
 }
 
-func nearestKeyLevel(price float64, side string) float64 {
+func nearestKeyLevel(price float64, side string, h1 []domain.Bar) float64 {
 	levelBelow := math.Floor(price/50) * 50
 	levelAbove := (math.Floor(price/50) + 1) * 50
+
+	// Also check recent H1 highs/lows as major levels
+	if len(h1) >= 20 {
+		recentHigh := 0.0
+		recentLow := math.Inf(1)
+		for _, bar := range h1[len(h1)-20:] {
+			if bar.High > recentHigh {
+				recentHigh = bar.High
+			}
+			if bar.Low < recentLow {
+				recentLow = bar.Low
+			}
+		}
+		// Round recent high/low to nearest 50 for key level significance
+		roundedHigh := math.Round(recentHigh/50) * 50
+		roundedLow := math.Round(recentLow/50) * 50
+		if side == "BUY" && roundedHigh > levelAbove && math.Abs(price-roundedHigh) < math.Abs(price-levelAbove) {
+			levelAbove = roundedHigh
+		}
+		if side == "SELL" && roundedLow < levelBelow && math.Abs(price-roundedLow) < math.Abs(price-levelBelow) {
+			levelBelow = roundedLow
+		}
+	}
+
 	if side == "BUY" {
 		return levelAbove
 	}

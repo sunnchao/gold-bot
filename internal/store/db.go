@@ -1,12 +1,15 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"gold-bot/internal/domain"
 
 	_ "modernc.org/sqlite"
 	_ "github.com/lib/pq"
@@ -111,4 +114,10 @@ func ensureParentDir(path string) error {
 	}
 
 	return os.MkdirAll(dir, 0o755)
+}
+
+// PositionStateStore defines the interface for persisting position states.
+type PositionStateStore interface {
+	SavePositionState(ctx context.Context, accountID string, state domain.PositionState) error
+	LoadPositionStates(ctx context.Context, accountID string) (map[int64]domain.PositionState, error)
 }

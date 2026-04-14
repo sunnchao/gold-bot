@@ -11,10 +11,33 @@ import (
 
 type Engine struct {
 	MinScore int
+	Config   StrategyConfig
 }
 
-func New() Engine {
-	return Engine{MinScore: 5}
+func New(options ...func(*Engine)) Engine {
+	e := Engine{
+		MinScore: 5,
+		Config:   DefaultStrategyConfig(),
+	}
+	for _, opt := range options {
+		opt(&e)
+	}
+	if e.MinScore == 0 {
+		e.MinScore = e.Config.MinScore
+	}
+	return e
+}
+
+func WithConfig(cfg StrategyConfig) func(*Engine) {
+	return func(e *Engine) {
+		e.Config = cfg
+	}
+}
+
+func WithMinScore(score int) func(*Engine) {
+	return func(e *Engine) {
+		e.MinScore = score
+	}
 }
 
 func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []domain.AnalysisLog) {
@@ -53,21 +76,49 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	h4ADX := 0.0
 	h4FilterDir := ""
 	if len(h4) >= 50 {
+		cfg := e.Config
+		// P3-13: Check last 3 H4 bars for EMA20 > EMA50 consistency
 		h4Last := h4[len(h4)-1]
 		h4ADX = h4Last.ADX
-		if h4ADX > 25 {
-			switch {
-			case h4Last.EMA20 > h4Last.EMA50 && h4Last.Close > h4Last.EMA20:
-				h4Trend = "强多头"
-				h4FilterDir = "BUY"
-			case h4Last.EMA20 < h4Last.EMA50 && h4Last.Close < h4Last.EMA20:
-				h4Trend = "强空头"
-				h4FilterDir = "SELL"
-			default:
-				h4Trend = "趋势不明"
-			}
-		} else {
+
+		if h4ADX < cfg.H4ADXThreshold {
+			// Low ADX → range market, block new positions
 			h4Trend = "震荡"
+			h4FilterDir = "BLOCK"
+		} else {
+			// Check consecutive bars for strong directional trend
+			consecutive := 0
+			barsToCheck := min(cfg.H4RequireConsecutive, len(h4))
+			for i := len(h4) - 1; i >= len(h4)-barsToCheck; i-- {
+				bar := h4[i]
+				if bar.EMA20 > bar.EMA50 && bar.Close > bar.EMA20 {
+					if h4FilterDir == "" || h4FilterDir == "BUY" {
+						h4FilterDir = "BUY"
+						consecutive++
+					}
+				} else if bar.EMA20 < bar.EMA50 && bar.Close < bar.EMA20 {
+					if h4FilterDir == "" || h4FilterDir == "SELL" {
+						h4FilterDir = "SELL"
+						consecutive++
+					}
+				} else {
+					break
+				}
+			}
+
+			if consecutive >= cfg.H4RequireConsecutive {
+				if h4FilterDir == "BUY" {
+					h4Trend = "强多头"
+				} else {
+					h4Trend = "强空头"
+				}
+			} else if consecutive >= 1 {
+				h4Trend = "趋势不明"
+				h4FilterDir = ""
+			} else {
+				h4Trend = "趋势不明"
+				h4FilterDir = ""
+			}
 		}
 	} else {
 		logs = append(logs, domain.AnalysisLog{
@@ -136,7 +187,18 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		return nil, logs
 	}
 
-	if h4FilterDir != "" {
+	// P3-13: If H4 is in range (BLOCK), filter all signals
+	if h4FilterDir == "BLOCK" {
+		log.Printf("[STRATEGY] 🔒 H4=震荡 | ADX<%.0f, 过滤所有信号", e.Config.H4ADXThreshold)
+		logs = append(logs, domain.AnalysisLog{
+			Level:    "warn",
+			Strategy: "H4过滤",
+			Message:  fmt.Sprintf("H4=震荡(ADX=%.1f<%.0f), 过滤所有信号", h4ADX, e.Config.H4ADXThreshold),
+		})
+		return nil, logs
+	}
+
+	if h4FilterDir != "" && h4FilterDir != "BLOCK" {
 		filtered := make([]domain.Signal, 0, len(signals))
 		for _, signal := range signals {
 			if signal.Side == h4FilterDir {
@@ -169,25 +231,46 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		}
 	}
 
-	if best.Score < e.MinScore {
-		log.Printf("[STRATEGY] ⏭ 最优信号评分 %d < 最低要求 %d,过滤", best.Score, e.MinScore)
+	minScore := e.MinScore
+	if minScore == 0 {
+		minScore = e.Config.MinScore
+	}
+	if best.Score < minScore {
+		log.Printf("[STRATEGY] ⏭ 最优信号评分 %d < 最低要求 %d,过滤", best.Score, minScore)
 		logs = append(logs, domain.AnalysisLog{
 			Level:    "info",
 			Strategy: "汇总",
-			Message:  fmt.Sprintf("最优信号评分 %d < 最低要求 %d,过滤", best.Score, e.MinScore),
+			Message:  fmt.Sprintf("最优信号评分 %d < 最低要求 %d,过滤", best.Score, minScore),
 		})
 		return nil, logs
 	}
 
+	// P0-3: Anti-duplicate logic with reverse position check
 	for _, position := range snapshot.Positions {
-		if math.Abs(best.Entry-position.OpenPrice) < atr && strings.ToUpper(position.Type) == best.Side {
-			log.Printf("[STRATEGY] 🔒 防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice)
-			logs = append(logs, domain.AnalysisLog{
-				Level:    "warn",
-				Strategy: "汇总",
-				Message:  fmt.Sprintf("防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice),
-			})
-			return nil, logs
+		dist := math.Abs(best.Entry - position.OpenPrice)
+		posSide := strings.ToUpper(position.Type)
+		if posSide == best.Side {
+			// Same-direction: block if within 1 ATR
+			if dist < atr {
+				log.Printf("[STRATEGY] 🔒 防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice)
+				logs = append(logs, domain.AnalysisLog{
+					Level:    "warn",
+					Strategy: "汇总",
+					Message:  fmt.Sprintf("防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice),
+				})
+				return nil, logs
+			}
+		} else {
+			// Reverse-direction: block if within 2 ATR (prevent hedging)
+			if dist < atr*2 {
+				log.Printf("[STRATEGY] 🔒 防对冲: 已有反向持仓 @ %.2f,距离 < 2.0 ATR", position.OpenPrice)
+				logs = append(logs, domain.AnalysisLog{
+					Level:    "warn",
+					Strategy: "汇总",
+					Message:  fmt.Sprintf("防对冲: 已有反向持仓 @ %.2f,距离 < 2.0 ATR", position.OpenPrice),
+				})
+				return nil, logs
+			}
 		}
 	}
 
@@ -216,39 +299,45 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	return &best, logs
 }
 
-func (Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
+func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
+	cfg := e.Config
 	last := h1[len(h1)-1]
-	const (
-		minADX        = 20.0
-		rsiOversold   = 35.0
-		rsiOverbought = 65.0
-	)
+
 	name := "趋势回调"
 
-	if last.ADX < minADX {
+	if last.ADX < cfg.PullbackMinADX {
 		return nil, domain.AnalysisLog{
 			Level:    "info",
 			Strategy: name,
-			Message:  fmt.Sprintf("ADX=%.1f < %.0f,趋势不明显 ⏭", last.ADX, minADX),
+			Message:  fmt.Sprintf("ADX=%.1f < %.0f,趋势不明显 ⏭", last.ADX, cfg.PullbackMinADX),
 		}
 	}
 
 	dist := math.Abs(price - last.EMA20)
-	threshold := atr * 0.5
+	threshold := atr * cfg.PullbackDistATR
+
+	// P1-5: Require 2 consecutive candles near EMA20
+	nearEMA := false
+	if len(h1) >= 2 {
+		last2 := h1[len(h1)-2]
+		dist1 := math.Abs(last2.Close - last2.EMA20)
+		dist2 := math.Abs(last.Close - last.EMA20)
+		nearEMA = dist1 < threshold && dist2 < threshold
+	}
 
 	if last.EMA20 > last.EMA50 && price > last.EMA50 {
-		if dist >= threshold {
+		if !nearEMA && dist >= threshold {
 			return nil, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: name,
 				Message:  fmt.Sprintf("多头趋势 | 价格距EMA20=%.2f > %.2f,未回调到位 ⏭", dist, threshold),
 			}
 		}
-		if last.RSI >= rsiOverbought {
+		if last.RSI >= cfg.PullbackRSIOverbought {
 			return nil, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: name,
-				Message:  fmt.Sprintf("多头趋势 | RSI=%.1f ≥ %.0f,超买 ⏭", last.RSI, rsiOverbought),
+				Message:  fmt.Sprintf("多头趋势 | RSI=%.1f ≥ %.0f,超买 ⏭", last.RSI, cfg.PullbackRSIOverbought),
 			}
 		}
 
@@ -262,17 +351,21 @@ func (Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Signal
 			score++
 			details = append(details, fmt.Sprintf("RSI=%.1f<50", last.RSI))
 		}
-		if last.ADX > 25 {
+		if last.ADX > cfg.PullbackADXBonus {
 			score++
-			details = append(details, fmt.Sprintf("ADX=%.1f>25", last.ADX))
+			details = append(details, fmt.Sprintf("ADX=%.1f>%.0f", last.ADX, cfg.PullbackADXBonus))
+		}
+		if nearEMA {
+			score++
+			details = append(details, "连续2根回调到位")
 		}
 
 		signal := &domain.Signal{
 			Side:     "BUY",
 			Entry:    price,
-			StopLoss: round2(price - atr*1.5),
-			TP1:      round2(price + atr*1.5),
-			TP2:      round2(price + atr*3.0),
+			StopLoss: round2(price - atr*cfg.PullbackSLATR),
+			TP1:      round2(price + atr*cfg.PullbackTP1ATR),
+			TP2:      round2(price + atr*cfg.PullbackTP2ATR),
 			Score:    min(score, 10),
 			Strategy: "pullback",
 		}
@@ -284,18 +377,18 @@ func (Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Signal
 	}
 
 	if last.EMA20 < last.EMA50 && price < last.EMA50 {
-		if dist >= threshold {
+		if !nearEMA && dist >= threshold {
 			return nil, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: name,
 				Message:  fmt.Sprintf("空头趋势 | 价格距EMA20=%.2f > %.2f,未回调到位 ⏭", dist, threshold),
 			}
 		}
-		if last.RSI <= rsiOversold {
+		if last.RSI <= cfg.PullbackRSIOversold {
 			return nil, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: name,
-				Message:  fmt.Sprintf("空头趋势 | RSI=%.1f ≤ %.0f,超卖 ⏭", last.RSI, rsiOversold),
+				Message:  fmt.Sprintf("空头趋势 | RSI=%.1f ≤ %.0f,超卖 ⏭", last.RSI, cfg.PullbackRSIOversold),
 			}
 		}
 
@@ -309,17 +402,21 @@ func (Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Signal
 			score++
 			details = append(details, fmt.Sprintf("RSI=%.1f>50", last.RSI))
 		}
-		if last.ADX > 25 {
+		if last.ADX > cfg.PullbackADXBonus {
 			score++
-			details = append(details, fmt.Sprintf("ADX=%.1f>25", last.ADX))
+			details = append(details, fmt.Sprintf("ADX=%.1f>%.0f", last.ADX, cfg.PullbackADXBonus))
+		}
+		if nearEMA {
+			score++
+			details = append(details, "连续2根回调到位")
 		}
 
 		signal := &domain.Signal{
 			Side:     "SELL",
 			Entry:    price,
-			StopLoss: round2(price + atr*1.5),
-			TP1:      round2(price - atr*1.5),
-			TP2:      round2(price - atr*3.0),
+			StopLoss: round2(price + atr*cfg.PullbackSLATR),
+			TP1:      round2(price - atr*cfg.PullbackTP1ATR),
+			TP2:      round2(price - atr*cfg.PullbackTP2ATR),
 			Score:    min(score, 10),
 			Strategy: "pullback",
 		}
@@ -337,8 +434,10 @@ func (Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Signal
 	}
 }
 
-func (Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
-	const lookback = 20
+func (e Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
+	cfg := e.Config
+	lookback := cfg.BreakoutRetestLookback
+	confirmWindow := cfg.BreakoutRetestConfirmWindow
 	name := "突破回踩"
 
 	if len(h1) < lookback+5 {
@@ -375,12 +474,36 @@ func (Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domain.
 		}
 	}
 
-	threshold := atr * 0.5
+	threshold := atr * cfg.BreakoutRetestDistATR
 	brokeUp := last5High > resistance
+	brokeDown := last5Low < support
+
+	// P1-5: Require confirmWindow candles touching the broken level
+	touchCount1 := 0
+	for i := len(h1) - confirmWindow; i < len(h1); i++ {
+		if i < 0 {
+			continue
+		}
+		bar := h1[i]
+		if brokeUp && math.Abs(bar.Low-resistance) < threshold {
+			touchCount1++
+		}
+		if brokeDown && math.Abs(bar.High-support) < threshold {
+			touchCount1++
+		}
+	}
+
 	distRes := math.Abs(price - resistance)
-	if brokeUp && distRes < threshold {
+	if brokeUp && distRes < threshold && touchCount1 >= 1 {
 		score := 5
-		details := make([]string, 0, 3)
+		details := make([]string, 0, 4)
+
+		// P3-11: Volume confirmation
+		if last.VolSMA > 0 && last.Volume > 0 && float64(last.Volume) > 1.5*last.VolSMA {
+			score++
+			details = append(details, "成交量确认")
+		}
+
 		if last.MACDHist > 0 {
 			score++
 			details = append(details, "MACD柱>0")
@@ -393,26 +516,36 @@ func (Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domain.
 			score++
 			details = append(details, fmt.Sprintf("RSI=%.1f", last.RSI))
 		}
+		if touchCount1 >= 2 {
+			score++
+			details = append(details, fmt.Sprintf("回踩确认%d根", touchCount1))
+		}
 		return &domain.Signal{
-				Side:     "BUY",
-				Entry:    price,
-				StopLoss: round2(resistance - atr*1.0),
-				TP1:      round2(price + atr*2.0),
-				TP2:      round2(price + atr*4.0),
-				Score:    min(score, 10),
-				Strategy: "breakout_retest",
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message:  fmt.Sprintf("🟢 BUY 评分=%d | 阻力位=%.2f 突破后回踩 dist=%.2f | %s", score, resistance, distRes, strings.Join(details, " | ")),
-			}
+			Side:     "BUY",
+			Entry:    price,
+			StopLoss: round2(resistance - atr*cfg.BreakoutRetestSLATR),
+			TP1:      round2(price + atr*cfg.BreakoutRetestTP1ATR),
+			TP2:      round2(price + atr*cfg.BreakoutRetestTP2ATR),
+			Score:    min(score, 10),
+			Strategy: "breakout_retest",
+		}, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message:  fmt.Sprintf("🟢 BUY 评分=%d | 阻力位=%.2f 突破后回踩 dist=%.2f | %s", score, resistance, distRes, strings.Join(details, " | ")),
+		}
 	}
 
-	brokeDown := last5Low < support
 	distSup := math.Abs(price - support)
-	if brokeDown && distSup < threshold {
+	if brokeDown && distSup < threshold && touchCount1 >= 1 {
 		score := 5
-		details := make([]string, 0, 3)
+		details := make([]string, 0, 4)
+
+		// P3-11: Volume confirmation
+		if last.VolSMA > 0 && last.Volume > 0 && float64(last.Volume) > 1.5*last.VolSMA {
+			score++
+			details = append(details, "成交量确认")
+		}
+
 		if last.MACDHist < 0 {
 			score++
 			details = append(details, "MACD柱<0")
@@ -426,18 +559,18 @@ func (Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domain.
 			details = append(details, fmt.Sprintf("RSI=%.1f", last.RSI))
 		}
 		return &domain.Signal{
-				Side:     "SELL",
-				Entry:    price,
-				StopLoss: round2(support + atr*1.0),
-				TP1:      round2(price - atr*2.0),
-				TP2:      round2(price - atr*4.0),
-				Score:    min(score, 10),
-				Strategy: "breakout_retest",
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message:  fmt.Sprintf("🔴 SELL 评分=%d | 支撑位=%.2f 突破后回踩 dist=%.2f | %s", score, support, distSup, strings.Join(details, " | ")),
-			}
+			Side:     "SELL",
+			Entry:    price,
+			StopLoss: round2(support + atr*cfg.BreakoutRetestSLATR),
+			TP1:      round2(price - atr*cfg.BreakoutRetestTP1ATR),
+			TP2:      round2(price - atr*cfg.BreakoutRetestTP2ATR),
+			Score:    min(score, 10),
+			Strategy: "breakout_retest",
+		}, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message:  fmt.Sprintf("🔴 SELL 评分=%d | 支撑位=%.2f 突破后回踩 dist=%.2f | %s", score, support, distSup, strings.Join(details, " | ")),
+		}
 	}
 
 	message := fmt.Sprintf("阻力=%.2f 支撑=%.2f", resistance, support)
@@ -452,119 +585,158 @@ func (Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domain.
 	return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: message}
 }
 
-func (Engine) checkDivergence(h1, _ []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
+func (e Engine) checkDivergence(h1, _ []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
+	cfg := e.Config
 	name := "RSI背离"
 	if len(h1) < 30 {
 		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "数据不足 ⏭"}
 	}
 
 	last := h1[len(h1)-1]
-	if len(h1) < 20 {
-		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "数据不足20根 ⏭"}
+	windowRecent := cfg.DivergenceWindowRecent
+	windowPrev := cfg.DivergenceWindowPrev
+	if len(h1) < windowRecent+windowPrev {
+		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "数据不足检测背离 ⏭"}
 	}
 
-	recentLow := minClose(h1[len(h1)-10:])
-	prevLow := minClose(h1[len(h1)-20 : len(h1)-10])
-	recentRSILow := minRSI(h1[len(h1)-10:])
-	prevRSILow := minRSI(h1[len(h1)-20 : len(h1)-10])
+	recentLow := minClose(h1[len(h1)-windowRecent:])
+	prevLow := minClose(h1[len(h1)-windowRecent-windowPrev : len(h1)-windowRecent])
+	recentRSILow := minRSI(h1[len(h1)-windowRecent:])
+	prevRSILow := minRSI(h1[len(h1)-windowRecent-windowPrev : len(h1)-windowRecent])
 
-	recentHigh := maxClose(h1[len(h1)-10:])
-	prevHigh := maxClose(h1[len(h1)-20 : len(h1)-10])
-	recentRSIHigh := maxRSI(h1[len(h1)-10:])
-	prevRSIHigh := maxRSI(h1[len(h1)-20 : len(h1)-10])
+	recentHigh := maxClose(h1[len(h1)-windowRecent:])
+	prevHigh := maxClose(h1[len(h1)-windowRecent-windowPrev : len(h1)-windowRecent])
+	recentRSIHigh := maxRSI(h1[len(h1)-windowRecent:])
+	prevRSIHigh := maxRSI(h1[len(h1)-windowRecent-windowPrev : len(h1)-windowRecent])
 
 	bullDiv := recentLow < prevLow && recentRSILow > prevRSILow
-	if bullDiv && last.RSI < 40 {
+	if bullDiv && last.RSI < cfg.DivergenceRSIBullThresh {
 		score := 6
-		details := make([]string, 0, 2)
-		if last.MACDHist > h1[len(h1)-2].MACDHist {
+		details := make([]string, 0, 3)
+
+		// P3-12: MACD divergence as secondary confirmation
+		macdRecentLow := minMACDHist(h1[len(h1)-windowRecent:])
+		macdPrevLow := minMACDHist(h1[len(h1)-windowRecent-windowPrev : len(h1)-windowRecent])
+		if macdRecentLow > macdPrevLow {
+			score++
+			details = append(details, "MACD背离确认")
+		} else if last.MACDHist > h1[len(h1)-2].MACDHist {
 			score++
 			details = append(details, "MACD改善")
 		}
+
+		// P3-11: Volume shrinking at divergence bottom
+		if last.VolSMA > 0 && last.Volume > 0 && float64(last.Volume) < 0.7*last.VolSMA {
+			score++
+			details = append(details, "成交量萎缩")
+		}
+
 		if last.StochK < 20 {
 			score++
 			details = append(details, fmt.Sprintf("StochK=%.0f", last.StochK))
 		}
 		return &domain.Signal{
-				Side:     "BUY",
-				Entry:    price,
-				StopLoss: round2(recentLow - atr*0.5),
-				TP1:      round2(price + atr*2.0),
-				TP2:      round2(price + atr*4.0),
-				Score:    min(score, 10),
-				Strategy: "divergence",
-				ATRMult:  0.5,
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message: fmt.Sprintf(
-					"🟢 BUY 评分=%d | 看涨背离: 价格新低%.2f<%.2f RSI抬高%.1f>%.1f | %s",
-					score, recentLow, prevLow, recentRSILow, prevRSILow, strings.Join(details, " | "),
-				),
-			}
+			Side:     "BUY",
+			Entry:    price,
+			StopLoss: round2(recentLow - atr*cfg.DivergenceSLATR),
+			TP1:      round2(price + atr*cfg.DivergenceTP1ATR),
+			TP2:      round2(price + atr*cfg.DivergenceTP2ATR),
+			Score:    min(score, 10),
+			Strategy: "divergence",
+			ATRMult:  cfg.DivergenceSLATR,
+		}, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message: fmt.Sprintf(
+				"🟢 BUY 评分=%d | 看涨背离: 价格新低%.2f<%.2f RSI抬高%.1f>%.1f | %s",
+				score, recentLow, prevLow, recentRSILow, prevRSILow, strings.Join(details, " | "),
+			),
+		}
 	}
 
 	bearDiv := recentHigh > prevHigh && recentRSIHigh < prevRSIHigh
-	if bearDiv && last.RSI > 60 {
+	if bearDiv && last.RSI > cfg.DivergenceRSIBearThresh {
 		score := 6
-		details := make([]string, 0, 2)
-		if last.MACDHist < h1[len(h1)-2].MACDHist {
+		details := make([]string, 0, 3)
+
+		// P3-12: MACD divergence as secondary confirmation
+		macdRecentHigh := maxMACDHist(h1[len(h1)-windowRecent:])
+		macdPrevHigh := maxMACDHist(h1[len(h1)-windowRecent-windowPrev : len(h1)-windowRecent])
+		if macdRecentHigh < macdPrevHigh {
+			score++
+			details = append(details, "MACD背离确认")
+		} else if last.MACDHist < h1[len(h1)-2].MACDHist {
 			score++
 			details = append(details, "MACD恶化")
 		}
+
+		// P3-11: Volume shrinking at divergence top
+		if last.VolSMA > 0 && last.Volume > 0 && float64(last.Volume) < 0.7*last.VolSMA {
+			score++
+			details = append(details, "成交量萎缩")
+		}
+
 		if last.StochK > 80 {
 			score++
 			details = append(details, fmt.Sprintf("StochK=%.0f", last.StochK))
 		}
 		return &domain.Signal{
-				Side:     "SELL",
-				Entry:    price,
-				StopLoss: round2(recentHigh + atr*0.5),
-				TP1:      round2(price - atr*2.0),
-				TP2:      round2(price - atr*4.0),
-				Score:    min(score, 10),
-				Strategy: "divergence",
-				ATRMult:  0.5,
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message: fmt.Sprintf(
-					"🔴 SELL 评分=%d | 看跌背离: 价格新高%.2f>%.2f RSI降低%.1f<%.1f | %s",
-					score, recentHigh, prevHigh, recentRSIHigh, prevRSIHigh, strings.Join(details, " | "),
-				),
-			}
+			Side:     "SELL",
+			Entry:    price,
+			StopLoss: round2(recentHigh + atr*cfg.DivergenceSLATR),
+			TP1:      round2(price - atr*cfg.DivergenceTP1ATR),
+			TP2:      round2(price - atr*cfg.DivergenceTP2ATR),
+			Score:    min(score, 10),
+			Strategy: "divergence",
+			ATRMult:  cfg.DivergenceSLATR,
+		}, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message: fmt.Sprintf(
+				"🔴 SELL 评分=%d | 看跌背离: 价格新高%.2f>%.2f RSI降低%.1f<%.1f | %s",
+				score, recentHigh, prevHigh, recentRSIHigh, prevRSIHigh, strings.Join(details, " | "),
+			),
+		}
 	}
 
 	message := fmt.Sprintf("RSI=%.1f", last.RSI)
 	switch {
 	case bullDiv:
-		message += fmt.Sprintf(" | 看涨背离检测到但RSI=%.1f ≥ 40", last.RSI)
+		message += fmt.Sprintf(" | 看涨背离检测到但RSI=%.1f ≥ %.0f", last.RSI, cfg.DivergenceRSIBullThresh)
 	case bearDiv:
-		message += fmt.Sprintf(" | 看跌背离检测到但RSI=%.1f ≤ 60", last.RSI)
+		message += fmt.Sprintf(" | 看跌背离检测到但RSI=%.1f ≤ %.0f", last.RSI, cfg.DivergenceRSIBearThresh)
 	default:
 		message += " | 无背离 ⏭"
 	}
 	return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: message}
 }
 
-func (Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
+func (e Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
+	cfg := e.Config
 	name := "突破加仓"
 	if len(h1) < 30 {
 		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "数据不足 ⏭"}
 	}
 
 	last := h1[len(h1)-1]
-	if last.ADX < 25 {
+	if last.ADX < cfg.BreakoutPyramidMinADX {
 		return nil, domain.AnalysisLog{
 			Level:    "info",
 			Strategy: name,
-			Message:  fmt.Sprintf("ADX=%.1f < 25,趋势不够强 ⏭", last.ADX),
+			Message:  fmt.Sprintf("ADX=%.1f < %.0f,趋势不够强 ⏭", last.ADX, cfg.BreakoutPyramidMinADX),
 		}
 	}
 
 	if price > last.BBUpper && last.EMA20 > last.EMA50 {
 		score := 6
-		details := make([]string, 0, 3)
+		details := make([]string, 0, 4)
+
+		// P3-11: Volume confirmation
+		if last.VolSMA > 0 && last.Volume > 0 && float64(last.Volume) > 1.5*last.VolSMA {
+			score++
+			details = append(details, "成交量确认")
+		}
+
 		if last.ADX > 30 {
 			score++
 			details = append(details, fmt.Sprintf("ADX=%.1f>30", last.ADX))
@@ -578,23 +750,30 @@ func (Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*domain
 			details = append(details, "MACD柱>0")
 		}
 		return &domain.Signal{
-				Side:     "BUY",
-				Entry:    price,
-				StopLoss: round2(last.EMA20 - atr*0.5),
-				TP1:      round2(price + atr*2.0),
-				TP2:      round2(price + atr*5.0),
-				Score:    min(score, 10),
-				Strategy: "breakout_pyramid",
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message:  fmt.Sprintf("🟢 BUY 评分=%d | 突破布林上轨=%.2f | %s", score, last.BBUpper, strings.Join(details, " | ")),
-			}
+			Side:     "BUY",
+			Entry:    price,
+			StopLoss: round2(last.EMA20 - atr*cfg.BreakoutPyramidSLATR),
+			TP1:      round2(price + atr*2.0),
+			TP2:      round2(price + atr*5.0),
+			Score:    min(score, 10),
+			Strategy: "breakout_pyramid",
+		}, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message:  fmt.Sprintf("🟢 BUY 评分=%d | 突破布林上轨=%.2f | %s", score, last.BBUpper, strings.Join(details, " | ")),
+		}
 	}
 
 	if price < last.BBLower && last.EMA20 < last.EMA50 {
 		score := 6
-		details := make([]string, 0, 3)
+		details := make([]string, 0, 4)
+
+		// P3-11: Volume confirmation
+		if last.VolSMA > 0 && last.Volume > 0 && float64(last.Volume) > 1.5*last.VolSMA {
+			score++
+			details = append(details, "成交量确认")
+		}
+
 		if last.ADX > 30 {
 			score++
 			details = append(details, fmt.Sprintf("ADX=%.1f>30", last.ADX))
@@ -608,18 +787,18 @@ func (Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*domain
 			details = append(details, "MACD柱<0")
 		}
 		return &domain.Signal{
-				Side:     "SELL",
-				Entry:    price,
-				StopLoss: round2(last.EMA20 + atr*0.5),
-				TP1:      round2(price - atr*2.0),
-				TP2:      round2(price - atr*5.0),
-				Score:    min(score, 10),
-				Strategy: "breakout_pyramid",
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message:  fmt.Sprintf("🔴 SELL 评分=%d | 突破布林下轨=%.2f | %s", score, last.BBLower, strings.Join(details, " | ")),
-			}
+			Side:     "SELL",
+			Entry:    price,
+			StopLoss: round2(last.EMA20 + atr*cfg.BreakoutPyramidSLATR),
+			TP1:      round2(price - atr*2.0),
+			TP2:      round2(price - atr*5.0),
+			Score:    min(score, 10),
+			Strategy: "breakout_pyramid",
+		}, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message:  fmt.Sprintf("🔴 SELL 评分=%d | 突破布林下轨=%.2f | %s", score, last.BBLower, strings.Join(details, " | ")),
+		}
 	}
 
 	message := fmt.Sprintf("BB=[%.2f, %.2f] Price=%.2f", last.BBLower, last.BBUpper, price)
@@ -676,6 +855,26 @@ func maxRSI(bars []domain.Bar) float64 {
 	for _, bar := range bars[1:] {
 		if bar.RSI > value {
 			value = bar.RSI
+		}
+	}
+	return value
+}
+
+func minMACDHist(bars []domain.Bar) float64 {
+	value := bars[0].MACDHist
+	for _, bar := range bars[1:] {
+		if bar.MACDHist < value {
+			value = bar.MACDHist
+		}
+	}
+	return value
+}
+
+func maxMACDHist(bars []domain.Bar) float64 {
+	value := bars[0].MACDHist
+	for _, bar := range bars[1:] {
+		if bar.MACDHist > value {
+			value = bar.MACDHist
 		}
 	}
 	return value

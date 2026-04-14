@@ -1,6 +1,10 @@
 package indicator
 
-import "gold-bot/internal/domain"
+import (
+	"math"
+
+	"gold-bot/internal/domain"
+)
 
 func EnrichBars(bars []domain.Bar) []domain.Bar {
 	out := make([]domain.Bar, len(bars))
@@ -12,10 +16,12 @@ func EnrichBars(bars []domain.Bar) []domain.Bar {
 	closeValues := make([]float64, len(out))
 	highValues := make([]float64, len(out))
 	lowValues := make([]float64, len(out))
+	volValues := make([]float64, len(out))
 	for i, bar := range out {
 		closeValues[i] = bar.Close
 		highValues[i] = bar.High
 		lowValues[i] = bar.Low
+		volValues[i] = float64(bar.Volume)
 	}
 
 	ema20 := EMA(closeValues, 20)
@@ -27,6 +33,7 @@ func EnrichBars(bars []domain.Bar) []domain.Bar {
 	adx := ADX(highValues, lowValues, closeValues, 14)
 	bbUpper, bbMid, bbLower := Bollinger(closeValues, 20, 2)
 	stochK, stochD := Stoch(highValues, lowValues, closeValues, 14, 3)
+	volSMA := rollingMean(volValues, 20)
 
 	for i := range out {
 		out[i].EMA20 = ema20[i]
@@ -45,6 +52,9 @@ func EnrichBars(bars []domain.Bar) []domain.Bar {
 		out[i].BBLower = bbLower[i]
 		out[i].StochK = stochK[i]
 		out[i].StochD = stochD[i]
+		if !math.IsNaN(volSMA[i]) {
+			out[i].VolSMA = volSMA[i]
+		}
 	}
 
 	return out

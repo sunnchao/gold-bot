@@ -119,22 +119,37 @@ func (h aiHandler) aiResult(w http.ResponseWriter, r *http.Request) {
 	if shouldQueueRiskCommand(payload) {
 		commandID := fmt.Sprintf("ai_close_%d", now.Unix())
 		action := domain.CommandActionClosePartial
-		if strings.EqualFold(asString(payload["exit_suggestion"]), "close_all") {
+		exitSuggestion := strings.ToLower(asString(payload["exit_suggestion"]))
+		if exitSuggestion == "close_all" {
 			action = domain.CommandActionCloseAll
 		}
 		log.Printf("[AI] 🚨 account=%s | 触发风控指令: %s | reason=%s", accountID, action, asString(payload["alert_reason"]))
+
+		commandPayload := map[string]any{
+			"command_id": commandID,
+			"action":     string(action),
+			"reason":     fmt.Sprintf("AI风险警报: %s", asString(payload["alert_reason"])),
+			"confidence": payload["confidence"],
+			"source":     "ai_risk_alert",
+		}
+
+		// P3-14: Auto-execution with specific lot reduction for close_partial
+		if exitSuggestion == "close_partial" {
+			commandPayload["lots_pct"] = 0.5
+			commandPayload["reason"] = fmt.Sprintf("AI风险警报(减仓50%%): %s", asString(payload["alert_reason"]))
+			log.Printf("[AI] 📉 account=%s | 自动减仓50%% | reason=%s", accountID, asString(payload["alert_reason"]))
+		} else if exitSuggestion == "close_all" {
+			commandPayload["reason"] = fmt.Sprintf("AI风险警报(全平): %s", asString(payload["alert_reason"]))
+			log.Printf("[AI] 🔴 account=%s | 自动全平 | reason=%s", accountID, asString(payload["alert_reason"]))
+		}
+
 		command := domain.Command{
 			CommandID: commandID,
 			AccountID: accountID,
 			Action:    action,
 			Status:    domain.CommandStatusPending,
 			CreatedAt: now,
-			Payload: map[string]any{
-				"command_id": commandID,
-				"action":     string(action),
-				"reason":     fmt.Sprintf("AI风险警报: %s", asString(payload["alert_reason"])),
-				"confidence": payload["confidence"],
-			},
+			Payload:   commandPayload,
 		}
 		if err := h.deps.Commands.Enqueue(r.Context(), command); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})

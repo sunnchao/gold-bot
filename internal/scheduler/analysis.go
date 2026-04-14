@@ -74,13 +74,30 @@ func RunReplay(snapshot ReplaySnapshot) (ReplayResult, error) {
 
 	h1 := enriched["H1"]
 	currentATR := 0.0
+	avgATR := 0.0
 	if len(h1) > 0 && !math.IsNaN(h1[len(h1)-1].ATR) {
 		currentATR = h1[len(h1)-1].ATR
 	}
 
+	if len(h1) >= 25 {
+		atrSum := 0.0
+		atrCount := 0
+		for _, bar := range h1[len(h1)-20:] {
+			if !math.IsNaN(bar.ATR) && bar.ATR > 0 {
+				atrSum += bar.ATR
+				atrCount++
+			}
+		}
+		if atrCount > 0 {
+			avgATR = atrSum / float64(atrCount)
+		}
+	}
+
 	positionCommands := manager.Analyze(domain.PositionSnapshot{
+		AccountID:    snapshot.AccountID,
 		CurrentPrice: currentPrice,
 		CurrentATR:   currentATR,
+		AvgATR:       avgATR,
 		H1Bars:       h1,
 		Positions:    snapshot.Positions,
 	})

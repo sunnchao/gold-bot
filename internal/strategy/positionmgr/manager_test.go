@@ -14,12 +14,13 @@ func TestAnalyzeTimeStopWinsBeforeOtherExitRules(t *testing.T) {
 	manager.SeedState(domain.PositionState{
 		Ticket:       101,
 		OpenTime:     now.Add(-49 * time.Hour),
-		BETriggerATR: 1.0,
+		BETriggerATR: 1.5,
 	})
 
 	got := manager.Analyze(domain.PositionSnapshot{
-		CurrentPrice: 3341.0,
+		CurrentPrice: 3340.8,
 		CurrentATR:   2.0,
+		AvgATR:       2.0,
 		H1Bars:       samplePositionBars(),
 		Positions: []domain.Position{
 			{
@@ -43,8 +44,8 @@ func TestAnalyzeTimeStopWinsBeforeOtherExitRules(t *testing.T) {
 	if got[0].Lots != 0.5 {
 		t.Fatalf("lots = %v, want 0.5", got[0].Lots)
 	}
-	if got[0].Reason != "time_48h_0.5ATR" {
-		t.Fatalf("reason = %q, want %q", got[0].Reason, "time_48h_0.5ATR")
+	if got[0].Reason != "time_48h_0.4ATR" {
+		t.Fatalf("reason = %q, want %q", got[0].Reason, "time_48h_0.4ATR")
 	}
 }
 
@@ -54,12 +55,13 @@ func TestAnalyzeBreakevenAndTP1CanFireInSamePass(t *testing.T) {
 	manager.SeedState(domain.PositionState{
 		Ticket:       202,
 		OpenTime:     now.Add(-2 * time.Hour),
-		BETriggerATR: 1.0,
+		BETriggerATR: 1.5,
 	})
 
 	got := manager.Analyze(domain.PositionSnapshot{
 		CurrentPrice: 3343.2,
 		CurrentATR:   2.0,
+		AvgATR:       2.0,
 		H1Bars:       samplePositionBars(),
 		Positions: []domain.Position{
 			{
