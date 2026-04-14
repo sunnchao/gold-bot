@@ -10,7 +10,7 @@ import (
 )
 
 // SavePositionState persists a single PositionState to the database.
-func (r *AccountRepository) SavePositionState(ctx context.Context, accountID string, state domain.PositionState) error {
+func (r *AccountRepository) SavePositionState(ctx context.Context, accountID, symbol string, state domain.PositionState) error {
 	tp1Hit := boolToInt(state.TP1Hit)
 	tp2Hit := boolToInt(state.TP2Hit)
 	beMoved := boolToInt(state.BEMoved)
@@ -23,10 +23,10 @@ func (r *AccountRepository) SavePositionState(ctx context.Context, accountID str
 	return retrySQLiteBusy(func() error {
 		_, err := r.db.ExecContext(ctx, `
 			INSERT INTO position_states (
-				account_id, ticket, tp1_hit, tp2_hit, max_profit_atr,
+				account_id, symbol, ticket, tp1_hit, tp2_hit, max_profit_atr,
 				be_moved, be_trigger_atr, open_time, last_modify_time
-			) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`, `+ph(3)+`, `+ph(4)+`, `+ph(5)+`, `+ph(6)+`, `+ph(7)+`, `+ph(8)+`, `+ph(9)+`)
-			ON CONFLICT(account_id, ticket) DO UPDATE SET
+			) VALUES (`+ph(1)+pgText()+`, `+ph(2)+pgText()+`, `+ph(3)+`, `+ph(4)+`, `+ph(5)+`, `+ph(6)+`, `+ph(7)+`, `+ph(8)+`, `+ph(9)+`, `+ph(10)+`)
+			ON CONFLICT(account_id, symbol, ticket) DO UPDATE SET
 				tp1_hit = excluded.tp1_hit,
 				tp2_hit = excluded.tp2_hit,
 				max_profit_atr = excluded.max_profit_atr,
@@ -36,6 +36,7 @@ func (r *AccountRepository) SavePositionState(ctx context.Context, accountID str
 				last_modify_time = excluded.last_modify_time
 		`,
 			accountID,
+			symbol,
 			state.Ticket,
 			tp1Hit,
 			tp2Hit,
@@ -46,23 +47,23 @@ func (r *AccountRepository) SavePositionState(ctx context.Context, accountID str
 			lastModify,
 		)
 		if err != nil {
-			return fmt.Errorf("save position state %s/%d: %w", accountID, state.Ticket, err)
+			return fmt.Errorf("save position state %s/%s/%d: %w", accountID, symbol, state.Ticket, err)
 		}
 		return nil
 	}, func() error {
-		return fmt.Errorf("save position state %s/%d: sqlite busy after retries", accountID, state.Ticket)
+		return fmt.Errorf("save position state %s/%s/%d: sqlite busy after retries", accountID, symbol, state.Ticket)
 	})
 }
 
-// LoadPositionStates loads all position states for an account from the database.
-func (r *AccountRepository) LoadPositionStates(ctx context.Context, accountID string) (map[int64]domain.PositionState, error) {
+// LoadPositionStates loads all position states for an account+symbol from the database.
+func (r *AccountRepository) LoadPositionStates(ctx context.Context, accountID, symbol string) (map[int64]domain.PositionState, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, open_time, last_modify_time
 		FROM position_states
-		WHERE account_id = `+ph(1)+pgText()+`
-	`, accountID)
+		WHERE account_id = `+ph(1)+pgText()+` AND symbol = `+ph(2)+pgText()+`
+	`, accountID, symbol)
 	if err != nil {
-		return nil, fmt.Errorf("load position states for %s: %w", accountID, err)
+		return nil, fmt.Errorf("load position states for %s/%s: %w", accountID, symbol, err)
 	}
 	defer rows.Close()
 
@@ -94,31 +95,31 @@ func (r *AccountRepository) LoadPositionStates(ctx context.Context, accountID st
 		states[state.Ticket] = state
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate position states for %s: %w", accountID, err)
+		return nil, fmt.Errorf("iterate position states for %s/%s: %w", accountID, symbol, err)
 	}
 	return states, nil
 }
 
 // DeleteStalePositionStates removes position states for tickets no longer in the given list.
-func (r *AccountRepository) DeleteStalePositionStates(ctx context.Context, accountID string, activeTickets []int64) error {
+func (r *AccountRepository) DeleteStalePositionStates(ctx context.Context, accountID, symbol string, activeTickets []int64) error {
 	return retrySQLiteBusy(func() error {
 		if len(activeTickets) == 0 {
-			_, err := r.db.ExecContext(ctx, `DELETE FROM position_states WHERE account_id = `+ph(1)+pgText(), accountID)
+			_, err := r.db.ExecContext(ctx, `DELETE FROM position_states WHERE account_id = `+ph(1)+pgText()+` AND symbol = `+ph(2)+pgText(), accountID, symbol)
 			return err
 		}
 
 		placeholders := phs(len(activeTickets))
-		args := make([]any, 0, len(activeTickets)+1)
-		args = append(args, accountID)
+		args := make([]any, 0, len(activeTickets)+2)
+		args = append(args, accountID, symbol)
 		for _, t := range activeTickets {
 			args = append(args, t)
 		}
 
-		query := fmt.Sprintf(`DELETE FROM position_states WHERE account_id = %s AND ticket NOT IN (%s)`, ph(1)+pgText(), placeholders)
+		query := fmt.Sprintf(`DELETE FROM position_states WHERE account_id = %s AND symbol = %s AND ticket NOT IN (%s)`, ph(1)+pgText(), ph(2)+pgText(), placeholders)
 		_, err := r.db.ExecContext(ctx, query, args...)
 		return err
 	}, func() error {
-		return fmt.Errorf("delete stale position states for %s: sqlite busy after retries", accountID)
+		return fmt.Errorf("delete stale position states for %s/%s: sqlite busy after retries", accountID, symbol)
 	})
 }
 

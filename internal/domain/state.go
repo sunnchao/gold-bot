@@ -12,6 +12,7 @@ type TickSnapshot struct {
 
 type AccountState struct {
 	AccountID       string            `json:"account_id"`
+	Symbol          string            `json:"symbol,omitempty"`
 	Tick            TickSnapshot      `json:"tick"`
 	Bars            map[string][]Bar  `json:"bars"`
 	Positions       []Position        `json:"positions"`

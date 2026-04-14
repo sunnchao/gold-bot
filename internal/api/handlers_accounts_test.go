@@ -63,7 +63,7 @@ func TestOverviewReturnsCutoverCard(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveHeartbeat returned error: %v", err)
 	}
-	if err := accounts.SaveTickSnapshot(context.Background(), "90011087", domain.TickSnapshot{
+	if err := accounts.SaveTickSnapshot(context.Background(), "90011087", "XAUUSD", domain.TickSnapshot{
 		Symbol: "XAUUSD",
 		Bid:    3335.55,
 		Ask:    3335.75,

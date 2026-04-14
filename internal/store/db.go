@@ -118,6 +118,14 @@ func ensureParentDir(path string) error {
 
 // PositionStateStore defines the interface for persisting position states.
 type PositionStateStore interface {
-	SavePositionState(ctx context.Context, accountID string, state domain.PositionState) error
-	LoadPositionStates(ctx context.Context, accountID string) (map[int64]domain.PositionState, error)
+	SavePositionState(ctx context.Context, accountID, symbol string, state domain.PositionState) error
+	LoadPositionStates(ctx context.Context, accountID, symbol string) (map[int64]domain.PositionState, error)
+}
+
+// PendingSignalStore defines the interface for arbitration signal management.
+type PendingSignalStore interface {
+	SavePendingSignal(ctx context.Context, signal *domain.PendingSignal) error
+	GetPendingSignals(ctx context.Context, accountID, symbol string) ([]domain.PendingSignal, error)
+	UpdateArbitration(ctx context.Context, id int64, result, reason string) error
+	ExpireStaleSignals(ctx context.Context) error
 }

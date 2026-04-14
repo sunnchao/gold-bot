@@ -72,8 +72,14 @@ func (h *TickHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := h.accounts.SaveTickSnapshot(r.Context(), accountID, domain.TickSnapshot{
-		Symbol: req.Symbol,
+	// Use symbol from request, default to XAUUSD for backward compatibility
+	symbol := req.Symbol
+	if symbol == "" {
+		symbol = "XAUUSD"
+	}
+
+	if err := h.accounts.SaveTickSnapshot(r.Context(), accountID, symbol, domain.TickSnapshot{
+		Symbol: symbol,
 		Bid:    req.Bid,
 		Ask:    req.Ask,
 		Spread: req.Spread,

@@ -16,6 +16,7 @@ type BarsHandler struct {
 
 type BarsRequest struct {
 	AccountID string       `json:"account_id"`
+	Symbol    string       `json:"symbol,omitempty"`
 	Timeframe string       `json:"timeframe"`
 	Bars      []domain.Bar `json:"bars"`
 }
@@ -74,8 +75,14 @@ func (h *BarsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := h.accounts.SaveBars(r.Context(), accountID, req.Timeframe, req.Bars, now); err != nil {
-		log.Printf("[BARS] ❌ account=%s | tf=%s | SaveBars 失败: %v", accountID, req.Timeframe, err)
+	// Use symbol from request, default to XAUUSD for backward compatibility
+	symbol := req.Symbol
+	if symbol == "" {
+		symbol = "XAUUSD"
+	}
+
+	if err := h.accounts.SaveBars(r.Context(), accountID, symbol, req.Timeframe, req.Bars, now); err != nil {
+		log.Printf("[BARS] ❌ account=%s/%s | tf=%s | SaveBars 失败: %v", accountID, symbol, req.Timeframe, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),

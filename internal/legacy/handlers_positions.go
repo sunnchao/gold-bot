@@ -16,6 +16,7 @@ type PositionsHandler struct {
 
 type PositionsRequest struct {
 	AccountID string            `json:"account_id"`
+	Symbol    string            `json:"symbol,omitempty"`
 	Positions []domain.Position `json:"positions"`
 }
 
@@ -64,7 +65,13 @@ func (h *PositionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := h.accounts.SavePositions(r.Context(), accountID, req.Positions, now); err != nil {
+	// Use symbol from request, default to XAUUSD for backward compatibility
+	symbol := req.Symbol
+	if symbol == "" {
+		symbol = "XAUUSD"
+	}
+
+	if err := h.accounts.SavePositions(r.Context(), accountID, symbol, req.Positions, now); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "ERROR",
 			"message": err.Error(),

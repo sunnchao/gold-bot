@@ -78,7 +78,7 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.StrategyMapping) > 0 {
-		if err := h.accounts.SaveStrategyMapping(r.Context(), accountID, req.StrategyMapping, now); err != nil {
+		if err := h.accounts.SaveStrategyMapping(r.Context(), accountID, "XAUUSD", req.StrategyMapping, now); err != nil {
 			log.Printf("[REGISTER] ❌ account=%s | SaveStrategyMapping 失败: %v", accountID, err)
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"status":  "ERROR",

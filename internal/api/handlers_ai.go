@@ -17,14 +17,29 @@ type aiHandler struct {
 	now  func() time.Time
 }
 
+// analysisPayload handles legacy endpoint /api/analysis_payload/{account_id}
+// Default symbol is XAUUSD for backward compatibility.
 func (h aiHandler) analysisPayload(w http.ResponseWriter, r *http.Request) {
 	accountID, ok := accountIDFromPath(r.URL.Path, "/api/analysis_payload/")
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	h.handleAnalysisPayload(w, r, accountID, "XAUUSD")
+}
 
-	log.Printf("[AI] 📊 analysis_payload 请求 | account=%s", accountID)
+// analysisPayloadSymbol handles new endpoint /api/v2/analysis_payload/{account_id}/{symbol}
+func (h aiHandler) analysisPayloadSymbol(w http.ResponseWriter, r *http.Request) {
+	accountID, symbol, ok := accountIDAndSymbolFromPath(r.URL.Path, "/api/v2/analysis_payload/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	h.handleAnalysisPayload(w, r, accountID, symbol)
+}
+
+func (h aiHandler) handleAnalysisPayload(w http.ResponseWriter, r *http.Request, accountID, symbol string) {
+	log.Printf("[AI] 📊 analysis_payload 请求 | account=%s/%s", accountID, symbol)
 
 	allowed, err := authorizeAccount(r.Context(), h.deps.Tokens, tokenFromContext(r.Context()), accountID)
 	if err != nil {
@@ -46,7 +61,7 @@ func (h aiHandler) analysisPayload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
 		return
 	}
-	state, err := h.deps.Accounts.GetState(r.Context(), accountID)
+	state, err := h.deps.Accounts.GetStateSymbol(r.Context(), accountID, symbol)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
 		return
@@ -55,14 +70,28 @@ func (h aiHandler) analysisPayload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, aurex.BuildAnalysisPayload(account, runtime, state, h.now().UTC()))
 }
 
+// aiResult handles legacy endpoint /api/ai_result/{account_id}
 func (h aiHandler) aiResult(w http.ResponseWriter, r *http.Request) {
 	accountID, ok := accountIDFromPath(r.URL.Path, "/api/ai_result/")
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	h.handleAIResult(w, r, accountID, "XAUUSD")
+}
 
-	log.Printf("[AI] 🤖 ai_result 请求 | account=%s", accountID)
+// aiResultSymbol handles new endpoint /api/v2/ai_result/{account_id}/{symbol}
+func (h aiHandler) aiResultSymbol(w http.ResponseWriter, r *http.Request) {
+	accountID, symbol, ok := accountIDAndSymbolFromPath(r.URL.Path, "/api/v2/ai_result/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	h.handleAIResult(w, r, accountID, symbol)
+}
+
+func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accountID, symbol string) {
+	log.Printf("[AI] 🤖 ai_result 请求 | account=%s/%s", accountID, symbol)
 
 	allowed, err := authorizeAccount(r.Context(), h.deps.Tokens, tokenFromContext(r.Context()), accountID)
 	if err != nil {
@@ -86,23 +115,23 @@ func (h aiHandler) aiResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.now().UTC()
-	if err := h.deps.Accounts.SaveAIResult(r.Context(), accountID, raw, now); err != nil {
-		log.Printf("[AI] ❌ account=%s | SaveAIResult 失败: %v", accountID, err)
+	if err := h.deps.Accounts.SaveAIResult(r.Context(), accountID, symbol, raw, now); err != nil {
+		log.Printf("[AI] ❌ account=%s/%s | SaveAIResult 失败: %v", accountID, symbol, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
 		return
 	}
 
-	log.Printf("[AI] ✅ account=%s | AI 分析结果已保存 | payload_size=%d bytes", accountID, len(raw))
+	log.Printf("[AI] ✅ account=%s/%s | AI 分析结果已保存 | payload_size=%d bytes", accountID, symbol, len(raw))
 
 	// Log AI analysis summary if available
 	if bias, ok := payload["bias"].(string); ok {
 		confidence := payload["confidence"]
 		exitSug := payload["exit_suggestion"]
-		log.Printf("[AI] 📈 account=%s | bias=%s confidence=%v exit_suggestion=%v", accountID, bias, confidence, exitSug)
+		log.Printf("[AI] 📈 account=%s/%s | bias=%s confidence=%v exit_suggestion=%v", accountID, symbol, bias, confidence, exitSug)
 	}
 	if riskAlert, ok := payload["risk_alert"].(bool); ok && riskAlert {
-		log.Printf("[AI] 🚨 account=%s | 风险警报触发! reason=%s exit=%s",
-			accountID, asString(payload["alert_reason"]), asString(payload["exit_suggestion"]))
+		log.Printf("[AI] 🚨 account=%s/%s | 风险警报触发! reason=%s exit=%s",
+			accountID, symbol, asString(payload["alert_reason"]), asString(payload["exit_suggestion"]))
 	}
 
 	if h.deps.Events != nil {
@@ -123,7 +152,7 @@ func (h aiHandler) aiResult(w http.ResponseWriter, r *http.Request) {
 		if exitSuggestion == "close_all" {
 			action = domain.CommandActionCloseAll
 		}
-		log.Printf("[AI] 🚨 account=%s | 触发风控指令: %s | reason=%s", accountID, action, asString(payload["alert_reason"]))
+		log.Printf("[AI] 🚨 account=%s/%s | 触发风控指令: %s | reason=%s", accountID, symbol, action, asString(payload["alert_reason"]))
 
 		commandPayload := map[string]any{
 			"command_id": commandID,
@@ -137,10 +166,10 @@ func (h aiHandler) aiResult(w http.ResponseWriter, r *http.Request) {
 		if exitSuggestion == "close_partial" {
 			commandPayload["lots_pct"] = 0.5
 			commandPayload["reason"] = fmt.Sprintf("AI风险警报(减仓50%%): %s", asString(payload["alert_reason"]))
-			log.Printf("[AI] 📉 account=%s | 自动减仓50%% | reason=%s", accountID, asString(payload["alert_reason"]))
+			log.Printf("[AI] 📉 account=%s/%s | 自动减仓50%% | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
 		} else if exitSuggestion == "close_all" {
 			commandPayload["reason"] = fmt.Sprintf("AI风险警报(全平): %s", asString(payload["alert_reason"]))
-			log.Printf("[AI] 🔴 account=%s | 自动全平 | reason=%s", accountID, asString(payload["alert_reason"]))
+			log.Printf("[AI] 🔴 account=%s/%s | 自动全平 | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
 		}
 
 		command := domain.Command{

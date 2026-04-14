@@ -44,7 +44,14 @@ func (r *TokenRepository) List(ctx context.Context) ([]domain.TokenRecord, error
 	}
 	defer rows.Close()
 
+	// Collect all records first, then close rows before calling
+	// AccountsForToken to avoid SQLite connection pool deadlock.
+	type pending struct {
+		idx   int
+		token string
+	}
 	records := make([]domain.TokenRecord, 0)
+	var pendings []pending
 	for rows.Next() {
 		var record domain.TokenRecord
 		var isAdmin int
@@ -52,14 +59,20 @@ func (r *TokenRepository) List(ctx context.Context) ([]domain.TokenRecord, error
 			return nil, fmt.Errorf("scan token record: %w", err)
 		}
 		record.IsAdmin = isAdmin != 0
-		record.Accounts, err = r.AccountsForToken(ctx, record.Token)
-		if err != nil {
-			return nil, err
-		}
+		pendings = append(pendings, pending{idx: len(records), token: record.Token})
 		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate tokens: %w", err)
+	}
+
+	// rows is now exhausted (defer Close is fine) — safe to query again.
+	for _, p := range pendings {
+		accounts, err := r.AccountsForToken(ctx, p.token)
+		if err != nil {
+			return nil, err
+		}
+		records[p.idx].Accounts = accounts
 	}
 	return records, nil
 }

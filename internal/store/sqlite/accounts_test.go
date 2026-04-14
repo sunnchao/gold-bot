@@ -105,7 +105,7 @@ func TestAccountRepositorySaveBarsHandlesConcurrentWrites(t *testing.T) {
 			go func(timeframe string, offset int) {
 				defer wg.Done()
 				<-start
-				errCh <- repo.SaveBars(ctx, "900110872", timeframe, bars, now.Add(time.Duration(offset)*time.Millisecond))
+				errCh <- repo.SaveBars(ctx, "900110872", "XAUUSD", timeframe, bars, now.Add(time.Duration(offset)*time.Millisecond))
 			}(tf, i)
 		}
 	}

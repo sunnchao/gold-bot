@@ -21,8 +21,10 @@ type AccountStore interface {
 	GetAccount(ctx context.Context, accountID string) (domain.Account, error)
 	GetRuntime(ctx context.Context, accountID string) (domain.AccountRuntime, error)
 	GetState(ctx context.Context, accountID string) (domain.AccountState, error)
+	GetStateSymbol(ctx context.Context, accountID, symbol string) (domain.AccountState, error)
+	ListSymbols(ctx context.Context, accountID string) ([]string, error)
 	ListAccounts(ctx context.Context) ([]domain.Account, error)
-	SaveAIResult(ctx context.Context, accountID string, payload json.RawMessage, updatedAt time.Time) error
+	SaveAIResult(ctx context.Context, accountID, symbol string, payload json.RawMessage, updatedAt time.Time) error
 }
 
 type TokenStore interface {
@@ -60,9 +62,17 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 	eaHandler := eaHandler{tokens: deps.Tokens, releases: deps.Releases}
 	accountsHandler := accountsHandler{deps: deps, now: time.Now}
 	cutoverHandler := cutoverHandler{deps: deps, now: time.Now}
+	symbolHandler := symbolHandler{deps: deps, now: time.Now}
 
+	// Legacy endpoints (default symbol XAUUSD)
 	mux.Handle("/api/analysis_payload/", auth.requireToken(http.HandlerFunc(aiHandler.analysisPayload)))
 	mux.Handle("/api/ai_result/", auth.requireToken(http.HandlerFunc(aiHandler.aiResult)))
+
+	// New multi-symbol endpoints
+	mux.Handle("/api/symbols/", auth.requireToken(http.HandlerFunc(symbolHandler.listSymbols)))
+	mux.Handle("/api/v2/analysis_payload/", auth.requireToken(http.HandlerFunc(aiHandler.analysisPayloadSymbol)))
+	mux.Handle("/api/v2/ai_result/", auth.requireToken(http.HandlerFunc(aiHandler.aiResultSymbol)))
+
 	mux.Handle("/api/trigger_ai", auth.requireToken(http.HandlerFunc(aiHandler.triggerAI)))
 	mux.Handle("/api/tokens", auth.requireAdmin(http.HandlerFunc(tokenHandler.handle)))
 	mux.Handle("/api/tokens/", auth.requireAdmin(http.HandlerFunc(tokenHandler.delete)))
@@ -140,6 +150,20 @@ func accountIDFromPath(path, prefix string) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+// accountIDAndSymbolFromPath parses "/api/xxx/{account_id}/{symbol}" style paths.
+func accountIDAndSymbolFromPath(path, prefix string) (accountID, symbol string, ok bool) {
+	if !strings.HasPrefix(path, prefix) {
+		return "", "", false
+	}
+	remainder := strings.TrimPrefix(path, prefix)
+	remainder = strings.Trim(remainder, "/")
+	parts := strings.SplitN(remainder, "/", 2)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func authorizeAccount(ctx context.Context, tokens TokenStore, token, accountID string) (bool, error) {
