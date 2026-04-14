@@ -45,13 +45,15 @@ jobs:
 
   build:
     needs: build-dashboard
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - linux/amd64
-          - linux/arm64
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,9 +65,6 @@ jobs:
       - name: Prepare platform pair
         id: prep
         run: echo "pair=$(echo '${{ matrix.platform }}' | tr '/' '-')" >> $GITHUB_OUTPUT
-
-      - uses: docker/setup-qemu-action@v3
-        if: matrix.platform == 'linux/arm64'
 
       - uses: docker/setup-buildx-action@v3
 
