@@ -11,6 +11,7 @@ import (
 
 	"gold-bot/internal/api"
 	"gold-bot/internal/config"
+	"gold-bot/internal/domain"
 	"gold-bot/internal/ea"
 	"gold-bot/internal/legacy"
 	"gold-bot/internal/realtime"
@@ -22,6 +23,23 @@ import (
 type App struct {
 	db     *sql.DB
 	server *http.Server
+}
+
+type arbitrationStoreAdapter struct {
+	repo *sqlitestore.PendingSignalRepository
+	db   *sql.DB
+}
+
+func (a arbitrationStoreAdapter) GetPendingSignals(ctx context.Context, accountID, symbol string) ([]domain.PendingSignal, error) {
+	return a.repo.GetPendingSignals(ctx, accountID, symbol)
+}
+
+func (a arbitrationStoreAdapter) UpdateArbitration(ctx context.Context, signalID int64, result, reason string) error {
+	return a.repo.UpdateArbitration(ctx, signalID, result, reason)
+}
+
+func (a arbitrationStoreAdapter) ExpireStaleSignals(ctx context.Context) (int64, error) {
+	return a.repo.ExpireStaleSignals(ctx)
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -59,6 +77,7 @@ func New(cfg config.Config) (*App, error) {
 	accounts := sqlitestore.NewAccountRepository(db)
 	tokens := sqlitestore.NewTokenRepository(db)
 	commands := sqlitestore.NewCommandRepository(db)
+	arbitration := arbitrationStoreAdapter{repo: sqlitestore.NewPendingSignalRepository(db), db: db}
 	if err := bootstrapTokens(context.Background(), tokens, cfg, now); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -77,12 +96,13 @@ func New(cfg config.Config) (*App, error) {
 		Tokens:   tokens,
 	})
 	api.RegisterRoutes(mux, api.Dependencies{
-		Accounts: accounts,
-		Tokens:   tokens,
-		Commands: commands,
-		Releases: ea.NewLocalReleaseSource("."),
-		Events:   events,
-		Cutover:  cutover,
+		Accounts:    accounts,
+		Tokens:      tokens,
+		Commands:    commands,
+		Releases:    ea.NewLocalReleaseSource("."),
+		Events:      events,
+		Cutover:     cutover,
+		Arbitration: arbitration,
 	})
 	mux.Handle("/", newDashboardHandler(findDashboardDist()))
 

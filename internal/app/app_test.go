@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"gold-bot/internal/config"
+	"gold-bot/internal/domain"
 	sqlitestore "gold-bot/internal/store/sqlite"
 )
 
@@ -168,6 +170,68 @@ func TestNewAppAppliesMigrations(t *testing.T) {
 	}
 	if tableName != "accounts" {
 		t.Fatalf("table name = %q, want %q", tableName, "accounts")
+	}
+}
+
+func TestNewAppWiresPendingSignalAPI(t *testing.T) {
+	cfg := testConfig(t)
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := app.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	tokens := sqlitestore.NewTokenRepository(app.db)
+	accounts := sqlitestore.NewAccountRepository(app.db)
+	pendingSignals := sqlitestore.NewPendingSignalRepository(app.db)
+	now := time.Date(2026, 4, 15, 8, 0, 0, 0, time.UTC)
+
+	if err := tokens.PutToken(context.Background(), "admin-token", "admin", true, now); err != nil {
+		t.Fatalf("PutToken(admin) returned error: %v", err)
+	}
+	if err := accounts.EnsureAccount(context.Background(), "90011087", now); err != nil {
+		t.Fatalf("EnsureAccount returned error: %v", err)
+	}
+
+	signal := &domain.PendingSignal{
+		AccountID:  "90011087",
+		Symbol:     "XAUUSD",
+		Side:       "buy",
+		Score:      9,
+		Strategy:   "pullback",
+		Indicators: `{"adx":31,"rsi":58}`,
+		Status:     "pending",
+		CreatedAt:  now,
+		ExpiresAt:  now.Add(30 * time.Second),
+	}
+	if err := pendingSignals.SavePendingSignal(context.Background(), signal); err != nil {
+		t.Fatalf("SavePendingSignal returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/pending_signal/90011087/XAUUSD", nil)
+	req.Header.Set("X-API-Token", "admin-token")
+	rec := httptest.NewRecorder()
+
+	app.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/pending_signal status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body []domain.PendingSignal
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response returned error: %v", err)
+	}
+	if len(body) != 1 {
+		t.Fatalf("len(body) = %d, want 1 body=%s", len(body), rec.Body.String())
+	}
+	if body[0].ID != signal.ID {
+		t.Fatalf("body[0].id = %d, want %d", body[0].ID, signal.ID)
 	}
 }
 

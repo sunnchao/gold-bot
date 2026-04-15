@@ -15,8 +15,8 @@ type Option func(*Manager)
 
 // StateStore persists position states across restarts.
 type StateStore interface {
-	SavePositionState(ctx context.Context, accountID string, state domain.PositionState) error
-	LoadPositionStates(ctx context.Context, accountID string) (map[int64]domain.PositionState, error)
+	SavePositionState(ctx context.Context, accountID, symbol string, state domain.PositionState) error
+	LoadPositionStates(ctx context.Context, accountID, symbol string) (map[int64]domain.PositionState, error)
 }
 
 type Manager struct {
@@ -56,19 +56,19 @@ func WithContext(ctx context.Context) Option {
 	}
 }
 
-// LoadStates loads position states from the persistent store for a given account.
-func (m *Manager) LoadStates(accountID string) error {
+// LoadStates loads position states from the persistent store for a given account+symbol.
+func (m *Manager) LoadStates(accountID, symbol string) error {
 	if m.store == nil {
 		return nil
 	}
-	states, err := m.store.LoadPositionStates(m.ctx, accountID)
+	states, err := m.store.LoadPositionStates(m.ctx, accountID, symbol)
 	if err != nil {
 		return fmt.Errorf("load position states: %w", err)
 	}
 	for ticket, state := range states {
 		m.states[ticket] = state
 	}
-	log.Printf("[POSMGR] 📂 Loaded %d position states for account=%s", len(states), accountID)
+	log.Printf("[POSMGR] 📂 Loaded %d position states for account=%s symbol=%s", len(states), accountID, symbol)
 	return nil
 }
 
@@ -133,7 +133,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			log.Printf("[POSMGR] ⏰ #%d | 时间止损: %s", position.Ticket, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
-			m.persistState(snapshot.AccountID, state)
+			m.persistState(snapshot.AccountID, snapshot.Symbol, state)
 			continue
 		}
 
@@ -146,7 +146,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			log.Printf("[POSMGR] 🎯 #%d | TP1: %s %.2f手 | reason=%s", position.Ticket, command.Action, command.Lots, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
-			m.persistState(snapshot.AccountID, state)
+			m.persistState(snapshot.AccountID, snapshot.Symbol, state)
 			continue
 		}
 
@@ -154,7 +154,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			log.Printf("[POSMGR] 📍 #%d | 关键位止损: %s | reason=%s", position.Ticket, command.Action, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
-			m.persistState(snapshot.AccountID, state)
+			m.persistState(snapshot.AccountID, snapshot.Symbol, state)
 			continue
 		}
 
@@ -162,7 +162,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			log.Printf("[POSMGR] 🎯 #%d | TP2: %s %.2f手 | reason=%s", position.Ticket, command.Action, command.Lots, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
-			m.persistState(snapshot.AccountID, state)
+			m.persistState(snapshot.AccountID, snapshot.Symbol, state)
 			continue
 		}
 
@@ -170,7 +170,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			log.Printf("[POSMGR] 🔄 #%d | 趋势反转: %s | reason=%s", position.Ticket, command.Action, command.Reason)
 			commands = append(commands, command)
 			m.states[position.Ticket] = state
-			m.persistState(snapshot.AccountID, state)
+			m.persistState(snapshot.AccountID, snapshot.Symbol, state)
 			continue
 		}
 
@@ -180,7 +180,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 		}
 
 		m.states[position.Ticket] = state
-		m.persistState(snapshot.AccountID, state)
+		m.persistState(snapshot.AccountID, snapshot.Symbol, state)
 	}
 
 	for ticket := range m.states {
@@ -195,12 +195,12 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 	return commands
 }
 
-func (m *Manager) persistState(accountID string, state domain.PositionState) {
-	if m.store == nil || accountID == "" {
+func (m *Manager) persistState(accountID, symbol string, state domain.PositionState) {
+	if m.store == nil || accountID == "" || symbol == "" {
 		return
 	}
-	if err := m.store.SavePositionState(m.ctx, accountID, state); err != nil {
-		log.Printf("[POSMGR] ⚠️ 保存持仓状态失败 account=%s ticket=%d: %v", accountID, state.Ticket, err)
+	if err := m.store.SavePositionState(m.ctx, accountID, symbol, state); err != nil {
+		log.Printf("[POSMGR] ⚠️ 保存持仓状态失败 account=%s symbol=%s ticket=%d: %v", accountID, symbol, state.Ticket, err)
 	}
 }
 

@@ -22,27 +22,16 @@ func NewPendingSignalRepository(db *sql.DB) *PendingSignalRepository {
 // SavePendingSignal inserts or updates a pending signal.
 func (r *PendingSignalRepository) SavePendingSignal(ctx context.Context, signal *domain.PendingSignal) error {
 	if signal.ID == 0 {
-		// Insert new signal
-		result, err := r.db.ExecContext(ctx, `
-			INSERT INTO pending_signal (
-				account_id, symbol, side, score, strategy, indicators,
-				status, created_at, expires_at
-			) VALUES (
-				`+ph(1)+pgText()+`, `+ph(2)+pgText()+`, `+ph(3)+pgText()+`, 
-				`+ph(4)+`, `+ph(5)+pgText()+`, `+ph(6)+pgText()+`,
-				`+ph(7)+pgText()+`, `+ph(8)+`, `+ph(9)+`
-			)
-		`,
-			signal.AccountID,
-			signal.Symbol,
-			signal.Side,
-			signal.Score,
-			signal.Strategy,
-			signal.Indicators,
-			signal.Status,
-			formatTime(signal.CreatedAt),
-			formatTime(signal.ExpiresAt),
-		)
+		query, args := buildPendingSignalInsert(signal)
+
+		if isPg() {
+			if err := r.db.QueryRowContext(ctx, query, args...).Scan(&signal.ID); err != nil {
+				return fmt.Errorf("insert pending signal: %w", err)
+			}
+			return nil
+		}
+
+		result, err := r.db.ExecContext(ctx, query, args...)
 		if err != nil {
 			return fmt.Errorf("insert pending signal: %w", err)
 		}
@@ -90,18 +79,54 @@ func (r *PendingSignalRepository) SavePendingSignal(ctx context.Context, signal 
 	return nil
 }
 
+func buildPendingSignalInsert(signal *domain.PendingSignal) (string, []any) {
+	query := `
+		INSERT INTO pending_signal (
+			account_id, symbol, side, score, strategy, indicators,
+			status, created_at, expires_at
+		) VALUES (
+			` + ph(1) + pgText() + `, ` + ph(2) + pgText() + `, ` + ph(3) + pgText() + `,
+			` + ph(4) + `, ` + ph(5) + pgText() + `, ` + ph(6) + pgText() + `,
+			` + ph(7) + pgText() + `, ` + ph(8) + `, ` + ph(9) + `
+		)
+	`
+	if isPg() {
+		query += ` RETURNING id`
+	}
+
+	return query, []any{
+		signal.AccountID,
+		signal.Symbol,
+		signal.Side,
+		signal.Score,
+		signal.Strategy,
+		signal.Indicators,
+		signal.Status,
+		formatTime(signal.CreatedAt),
+		formatTime(signal.ExpiresAt),
+	}
+}
+
 // GetPendingSignals retrieves pending signals for a specific account and symbol.
-// If both accountID and symbol are empty, returns all pending signals.
+// If both accountID and symbol are empty, returns all signals.
 func (r *PendingSignalRepository) GetPendingSignals(ctx context.Context, accountID, symbol string) ([]domain.PendingSignal, error) {
 	var query string
 	var args []interface{}
 
-	if accountID != "" && symbol != "" {
+	if accountID == "" && symbol == "" {
 		query = `
 			SELECT id, account_id, symbol, side, score, strategy, indicators,
 				   status, created_at, expires_at, arbitration_result, arbitration_reason
 			FROM pending_signal
-			WHERE account_id = `+ph(1)+pgText()+` AND symbol = `+ph(2)+pgText()+` AND status = 'pending'
+			ORDER BY created_at DESC
+		`
+		args = []interface{}{}
+	} else if accountID != "" && symbol != "" {
+		query = `
+			SELECT id, account_id, symbol, side, score, strategy, indicators,
+				   status, created_at, expires_at, arbitration_result, arbitration_reason
+			FROM pending_signal
+			WHERE account_id = ` + ph(1) + pgText() + ` AND symbol = ` + ph(2) + pgText() + ` AND status = 'pending'
 			ORDER BY created_at DESC
 		`
 		args = []interface{}{accountID, symbol}
@@ -110,7 +135,7 @@ func (r *PendingSignalRepository) GetPendingSignals(ctx context.Context, account
 			SELECT id, account_id, symbol, side, score, strategy, indicators,
 				   status, created_at, expires_at, arbitration_result, arbitration_reason
 			FROM pending_signal
-			WHERE account_id = `+ph(1)+pgText()+` AND status = 'pending'
+			WHERE account_id = ` + ph(1) + pgText() + ` AND status = 'pending'
 			ORDER BY created_at DESC
 		`
 		args = []interface{}{accountID}
@@ -181,7 +206,7 @@ func (r *PendingSignalRepository) UpdateArbitration(ctx context.Context, id int6
 		status = "rejected"
 	}
 
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 		UPDATE pending_signal SET
 			status = `+ph(1)+pgText()+`,
 			arbitration_result = `+ph(2)+pgText()+`,
@@ -196,14 +221,23 @@ func (r *PendingSignalRepository) UpdateArbitration(ctx context.Context, id int6
 	if err != nil {
 		return fmt.Errorf("update arbitration for signal %d: %w", id, err)
 	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update arbitration for signal %d rows affected: %w", id, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("update arbitration for signal %d: not found", id)
+	}
+
 	return nil
 }
 
 // ExpireStaleSignals marks expired signals as timeout.
-func (r *PendingSignalRepository) ExpireStaleSignals(ctx context.Context) error {
+func (r *PendingSignalRepository) ExpireStaleSignals(ctx context.Context) (int64, error) {
 	now := formatTime(time.Now().UTC())
 
-	_, err := r.db.ExecContext(ctx, `
+	result, err := r.db.ExecContext(ctx, `
 		UPDATE pending_signal SET
 			status = 'timeout',
 			arbitration_result = 'timeout',
@@ -211,9 +245,15 @@ func (r *PendingSignalRepository) ExpireStaleSignals(ctx context.Context) error 
 		WHERE status = 'pending' AND expires_at < `+ph(1)+`
 	`, now)
 	if err != nil {
-		return fmt.Errorf("expire stale signals: %w", err)
+		return 0, fmt.Errorf("expire stale signals: %w", err)
 	}
-	return nil
+
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("expire stale signals rows affected: %w", err)
+	}
+
+	return count, nil
 }
 
 // GetPendingSignalByID retrieves a pending signal by ID.

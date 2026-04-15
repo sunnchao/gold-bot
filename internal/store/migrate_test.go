@@ -35,6 +35,25 @@ func TestReadMigrationLoadsInitSQL(t *testing.T) {
 	}
 }
 
+func TestReadMigrationLoadsMultiSymbolSQL(t *testing.T) {
+	mfs := migrationSource()
+	content, err := readMigrationFS(mfs, "0006_multi_symbol.sql")
+	if err != nil {
+		t.Fatalf("readMigrationFS returned error: %v", err)
+	}
+
+	text := string(content)
+	if !strings.Contains(text, "CREATE TABLE IF NOT EXISTS pending_signal") {
+		t.Fatal("embedded migration content does not create pending_signal table")
+	}
+	if !strings.Contains(text, "PRIMARY KEY (account_id, symbol)") {
+		t.Fatal("embedded migration content does not create symbol-aware account_state primary key")
+	}
+	if !strings.Contains(text, "PRIMARY KEY (account_id, symbol, ticket)") {
+		t.Fatal("embedded migration content does not create symbol-aware position_states primary key")
+	}
+}
+
 func TestRunMigrationsCreatesAccountsTable(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "store.sqlite")
 
@@ -58,6 +77,9 @@ func TestRunMigrationsCreatesAccountsTable(t *testing.T) {
 	assertTableExists(t, db, "token_accounts")
 	assertTableExists(t, db, "commands")
 	assertTableExists(t, db, "command_results")
+	assertTableExists(t, db, "pending_signal")
+	assertColumnExists(t, db, "account_state", "symbol")
+	assertColumnExists(t, db, "position_states", "symbol")
 }
 
 func TestRunMigrationsIsIdempotent(t *testing.T) {
@@ -102,6 +124,13 @@ func TestRunMigrationsIsIdempotent(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("migration count = %d, want %d", count, 1)
 	}
+	err = db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE version = ?`, "0006_multi_symbol.sql").Scan(&count)
+	if err != nil {
+		t.Fatalf("schema_migrations lookup failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("migration count = %d, want %d", count, 1)
+	}
 
 	assertTableExists(t, db, "accounts")
 	assertTableExists(t, db, "account_runtime")
@@ -109,6 +138,7 @@ func TestRunMigrationsIsIdempotent(t *testing.T) {
 	assertTableExists(t, db, "token_accounts")
 	assertTableExists(t, db, "commands")
 	assertTableExists(t, db, "command_results")
+	assertTableExists(t, db, "pending_signal")
 }
 
 func TestRunMigrationsUpgradesLegacy0001Database(t *testing.T) {
@@ -168,6 +198,13 @@ func TestRunMigrationsUpgradesLegacy0001Database(t *testing.T) {
 		t.Fatalf("migration count = %d, want %d", count, 1)
 	}
 	err = db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE version = ?`, "0003_command_queue.sql").Scan(&count)
+	if err != nil {
+		t.Fatalf("schema_migrations lookup failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("migration count = %d, want %d", count, 1)
+	}
+	err = db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE version = ?`, "0006_multi_symbol.sql").Scan(&count)
 	if err != nil {
 		t.Fatalf("schema_migrations lookup failed: %v", err)
 	}
@@ -249,9 +286,17 @@ func TestRunMigrationsUpgradesLegacy0002Database(t *testing.T) {
 
 	assertTableExists(t, db, "commands")
 	assertTableExists(t, db, "command_results")
+	assertTableExists(t, db, "pending_signal")
 
 	var count int
 	err = db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE version = ?`, "0003_command_queue.sql").Scan(&count)
+	if err != nil {
+		t.Fatalf("schema_migrations lookup failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("migration count = %d, want %d", count, 1)
+	}
+	err = db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE version = ?`, "0006_multi_symbol.sql").Scan(&count)
 	if err != nil {
 		t.Fatalf("schema_migrations lookup failed: %v", err)
 	}
@@ -293,4 +338,33 @@ func assertTableExists(t *testing.T, db *sql.DB, table string) {
 	if tableName != table {
 		t.Fatalf("table name = %q, want %q", tableName, table)
 	}
+}
+
+func assertColumnExists(t *testing.T, db *sql.DB, table, column string) {
+	t.Helper()
+
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(%s) returned error: %v", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			t.Fatalf("scan PRAGMA table_info(%s) returned error: %v", table, err)
+		}
+		if name == column {
+			return
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate PRAGMA table_info(%s) returned error: %v", table, err)
+	}
+	t.Fatalf("column %q not found in table %q", column, table)
 }

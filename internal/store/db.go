@@ -11,8 +11,8 @@ import (
 
 	"gold-bot/internal/domain"
 
-	_ "modernc.org/sqlite"
 	_ "github.com/lib/pq"
+	_ "modernc.org/sqlite"
 )
 
 var (
@@ -127,5 +127,5 @@ type PendingSignalStore interface {
 	SavePendingSignal(ctx context.Context, signal *domain.PendingSignal) error
 	GetPendingSignals(ctx context.Context, accountID, symbol string) ([]domain.PendingSignal, error)
 	UpdateArbitration(ctx context.Context, id int64, result, reason string) error
-	ExpireStaleSignals(ctx context.Context) error
+	ExpireStaleSignals(ctx context.Context) (int64, error)
 }

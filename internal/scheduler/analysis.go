@@ -15,6 +15,7 @@ import (
 
 type ReplaySnapshot struct {
 	AccountID      string                  `json:"account_id"`
+	Symbol         string                  `json:"symbol,omitempty"`
 	AnalysisTime   time.Time               `json:"analysis_time"`
 	CurrentPrice   float64                 `json:"current_price"`
 	Bars           map[string][]domain.Bar `json:"bars"`
@@ -95,6 +96,7 @@ func RunReplay(snapshot ReplaySnapshot) (ReplayResult, error) {
 
 	positionCommands := manager.Analyze(domain.PositionSnapshot{
 		AccountID:    snapshot.AccountID,
+		Symbol:       snapshot.Symbol,
 		CurrentPrice: currentPrice,
 		CurrentATR:   currentATR,
 		AvgATR:       avgATR,

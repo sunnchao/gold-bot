@@ -2,19 +2,19 @@
   "signal": {
     "side": "BUY",
     "entry": 3335.75,
-    "stop_loss": 3331.78,
-    "tp1": 3339.72,
-    "tp2": 3343.68,
+    "stop_loss": 3331.74,
+    "tp1": 3339.76,
+    "tp2": 3343.77,
     "score": 6,
     "strategy": "pullback",
-    "atr": 2.644999999999917,
+    "atr": 2.671929727190101,
     "all_strategies": [
       {
         "strategy": "pullback",
         "side": "BUY",
         "score": 6,
         "entry": 3335.75,
-        "stop_loss": 3331.78
+        "stop_loss": 3331.74
       }
     ]
   },
@@ -22,22 +22,22 @@
     {
       "level": "info",
       "strategy": "\u5e02\u573a",
-      "msg": "Price=3335.75 | ATR=2.64 | RSI=52.1 | ADX=71.5 | EMA\u8d8b\u52bf(H1)=\u591a\u5934 | H4=\u5f3a\u591a\u5934(ADX=100.0) | MACD\u67f1=-0.82"
+      "msg": "Price=3335.75 | ATR=2.67 | RSI=64.7 | ADX=71.5 | EMA\u8d8b\u52bf(H1)=\u591a\u5934 | H4=\u5f3a\u591a\u5934(ADX=100.0) | MACD\u67f1=-0.82"
     },
     {
       "level": "signal",
       "strategy": "\u8d8b\u52bf\u56de\u8c03",
-      "msg": "\ud83d\udfe2 BUY \u8bc4\u5206=6 | EMA20\u56de\u8c03 dist=0.74 | ADX=71.5>25"
+      "msg": "\ud83d\udfe2 BUY \u8bc4\u5206=6 | EMA20\u56de\u8c03 dist=0.74 | ADX=71.5>30"
     },
     {
       "level": "info",
       "strategy": "\u7a81\u7834\u56de\u8e29",
-      "msg": "\u963b\u529b=3340.18 \u652f\u6491=3327.39 | \u672a\u7a81\u7834 \u23ed"
+      "msg": "\u963b\u529b=3340.18 \u652f\u6491=3300.83 | \u672a\u7a81\u7834 \u23ed"
     },
     {
       "level": "info",
       "strategy": "RSI\u80cc\u79bb",
-      "msg": "RSI=52.1 | \u65e0\u80cc\u79bb \u23ed"
+      "msg": "RSI=64.7 | \u65e0\u80cc\u79bb \u23ed"
     },
     {
       "level": "info",
@@ -45,10 +45,15 @@
       "msg": "BB=[3330.80, 3341.03] Price=3335.75 | \u5728\u901a\u9053\u5185 \u23ed"
     },
     {
+      "level": "info",
+      "strategy": "M15\u786e\u8ba4",
+      "msg": "\u23ed pullback | M15\u672a\u786e\u8ba4: RSI=77.2\u226540"
+    },
+    {
       "level": "signal",
       "strategy": "\u6c47\u603b",
-      "msg": "\u2705 \u53d1\u51fa\u4fe1\u53f7: BUY @ 3335.75 | SL=3331.78 | \u7b56\u7565=pullback | \u8bc4\u5206=6"
+      "msg": "\u2705 \u53d1\u51fa\u4fe1\u53f7: BUY @ 3335.75 | SL=3331.74 | \u7b56\u7565=pullback | \u8bc4\u5206=6"
     }
   ],
-  "position_commands": []
+  "position_commands": null
 }

@@ -1,6 +1,7 @@
 package positionmgr_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -96,6 +97,81 @@ func TestAnalyzeBreakevenAndTP1CanFireInSamePass(t *testing.T) {
 	if got[1].Reason != "TP1_1.6ATR" {
 		t.Fatalf("second reason = %q, want %q", got[1].Reason, "TP1_1.6ATR")
 	}
+}
+
+func TestManagerLoadAndPersistStatesIncludeSymbol(t *testing.T) {
+	now := time.Date(2026, 4, 13, 8, 0, 0, 0, time.UTC)
+	store := &recordingStateStore{
+		loaded: map[int64]domain.PositionState{
+			303: {
+				Ticket:       303,
+				OpenTime:     now.Add(-2 * time.Hour),
+				BETriggerATR: 1.5,
+			},
+		},
+	}
+	manager := positionmgr.New(
+		positionmgr.WithNow(func() time.Time { return now }),
+		positionmgr.WithStore(store),
+	)
+
+	if err := manager.LoadStates("90011087", "GBPJPY"); err != nil {
+		t.Fatalf("LoadStates returned error: %v", err)
+	}
+
+	got := manager.Analyze(domain.PositionSnapshot{
+		AccountID:    "90011087",
+		Symbol:       "GBPJPY",
+		CurrentPrice: 3343.2,
+		CurrentATR:   2.0,
+		AvgATR:       2.0,
+		H1Bars:       samplePositionBars(),
+		Positions: []domain.Position{
+			{
+				Ticket:    303,
+				Type:      "BUY",
+				OpenPrice: 3340.0,
+				Lots:      0.5,
+			},
+		},
+	})
+
+	if len(got) == 0 {
+		t.Fatal("len(commands) = 0, want at least one command so state is persisted")
+	}
+	if store.loadSymbol != "GBPJPY" {
+		t.Fatalf("load symbol = %q, want %q", store.loadSymbol, "GBPJPY")
+	}
+	if len(store.saved) == 0 {
+		t.Fatal("len(saved) = 0, want at least one persisted state")
+	}
+	if store.saved[0].symbol != "GBPJPY" {
+		t.Fatalf("saved symbol = %q, want %q", store.saved[0].symbol, "GBPJPY")
+	}
+}
+
+type recordingStateStore struct {
+	loadAccount string
+	loadSymbol  string
+	loaded      map[int64]domain.PositionState
+	saved       []persistedState
+}
+
+type persistedState struct {
+	accountID string
+	symbol    string
+	state     domain.PositionState
+}
+
+func (s *recordingStateStore) SavePositionState(_ context.Context, accountID, symbol string, state domain.PositionState) error {
+	s.saved = append(s.saved, persistedState{accountID: accountID, symbol: symbol, state: state})
+	return nil
+}
+
+func (s *recordingStateStore) LoadPositionStates(_ context.Context, accountID, symbol string) (map[int64]domain.PositionState, error) {
+	s.loadAccount = accountID
+	s.loadSymbol = symbol
+	return s.loaded, nil
 }
 
 func samplePositionBars() []domain.Bar {

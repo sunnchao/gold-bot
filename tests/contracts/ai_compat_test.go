@@ -135,8 +135,8 @@ func TestAIResultQueuesRiskCommandForEA(t *testing.T) {
 	if got := pollBody.Commands[0]["action"]; got != "CLOSE_ALL" {
 		t.Fatalf("commands[0].action = %v, want CLOSE_ALL", got)
 	}
-	if got := pollBody.Commands[0]["reason"]; got != "AI风险警报: volatility spike" {
-		t.Fatalf("commands[0].reason = %v, want %q", got, "AI风险警报: volatility spike")
+	if got := pollBody.Commands[0]["reason"]; got != "AI风险警报(全平): volatility spike" {
+		t.Fatalf("commands[0].reason = %v, want %q", got, "AI风险警报(全平): volatility spike")
 	}
 
 	if count := commandResultCount(t, db, ""); count != 0 {

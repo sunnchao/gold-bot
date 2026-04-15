@@ -28,7 +28,7 @@ extern string   ApiToken        = "";                       // API Token
 extern double   MaxRiskPercent  = 2.0;      // 单笔最大风险 %
 extern int      MaxPositions    = 5;        // 最大持仓数
 extern double   MaxDailyLoss    = 5.0;      // 日最大亏损 %
-extern double   MaxSpread       = 5.0;      // 最大点差（美元）
+extern double   MaxSpread       = 5.0;      // 最大点差（points）
 extern int      MaxSameDir      = 3;        // 同方向最大持仓数
 extern double   MaxFloatLoss    = 3.0;      // 最大浮亏 %
 extern bool     UseFixedLots    = true;     // 优先固定手数
@@ -101,9 +101,136 @@ int GetStrategyMagic(string strategy)
    if(strategy == "breakout_pyramid") return PyramidMagic;
    if(strategy == "counter_pullback") return CounterMagic;
    if(strategy == "range") return RangeMagic;
-   if(strategy == "spread") return SpreadMagicNumber;
-   // 默认返回趋势回调的 Magic
-   return PullbackMagic;
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+bool IsStrategyEnabled(string strategy)
+{
+   if(strategy == "pullback") return EnablePullback;
+   if(strategy == "breakout_retest") return EnableBreakout;
+   if(strategy == "divergence") return EnableDivergence;
+   if(strategy == "breakout_pyramid") return EnablePyramid;
+   if(strategy == "counter_pullback") return EnableCounter;
+   if(strategy == "range") return EnableRange;
+   return false;
+}
+
+//+------------------------------------------------------------------+
+bool IsPrimarySymbol(string sym)
+{
+   return (sym == Symbol_);
+}
+
+//+------------------------------------------------------------------+
+bool IsSpreadSymbol(string sym)
+{
+   if(StringLen(sym) == 0)
+      return false;
+
+   return (sym == SpreadSymbol1 || sym == SpreadSymbol2);
+}
+
+//+------------------------------------------------------------------+
+bool IsAllowedSymbol(string sym)
+{
+   return (IsPrimarySymbol(sym) || IsSpreadSymbol(sym));
+}
+
+//+------------------------------------------------------------------+
+bool IsOurMagic(int magic)
+{
+   if(magic == PullbackMagic) return true;
+   if(magic == BreakoutMagic) return true;
+   if(magic == DivergenceMagic) return true;
+   if(magic == PyramidMagic) return true;
+   if(magic == CounterMagic) return true;
+   if(magic == RangeMagic) return true;
+   if(magic == SpreadMagicNumber) return true;
+   return false;
+}
+
+//+------------------------------------------------------------------+
+double GetSymbolPoint(string sym)
+{
+   double point = MarketInfo(sym, MODE_POINT);
+   if(point <= 0)
+      point = Point;
+
+   return point;
+}
+
+//+------------------------------------------------------------------+
+double GetCurrentSpreadPoints(string sym)
+{
+   double currentSpread = MarketInfo(sym, MODE_SPREAD);
+   if(currentSpread > 0)
+      return currentSpread;
+
+   double point = GetSymbolPoint(sym);
+   double bid = MarketInfo(sym, MODE_BID);
+   double ask = MarketInfo(sym, MODE_ASK);
+   if(point <= 0 || bid <= 0 || ask <= 0)
+      return -1.0;
+
+   currentSpread = (ask - bid) / point;
+   return currentSpread;
+}
+
+//+------------------------------------------------------------------+
+int GetVolumeDigits(string sym)
+{
+   double stepLots = MarketInfo(sym, MODE_LOTSTEP);
+   if(stepLots <= 0)
+      return 2;
+
+   int digits = 0;
+   while(digits < 8)
+   {
+      double rounded = MathRound(stepLots);
+      if(MathAbs(stepLots - rounded) < 0.00000001)
+         break;
+
+      stepLots *= 10.0;
+      digits++;
+   }
+
+   return digits;
+}
+
+//+------------------------------------------------------------------+
+double NormalizeVolume(string sym, double lots)
+{
+   double minLots  = MarketInfo(sym, MODE_MINLOT);
+   double maxLots  = MarketInfo(sym, MODE_MAXLOT);
+   double stepLots = MarketInfo(sym, MODE_LOTSTEP);
+
+   if(stepLots <= 0) stepLots = 0.01;
+   if(minLots <= 0) minLots = stepLots;
+   if(maxLots <= 0) maxLots = lots;
+
+   lots = MathMax(minLots, MathMin(maxLots, lots));
+   lots = MathFloor(lots / stepLots) * stepLots;
+   return NormalizeDouble(MathMax(minLots, lots), GetVolumeDigits(sym));
+}
+
+//+------------------------------------------------------------------+
+double NormalizeCloseVolume(string sym, double lots)
+{
+   double minLots  = MarketInfo(sym, MODE_MINLOT);
+   double maxLots  = MarketInfo(sym, MODE_MAXLOT);
+   double stepLots = MarketInfo(sym, MODE_LOTSTEP);
+
+   if(stepLots <= 0) stepLots = 0.01;
+   if(minLots <= 0) minLots = stepLots;
+   if(maxLots <= 0) maxLots = lots;
+
+   lots = MathMax(0.0, MathMin(maxLots, lots));
+   double normalizedLots = MathFloor((lots + 0.0000001) / stepLots) * stepLots;
+   if(normalizedLots + 0.0000001 < minLots)
+      return 0.0;
+
+   return NormalizeDouble(normalizedLots, GetVolumeDigits(sym));
 }
 
 //+------------------------------------------------------------------+
@@ -119,6 +246,19 @@ int OnInit()
          (UseFixedLots ? ("固定手数=" + DoubleToString(FixedLots, 2)) : ("风险=" + DoubleToString(MaxRiskPercent, 1) + "%")),
          " | 持仓上限", MaxPositions,
          " | 日亏损", MaxDailyLoss, "% | 浮亏", MaxFloatLoss, "%");
+
+   if(!IsSymbolAvailable(Symbol_))
+   {
+      Print("❌ 主交易品种不可用：", Symbol_);
+      return INIT_FAILED;
+   }
+
+   string chartSymbol = Symbol();
+   if(Symbol() != Symbol_)
+   {
+      Print("❌ 图表品种与 Symbol_ 不一致 | Chart=", chartSymbol, " | Symbol_=", Symbol_);
+      return INIT_FAILED;
+   }
    
    // 原油对冲套利配置
    if(EnableSpread)
@@ -155,6 +295,9 @@ int OnInit()
    {
       if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
       {
+         if(!IsAllowedSymbol(OrderSymbol()))
+            continue;
+
          int magic = OrderMagicNumber();
          string type = (OrderType() == OP_BUY ? "BUY" : "SELL");
          string info = OrderSymbol() + " " + type + " " + DoubleToString(OrderLots(), 2) + " 手 | Ticket=" + IntegerToString(OrderTicket());
@@ -320,9 +463,12 @@ void SendHeartbeat()
    {
       if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
       {
-         int m = OrderMagicNumber();
-         if(m == PullbackMagic) pullbackPos++;
-         else if(m == BreakoutMagic) breakoutPos++;
+         if(!IsAllowedSymbol(OrderSymbol()))
+            continue;
+
+          int m = OrderMagicNumber();
+          if(m == PullbackMagic) pullbackPos++;
+          else if(m == BreakoutMagic) breakoutPos++;
          else if(m == DivergenceMagic) divergencePos++;
          else if(m == PyramidMagic) pyramidPos++;
          else if(m == CounterMagic) counterPos++;
@@ -373,7 +519,9 @@ void SendTick()
    
    double bid = MarketInfo(Symbol_, MODE_BID);
    double ask = MarketInfo(Symbol_, MODE_ASK);
-   double spread = (ask - bid) / Point / 10;
+   double spread = GetCurrentSpreadPoints(Symbol_);
+   if(spread < 0)
+      spread = 0.0;
    
    // 构建多品种价格数据
    string symbols_json = "";
@@ -381,23 +529,32 @@ void SendTick()
    // 添加原油价格 (如果启用价差交易且品种可用)
    if(EnableSpread && spreadSymbolsReady)
    {
-      double ukoil_bid = MarketInfo(SpreadSymbol1, MODE_BID);
-      double usoil_bid = MarketInfo(SpreadSymbol2, MODE_BID);
+      double leg1_bid = MarketInfo(SpreadSymbol1, MODE_BID);
+      double leg2_bid = MarketInfo(SpreadSymbol2, MODE_BID);
+      double leg1_ask = MarketInfo(SpreadSymbol1, MODE_ASK);
+      double leg2_ask = MarketInfo(SpreadSymbol2, MODE_ASK);
+      double leg1_point = GetSymbolPoint(SpreadSymbol1);
+      double leg2_point = GetSymbolPoint(SpreadSymbol2);
+
+      if(leg1_ask <= 0)
+         leg1_ask = leg1_bid + leg1_point * 10.0;
+      if(leg2_ask <= 0)
+         leg2_ask = leg2_bid + leg2_point * 10.0;
       
-      if(ukoil_bid > 0 && usoil_bid > 0)
+      if(leg1_bid > 0 && leg2_bid > 0)
       {
-         double spread_val = ukoil_bid - usoil_bid;
+         double spread_val = leg1_bid - leg2_bid;
          symbols_json = StringFormat(
             ",\"symbols\":{"
-            "\"UKOIL\":{\"price\":%.2f,\"bid\":%.2f,\"ask\":%.2f},"
-            "\"USOIL\":{\"price\":%.2f,\"bid\":%.2f,\"ask\":%.2f},"
+            "\"%s\":{\"price\":%.2f,\"bid\":%.2f,\"ask\":%.2f},"
+            "\"%s\":{\"price\":%.2f,\"bid\":%.2f,\"ask\":%.2f},"
             "\"SPREAD\":%.2f"
             "}",
-            ukoil_bid, ukoil_bid, ukoil_bid * 1.001,
-            usoil_bid, usoil_bid, usoil_bid * 1.001,
+            SpreadSymbol1, leg1_bid, leg1_bid, leg1_ask,
+            SpreadSymbol2, leg2_bid, leg2_bid, leg2_ask,
             spread_val
          );
-         Print("🛢️ 原油价格：UKOIL=", ukoil_bid, " | USOIL=", usoil_bid, 
+         Print("🛢️ 原油价格：", SpreadSymbol1, "=", leg1_bid, " | ", SpreadSymbol2, "=", leg2_bid, 
                " | 价差=", DoubleToString(spread_val, 2));
       }
    }
@@ -483,11 +640,8 @@ void SendPositions()
    {
       if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
       {
-         // 只发送主品种和原油品种的持仓
-         if(OrderSymbol() != Symbol_ && 
-            !(EnableSpread && spreadSymbolsReady && 
-              (OrderSymbol() == SpreadSymbol1 || OrderSymbol() == SpreadSymbol2)))
-            continue;
+         if(!IsAllowedSymbol(OrderSymbol()))
+             continue;
          
          // 检查是否属于任一策略
          bool isOurOrder = false;
@@ -577,9 +731,23 @@ void ExecuteOpen(string cmd, string cmd_id)
    string side   = GetJsonString(cmd, "side");
    double lots   = GetJsonDouble(cmd, "lots");
    string reason = GetJsonString(cmd, "reason");
-   
+    
    Print("🛢️ 价差开仓：", symbol, " ", side, " ", lots, "手 | ", reason);
-   
+
+   if(!EnableSpread)
+   {
+      Print("❌ 原油对冲套利未启用");
+      ReportResult(cmd_id, "ERROR", 0, "spread_disabled");
+      return;
+   }
+
+   if(!IsSpreadSymbol(symbol))
+   {
+      Print("❌ 非法价差腿品种：", symbol);
+      ReportResult(cmd_id, "ERROR", 0, "spread_symbol_not_allowed");
+      return;
+   }
+    
    // 检查品种是否可用
    if(!IsSymbolAvailable(symbol))
    {
@@ -587,12 +755,30 @@ void ExecuteOpen(string cmd, string cmd_id)
       ReportResult(cmd_id, "ERROR", 0, "symbol_not_available");
       return;
    }
+
+   if(side != "BUY" && side != "SELL")
+   {
+      Print("❌ 非法价差开仓方向：", side);
+      ReportResult(cmd_id, "ERROR", 0, "invalid_side");
+      return;
+   }
    
-   int op_type = (side == "BUY") ? OP_BUY : OP_SELL;
-   double price = (side == "BUY") ? MarketInfo(symbol, MODE_ASK) : MarketInfo(symbol, MODE_BID);
+   int op_type = OP_BUY;
+   double price = 0.0;
+   if(side == "BUY")
+   {
+      op_type = OP_BUY;
+      price = MarketInfo(symbol, MODE_ASK);
+   }
+   else if(side == "SELL")
+   {
+      op_type = OP_SELL;
+      price = MarketInfo(symbol, MODE_BID);
+   }
    
+   lots = NormalizeVolume(symbol, lots);
    string comment = "GB_SPREAD_" + reason;
-   
+    
    int ticket = OrderSend(symbol, op_type, lots, price, Slippage, 0, 0, comment, SpreadMagicNumber, 0,
                           (side == "BUY") ? clrGreen : clrRed);
    
@@ -625,53 +811,96 @@ void ExecuteClosePartial(string cmd, string cmd_id)
    string symbol = GetJsonString(cmd, "symbol");
    double lots   = GetJsonDouble(cmd, "lots");
    string reason = GetJsonString(cmd, "reason");
-   
+    
    Print("🛢️ 价差部分平仓：", symbol, " ", lots, "手 | ", reason);
-   
-   // 动态初始化 MagicNumber 数组
-   int magics[7];
-   magics[0] = PullbackMagic;
-   magics[1] = BreakoutMagic;
-   magics[2] = DivergenceMagic;
-   magics[3] = PyramidMagic;
-   magics[4] = CounterMagic;
-   magics[5] = RangeMagic;
-   magics[6] = SpreadMagicNumber;
-   
-   for(int i = 0; i < OrdersTotal(); i++)
+
+   if(!EnableSpread)
+   {
+      Print("❌ 原油对冲套利未启用");
+      ReportResult(cmd_id, "ERROR", 0, "spread_disabled");
+      return;
+   }
+
+   if(!IsSpreadSymbol(symbol))
+   {
+      Print("❌ 非法价差腿品种：", symbol);
+      ReportResult(cmd_id, "ERROR", 0, "spread_symbol_not_allowed");
+      return;
+   }
+
+   double remainingLots = lots;
+   bool matchedPosition = false;
+   bool closedAny = false;
+   bool closeFailed = false;
+   int lastTicket = 0;
+   int failedTicket = 0;
+
+   for(int i = OrdersTotal() - 1; i >= 0 && remainingLots > 0.0000001; i--)
    {
       if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
       {
-         if(OrderSymbol() != symbol) continue;
-         
-         // 检查是否属于任一策略
-         bool isOurOrder = false;
-         for(int j = 0; j < 7; j++)
-         {
-            if(OrderMagicNumber() == magics[j])
-            {
-               isOurOrder = true;
-               break;
-            }
-         }
-         if(!isOurOrder) continue;
-         
-         double closeLots = MathMin(lots, OrderLots());
-         bool result = OrderClose(OrderTicket(), closeLots, 
+          if(OrderSymbol() != symbol) continue;
+
+          if(OrderMagicNumber() != SpreadMagicNumber) continue;
+
+          matchedPosition = true;
+
+          double closeLots = MathMin(remainingLots, OrderLots());
+          closeLots = NormalizeCloseVolume(symbol, closeLots);
+          if(closeLots <= 0)
+             continue;
+
+         int ticket = OrderTicket();
+         bool result = OrderClose(ticket, closeLots,
                                   (OrderType() == OP_BUY) ? MarketInfo(symbol, MODE_BID) : MarketInfo(symbol, MODE_ASK),
                                   Slippage,
                                   (OrderType() == OP_BUY) ? clrRed : clrGreen);
-         if(result)
-         {
-            Print("✅ 部分平仓成功：#", OrderTicket(), " ", symbol, " ", closeLots, "手");
-            ReportResult(cmd_id, "OK", OrderTicket(), "");
-            return;
-         }
-      }
+          if(result)
+          {
+             remainingLots -= closeLots;
+             closedAny = true;
+             lastTicket = ticket;
+             Print("✅ 部分平仓成功：#", ticket, " ", symbol, " ", closeLots, "手 | 剩余=", DoubleToString(MathMax(0.0, remainingLots), 2));
+          }
+          else
+          {
+             int err = GetLastError();
+             closeFailed = true;
+             failedTicket = ticket;
+             Print("❌ 部分平仓失败：#", ticket, " ", symbol, " ", closeLots, "手 | Error#", err);
+             break;
+          }
+       }
    }
-   
-   Print("❌ 未找到对应持仓");
-   ReportResult(cmd_id, "ERROR", 0, "position_not_found");
+
+   if(!matchedPosition)
+   {
+      Print("❌ 未找到对应持仓");
+      ReportResult(cmd_id, "ERROR", 0, "position_not_found");
+      return;
+   }
+
+   if(closeFailed)
+   {
+      ReportResult(cmd_id, "ERROR", failedTicket, "close_failed");
+      return;
+   }
+
+   if(remainingLots <= 0.0000001)
+   {
+      ReportResult(cmd_id, "OK", lastTicket, "");
+      return;
+   }
+
+   if(closedAny)
+   {
+      Print("⚠️ 部分平仓未完成：剩余 ", DoubleToString(MathMax(0.0, remainingLots), 2), " 手未成交");
+      ReportResult(cmd_id, "ERROR", lastTicket, "partial_close_incomplete");
+      return;
+   }
+
+   Print("⚠️ 部分平仓未完成：请求手数无法完全执行，剩余 ", DoubleToString(MathMax(0.0, remainingLots), 2), " 手");
+   ReportResult(cmd_id, "ERROR", 0, "partial_close_incomplete");
 }
 
 // ============================================================
@@ -682,57 +911,72 @@ void ExecuteCloseAll(string cmd, string cmd_id)
    string symbol = GetJsonString(cmd, "symbol");
    double lots   = GetJsonDouble(cmd, "lots");
    string reason = GetJsonString(cmd, "reason");
-   
+    
    Print("🛢️ 价差全部平仓：", symbol, " ", lots, "手 | ", reason);
-   
-   // 动态初始化 MagicNumber 数组
-   int magics[7];
-   magics[0] = PullbackMagic;
-   magics[1] = BreakoutMagic;
-   magics[2] = DivergenceMagic;
-   magics[3] = PyramidMagic;
-   magics[4] = CounterMagic;
-   magics[5] = RangeMagic;
-   magics[6] = SpreadMagicNumber;
-   
+
+   if(!EnableSpread)
+   {
+      Print("❌ 原油对冲套利未启用");
+      ReportResult(cmd_id, "ERROR", 0, "spread_disabled");
+      return;
+   }
+
+   if(!IsSpreadSymbol(symbol))
+   {
+      Print("❌ 非法价差腿品种：", symbol);
+      ReportResult(cmd_id, "ERROR", 0, "spread_symbol_not_allowed");
+      return;
+   }
+    
    int closedCount = 0;
-   for(int i = 0; i < OrdersTotal(); i++)
+   bool matchedPosition = false;
+   bool closeFailed = false;
+   int failedTicket = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
       {
-         if(OrderSymbol() != symbol) continue;
-         
-         // 检查是否属于任一策略
-         bool isOurOrder = false;
-         for(int j = 0; j < 7; j++)
-         {
-            if(OrderMagicNumber() == magics[j])
-            {
-               isOurOrder = true;
-               break;
-            }
-         }
-         if(!isOurOrder) continue;
-         
-         bool result = OrderClose(OrderTicket(), OrderLots(),
-                                  (OrderType() == OP_BUY) ? MarketInfo(symbol, MODE_BID) : MarketInfo(symbol, MODE_ASK),
-                                  Slippage,
-                                  (OrderType() == OP_BUY) ? clrRed : clrGreen);
-         if(result)
-         {
-            Print("✅ 平仓成功：#", OrderTicket(), " ", symbol);
-            closedCount++;
-         }
-      }
+          if(OrderSymbol() != symbol) continue;
+
+          if(OrderMagicNumber() != SpreadMagicNumber) continue;
+
+          matchedPosition = true;
+           
+          int ticket = OrderTicket();
+          bool result = OrderClose(ticket, OrderLots(),
+                                   (OrderType() == OP_BUY) ? MarketInfo(symbol, MODE_BID) : MarketInfo(symbol, MODE_ASK),
+                                   Slippage,
+                                   (OrderType() == OP_BUY) ? clrRed : clrGreen);
+          if(result)
+          {
+             Print("✅ 平仓成功：#", ticket, " ", symbol);
+             closedCount++;
+          }
+          else
+          {
+             int err = GetLastError();
+             closeFailed = true;
+             failedTicket = ticket;
+             Print("❌ 全部平仓失败：#", ticket, " ", symbol, " | Error#", err);
+          }
+       }
    }
-   
+
+   if(!matchedPosition)
+   {
+      ReportResult(cmd_id, "ERROR", 0, "no_position_found");
+      return;
+   }
+
+   if(closeFailed)
+   {
+      ReportResult(cmd_id, "ERROR", failedTicket, "close_failed");
+      return;
+   }
+
    if(closedCount > 0)
    {
       ReportResult(cmd_id, "OK", closedCount, "");
-   }
-   else
-   {
-      ReportResult(cmd_id, "ERROR", 0, "no_position_found");
    }
 }
 
@@ -741,6 +985,7 @@ void ExecuteCloseAll(string cmd, string cmd_id)
 // ============================================================
 void ExecuteSignal(string cmd, string cmd_id)
 {
+   string symbol   = GetJsonString(cmd, "symbol");
    string type_str = GetJsonString(cmd, "type");
    double sl       = GetJsonDouble(cmd, "sl");
    double tp1      = GetJsonDouble(cmd, "tp1");
@@ -749,6 +994,35 @@ void ExecuteSignal(string cmd, string cmd_id)
    
    Print("📡 信号：", type_str, " | SL=", sl, " TP=", tp1, 
          " | ", strategy, " 评分:", score);
+
+   if(StringLen(symbol) > 0 && !IsPrimarySymbol(symbol))
+   {
+      Print("❌ 信号品种不匹配：", symbol, " | 本实例=", Symbol_);
+      ReportResult(cmd_id, "ERROR", 0, "symbol_mismatch");
+      return;
+   }
+
+   if(type_str != "BUY" && type_str != "SELL")
+   {
+      Print("❌ 非法信号方向：", type_str);
+      ReportResult(cmd_id, "ERROR", 0, "invalid_type");
+      return;
+   }
+
+   int magicForOrder = GetStrategyMagic(strategy);
+   if(magicForOrder <= 0)
+   {
+      Print("❌ 未知策略：", strategy);
+      ReportResult(cmd_id, "ERROR", 0, "invalid_strategy");
+      return;
+   }
+
+   if(!IsStrategyEnabled(strategy))
+   {
+      Print("❌ 策略未启用：", strategy);
+      ReportResult(cmd_id, "ERROR", 0, "strategy_disabled");
+      return;
+   }
    
    // 本地风控
    if(!CheckRisk(type_str))
@@ -759,74 +1033,96 @@ void ExecuteSignal(string cmd, string cmd_id)
    
    // 计算手数
    double price;
-   int op_type;
+   int op_type = OP_BUY;
    if(type_str == "BUY")
    {
       op_type = OP_BUY;
       price = MarketInfo(Symbol_, MODE_ASK);
    }
-   else
+   else if(type_str == "SELL")
    {
       op_type = OP_SELL;
       price = MarketInfo(Symbol_, MODE_BID);
    }
-   
+    
    double sl_distance = MathAbs(price - sl);
    double lots = CalcLots(sl_distance);
-   
-   // 根据策略获取对应的 MagicNumber
-   int magicForOrder = GetStrategyMagic(strategy);
-   
+   lots = NormalizeVolume(Symbol_, lots);
+    
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);
    
    int ticket = OrderSend(Symbol_, op_type, lots, price, Slippage, 
-                           sl, tp1, comment, magicForOrder, 0,
+                           0, 0, comment, magicForOrder, 0,
                            type_str == "BUY" ? clrGreen : clrRed);
    
    if(ticket > 0)
    {
       Print("✅ 开仓：#", ticket, " ", type_str, " ", lots, "手 @ ", price, 
             " | Magic=", magicForOrder, " (", strategy, ")");
+
+      if(!OrderSelect(ticket, SELECT_BY_TICKET))
+      {
+         Print("⚠️ 开仓成交但未能选中订单 #", ticket, "，无法验证保护止损");
+         ReportResult(cmd_id, "ERROR", ticket, "position_resolve_incomplete");
+         return;
+      }
       
       // 检查并设置 TP/SL（兼容 ECN/STP broker）
-      if(OrderSelect(ticket, SELECT_BY_TICKET))
+      double current_sl = OrderStopLoss();
+      double current_tp = OrderTakeProfit();
+      double open_price = OrderOpenPrice();
+
+      // 如果 TP/SL 未设置，尝试单独设置
+      if(current_sl == 0 || current_tp == 0)
       {
-         double current_sl = OrderStopLoss();
-         double current_tp = OrderTakeProfit();
+         double min_stop = MarketInfo(Symbol_, MODE_STOPLEVEL) * GetSymbolPoint(Symbol_);
+         double final_sl = sl;
+         double final_tp = tp1;
          
-         // 如果 TP/SL 未设置，尝试单独设置
-         if(current_sl == 0 || current_tp == 0)
+         // 确保 SL 距离符合要求
+         if(min_stop > 0 && MathAbs(open_price - sl) < min_stop)
          {
-            double min_stop = MarketInfo(Symbol_, MODE_STOPLEVEL) * Point;
-            double final_sl = sl;
-            double final_tp = tp1;
-            
-            // 确保 SL 距离符合要求
-            if(MathAbs(price - sl) < min_stop)
-            {
-               if(type_str == "BUY") final_sl = price - min_stop;
-               else final_sl = price + min_stop;
-            }
-            
-            // 确保 TP 距离符合要求
-            if(MathAbs(tp1 - price) < min_stop)
-            {
-               if(type_str == "BUY") final_tp = price + min_stop;
-               else final_tp = price - min_stop;
-            }
-            
-            if(OrderModify(ticket, price, final_sl, final_tp, 0, clrYellow))
+            if(type_str == "BUY") final_sl = open_price - min_stop;
+            else final_sl = open_price + min_stop;
+         }
+         
+         // 确保 TP 距离符合要求
+         if(min_stop > 0 && MathAbs(tp1 - open_price) < min_stop)
+         {
+            if(type_str == "BUY") final_tp = open_price + min_stop;
+            else final_tp = open_price - min_stop;
+         }
+         
+         if(final_sl != current_sl || final_tp != current_tp)
+         {
+            if(OrderModify(ticket, OrderOpenPrice(), final_sl, final_tp, 0, clrYellow))
             {
                Print("📝 开仓后设置 TP/SL: SL=", final_sl, " TP=", final_tp);
             }
             else
             {
                int mod_err = GetLastError();
-               Print("⚠️ 设置 TP/SL 失败: Error#", mod_err);
+               Print("⚠️ 开仓成功但保护止损附加失败: #", ticket, " Error#", mod_err);
+               ReportResult(cmd_id, "ERROR", ticket, "protection_attach_failed");
+               return;
             }
          }
+
+         if(!OrderSelect(ticket, SELECT_BY_TICKET))
+         {
+            Print("⚠️ 开仓后无法重新选中订单 #", ticket, "，保护状态未确认");
+            ReportResult(cmd_id, "ERROR", ticket, "position_resolve_incomplete");
+            return;
+         }
       }
-      
+
+      if(OrderStopLoss() == 0 || OrderTakeProfit() == 0)
+      {
+         Print("⚠️ 开仓后保护止损未完整附加: #", ticket);
+         ReportResult(cmd_id, "ERROR", ticket, "protection_attach_incomplete");
+         return;
+      }
+       
       ReportResult(cmd_id, "OK", ticket, "");
    }
    else
@@ -854,7 +1150,21 @@ void ExecuteModify(string cmd, string cmd_id)
       ReportResult(cmd_id, "ERROR", 0, "order_not_found");
       return;
    }
-   
+
+     if(!IsAllowedSymbol(OrderSymbol()))
+     {
+        Print("❌ 订单品种不属于本实例：", OrderSymbol());
+        ReportResult(cmd_id, "ERROR", 0, "symbol_not_allowed");
+        return;
+     }
+
+    if(!IsOurMagic(OrderMagicNumber()))
+    {
+       Print("❌ 订单不属于本 EA：Magic=", OrderMagicNumber());
+       ReportResult(cmd_id, "ERROR", 0, "order_not_owned");
+       return;
+    }
+     
    bool result = OrderModify(ticket, OrderOpenPrice(), sl, tp, 0, clrYellow);
    if(result)
    {
@@ -885,8 +1195,22 @@ void ExecuteClose(string cmd, string cmd_id)
       ReportResult(cmd_id, "ERROR", 0, "order_not_found");
       return;
    }
-   
+    
    string sym = OrderSymbol();
+   if(!IsAllowedSymbol(sym))
+   {
+      Print("❌ 订单品种不属于本实例：", sym);
+      ReportResult(cmd_id, "ERROR", 0, "symbol_not_allowed");
+      return;
+   }
+
+   if(!IsOurMagic(OrderMagicNumber()))
+   {
+      Print("❌ 订单不属于本 EA：Magic=", OrderMagicNumber());
+      ReportResult(cmd_id, "ERROR", 0, "order_not_owned");
+      return;
+   }
+
    double closePrice = (OrderType() == OP_BUY) ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK);
    
    bool result = OrderClose(ticket, OrderLots(), closePrice, Slippage,
@@ -909,44 +1233,51 @@ void ExecuteClose(string cmd, string cmd_id)
 // ============================================================
 bool CheckRisk(string type_str)
 {
+   double currentSpread = GetCurrentSpreadPoints(Symbol_);
+   if(currentSpread < 0)
+   {
+      Print("⚠️ 风控：无法获取有效报价/点差");
+      return false;
+   }
+
+   if(currentSpread > MaxSpread)
+   {
+      Print("⚠️ 风控：点差过高 ", DoubleToString(currentSpread, 2), " > ", DoubleToString(MaxSpread, 2));
+      return false;
+   }
+
+   int managedPositions = 0;
+   for(int i = 0; i < OrdersTotal(); i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+
+      if(!IsAllowedSymbol(OrderSymbol()))
+         continue;
+
+      if(!IsOurMagic(OrderMagicNumber()))
+         continue;
+
+      managedPositions++;
+   }
+
    // 检查最大持仓数
-   if(OrdersTotal() >= MaxPositions)
+   if(managedPositions >= MaxPositions)
    {
       Print("⚠️ 风控：达到最大持仓数 ", MaxPositions);
       return false;
    }
-   
+
    // 检查同方向持仓数
    int sameDir = 0;
-   
-   // 动态初始化 MagicNumber 数组
-   int magics[7];
-   magics[0] = PullbackMagic;
-   magics[1] = BreakoutMagic;
-   magics[2] = DivergenceMagic;
-   magics[3] = PyramidMagic;
-   magics[4] = CounterMagic;
-   magics[5] = RangeMagic;
-   magics[6] = SpreadMagicNumber;
-   
+    
    for(int i = 0; i < OrdersTotal(); i++)
    {
       if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
       {
-         if(OrderSymbol() != Symbol_) continue;
-         
-         // 检查是否属于任一策略
-         bool isOurOrder = false;
-         for(int j = 0; j < 7; j++)
-         {
-            if(OrderMagicNumber() == magics[j])
-            {
-               isOurOrder = true;
-               break;
-            }
-         }
-         if(!isOurOrder) continue;
-         
+         if(!IsPrimarySymbol(OrderSymbol())) continue;
+         if(!IsOurMagic(OrderMagicNumber())) continue;
+          
          if((type_str == "BUY" && OrderType() == OP_BUY) ||
             (type_str == "SELL" && OrderType() == OP_SELL))
             sameDir++;
@@ -972,7 +1303,15 @@ bool CheckRisk(string type_str)
    for(int i = 0; i < OrdersTotal(); i++)
    {
       if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+      {
+         if(!IsAllowedSymbol(OrderSymbol()))
+            continue;
+
+         if(!IsOurMagic(OrderMagicNumber()))
+            continue;
+
          totalProfit += OrderProfit();
+      }
    }
    double floatLoss_pct = (totalProfit / AccountEquity()) * 100;
    if(floatLoss_pct < -MaxFloatLoss)
@@ -990,26 +1329,19 @@ bool CheckRisk(string type_str)
 double CalcLots(double sl_distance)
 {
    if(UseFixedLots)
-      return FixedLots;
+      return NormalizeVolume(Symbol_, FixedLots);
    
    double riskAmount = AccountEquity() * (MaxRiskPercent / 100);
    double tickValue = MarketInfo(Symbol_, MODE_TICKVALUE);
    double tickSize = MarketInfo(Symbol_, MODE_TICKSIZE);
    
    if(tickValue <= 0 || tickSize <= 0 || sl_distance <= 0)
-      return 0.01;
+      return NormalizeVolume(Symbol_, 0.01);
    
    double lots = riskAmount / (sl_distance / tickSize * tickValue);
    lots = NormalizeDouble(lots, 2);
    
-   double minLots = MarketInfo(Symbol_, MODE_MINLOT);
-   double maxLots = MarketInfo(Symbol_, MODE_MAXLOT);
-   double stepLots = MarketInfo(Symbol_, MODE_LOTSTEP);
-   
-   lots = MathMax(minLots, MathMin(maxLots, lots));
-   lots = MathFloor(lots / stepLots) * stepLots;
-   
-   return MathMax(0.01, lots);
+   return NormalizeVolume(Symbol_, MathMax(0.01, lots));
 }
 
 // ============================================================
@@ -1044,14 +1376,16 @@ string HttpPost(string path, string data)
    StringToCharArray(data, post_data, 0, StringLen(data), CP_UTF8);
    
    char result_data[];
-   string headers = "Content-Type: application/json\r\n";
+   string request_headers = "Content-Type: application/json\r\n";
    if(ApiToken != "")
-      headers += "X-API-Token: " + ApiToken + "\r\n";
-   
+      request_headers += "X-API-Token: " + ApiToken + "\r\n";
+
+   string response_headers = "";
+    
    int timeout = httpTimeout;
-   
+    
    // 重试一次
-   int code = WebRequest("POST", url, headers, timeout, post_data, result_data, headers);
+   int code = WebRequest("POST", url, request_headers, timeout, post_data, result_data, response_headers);
    
    if(code >= 200 && code < 300)
    {
@@ -1064,7 +1398,8 @@ string HttpPost(string path, string data)
    
    // 第一次失败，等待后重试
    Sleep(500);
-   code = WebRequest("POST", url, headers, timeout, post_data, result_data, headers);
+   response_headers = "";
+   code = WebRequest("POST", url, request_headers, timeout, post_data, result_data, response_headers);
    
    if(code >= 200 && code < 300)
    {

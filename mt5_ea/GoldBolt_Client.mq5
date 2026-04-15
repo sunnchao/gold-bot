@@ -30,7 +30,7 @@ input string   ApiToken        = "";                       // API Token
 input double   MaxRiskPercent  = 2.0;      // 单笔最大风险 %
 input int      MaxPositions    = 5;        // 最大持仓数
 input double   MaxDailyLoss    = 5.0;      // 日最大亏损 %
-input double   MaxSpread       = 5.0;      // 最大点差（美元）
+input double   MaxSpread       = 5.0;      // 最大点差（points）
 input int      MaxSameDir      = 3;        // 同方向最大持仓数
 input double   MaxFloatLoss    = 3.0;      // 最大浮亏 %
 input bool     UseFixedLots    = true;     // 优先固定手数
@@ -103,8 +103,19 @@ int GetStrategyMagic(string strategy)
    if(strategy == "breakout_pyramid") return PyramidMagic;
    if(strategy == "counter_pullback") return CounterMagic;
    if(strategy == "range") return RangeMagic;
-   if(strategy == "spread") return SpreadMagicNumber;
-   return PullbackMagic;
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+bool IsStrategyEnabled(string strategy)
+{
+   if(strategy == "pullback") return EnablePullback;
+   if(strategy == "breakout_retest") return EnableBreakout;
+   if(strategy == "divergence") return EnableDivergence;
+   if(strategy == "breakout_pyramid") return EnablePyramid;
+   if(strategy == "counter_pullback") return EnableCounter;
+   if(strategy == "range") return EnableRange;
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -134,15 +145,30 @@ bool IsOurMagic(long magic)
 }
 
 //+------------------------------------------------------------------+
+bool IsPrimarySymbol(string symbol)
+{
+   return (symbol == Symbol_);
+}
+
+//+------------------------------------------------------------------+
+bool IsSpreadSymbol(string symbol)
+{
+   if(StringLen(symbol) == 0)
+      return false;
+
+   return (symbol == SpreadSymbol1 || symbol == SpreadSymbol2);
+}
+
+//+------------------------------------------------------------------+
+bool IsAllowedSymbol(string symbol)
+{
+   return (IsPrimarySymbol(symbol) || IsSpreadSymbol(symbol));
+}
+
+//+------------------------------------------------------------------+
 bool IsTrackedSymbol(string symbol)
 {
-   if(symbol == Symbol_)
-      return true;
-
-   if(EnableSpread && spreadSymbolsReady && (symbol == SpreadSymbol1 || symbol == SpreadSymbol2))
-      return true;
-
-   return false;
+   return IsAllowedSymbol(symbol);
 }
 
 //+------------------------------------------------------------------+
@@ -152,6 +178,23 @@ double GetSymbolPoint(string symbol)
    if(point <= 0)
       point = _Point;
    return point;
+}
+
+//+------------------------------------------------------------------+
+double GetCurrentSpreadPoints(string symbol)
+{
+   double currentSpread = (double)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
+   if(currentSpread > 0)
+      return currentSpread;
+
+   double point = GetSymbolPoint(symbol);
+   double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   if(point <= 0 || bid <= 0 || ask <= 0)
+      return -1.0;
+
+   currentSpread = (ask - bid) / point;
+   return currentSpread;
 }
 
 //+------------------------------------------------------------------+
@@ -192,6 +235,25 @@ double NormalizeVolume(string symbol, double lots)
 }
 
 //+------------------------------------------------------------------+
+double NormalizeCloseVolume(string symbol, double lots)
+{
+   double minLots  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxLots  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double stepLots = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+
+   if(stepLots <= 0) stepLots = 0.01;
+   if(minLots <= 0) minLots = stepLots;
+   if(maxLots <= 0) maxLots = lots;
+
+   lots = MathMax(0.0, MathMin(maxLots, lots));
+   double normalizedLots = MathFloor((lots + 0.0000001) / stepLots) * stepLots;
+   if(normalizedLots + 0.0000001 < minLots)
+      return 0.0;
+
+   return NormalizeDouble(normalizedLots, GetVolumeDigits(symbol));
+}
+
+//+------------------------------------------------------------------+
 void PrepareTrade(string symbol, long magic)
 {
    trade.SetExpertMagicNumber((ulong)magic);
@@ -204,7 +266,6 @@ bool IsTradeRetcodeSuccess()
 {
    uint retcode = trade.ResultRetcode();
    return (retcode == TRADE_RETCODE_DONE ||
-           retcode == TRADE_RETCODE_DONE_PARTIAL ||
            retcode == TRADE_RETCODE_PLACED);
 }
 
@@ -212,6 +273,18 @@ bool IsTradeRetcodeSuccess()
 bool TradeOperationSucceeded(bool requestSent)
 {
    return (requestSent && IsTradeRetcodeSuccess());
+}
+
+//+------------------------------------------------------------------+
+bool IsTradeRetcodePartialFill()
+{
+   return (trade.ResultRetcode() == TRADE_RETCODE_DONE_PARTIAL);
+}
+
+//+------------------------------------------------------------------+
+bool TradeOperationPartiallyFilled(bool requestSent)
+{
+   return (requestSent && IsTradeRetcodePartialFill());
 }
 
 //+------------------------------------------------------------------+
@@ -259,25 +332,182 @@ ulong FindLatestPositionTicket(string symbol, long magic, ENUM_POSITION_TYPE pos
 }
 
 //+------------------------------------------------------------------+
-ulong ResolvePositionTicket(ulong rawTicket, string symbol, long magic, ENUM_POSITION_TYPE posType)
+bool SelectedPositionMatches(string symbol, long magic, ENUM_POSITION_TYPE posType)
 {
-   if(rawTicket != 0 && PositionSelectByTicket(rawTicket))
-      return rawTicket;
+   if(PositionGetString(POSITION_SYMBOL) != symbol)
+      return false;
 
-   ulong ticket = FindLatestPositionTicket(symbol, magic, posType);
-   if(ticket != 0)
-      return ticket;
+   if(PositionGetInteger(POSITION_MAGIC) != magic)
+      return false;
 
-   if(PositionSelect(symbol))
+   if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != posType)
+      return false;
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+ulong FindPositionTicketByIdentifier(long positionId, string symbol, long magic, ENUM_POSITION_TYPE posType)
+{
+   if(positionId <= 0)
+      return 0;
+
+   ulong matchedTicket = 0;
+   int matchedCount = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      if(PositionGetInteger(POSITION_MAGIC) == magic &&
-         (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == posType)
+      if(!SelectPositionByIndex(i))
+         continue;
+
+      if(PositionGetInteger(POSITION_IDENTIFIER) != positionId)
+         continue;
+
+      if(!SelectedPositionMatches(symbol, magic, posType))
+         continue;
+
+      matchedTicket = (ulong)PositionGetInteger(POSITION_TICKET);
+      matchedCount++;
+      if(matchedCount > 1)
       {
-         return (ulong)PositionGetInteger(POSITION_TICKET);
+         Print("⚠️ position identifier 对应多个实时持仓，拒绝继续: id=", FormatLongValue(positionId));
+         return 0;
       }
    }
 
-   return rawTicket;
+   if(matchedCount == 1)
+      return matchedTicket;
+
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+ulong FindUniquePositionTicket(string symbol, long magic, ENUM_POSITION_TYPE posType)
+{
+   ulong matchedTicket = 0;
+   int matchedCount = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!SelectPositionByIndex(i))
+         continue;
+
+      if(!SelectedPositionMatches(symbol, magic, posType))
+         continue;
+
+      matchedTicket = (ulong)PositionGetInteger(POSITION_TICKET);
+      matchedCount++;
+      if(matchedCount > 1)
+      {
+         Print("⚠️ 存在多个同 symbol/magic/type 持仓，无法安全解析目标持仓: ", symbol,
+               " | Magic=", magic, " | Type=", (int)posType);
+         return 0;
+      }
+   }
+
+   if(matchedCount == 1)
+      return matchedTicket;
+
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+ulong ResolvePositionTicket(ulong rawTicket, string symbol, long magic, ENUM_POSITION_TYPE posType)
+{
+   if(rawTicket != 0 && PositionSelectByTicket(rawTicket) && SelectedPositionMatches(symbol, magic, posType))
+      return rawTicket;
+
+   ulong dealTicket = (ulong)trade.ResultDeal();
+   if(dealTicket != 0 && HistoryDealSelect(dealTicket))
+   {
+      long positionId = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      ulong ticketByIdentifier = FindPositionTicketByIdentifier(positionId, symbol, magic, posType);
+      if(ticketByIdentifier != 0)
+         return ticketByIdentifier;
+   }
+
+   return FindUniquePositionTicket(symbol, magic, posType);
+}
+
+//+------------------------------------------------------------------+
+ulong ResolveLivePositionTicket(ulong rawTicket, string symbol, long magic, ENUM_POSITION_TYPE posType)
+{
+   ulong ticket = ResolvePositionTicket(rawTicket, symbol, magic, posType);
+   if(ticket == 0)
+      return 0;
+
+   if(!PositionSelectByTicket(ticket))
+      return 0;
+
+   if(!SelectedPositionMatches(symbol, magic, posType))
+      return 0;
+
+   return ticket;
+}
+
+//+------------------------------------------------------------------+
+string EnsureSignalProtectionAttached(ulong ticket, string type_str, double sl, double tp1)
+{
+   if(ticket == 0 || !PositionSelectByTicket(ticket))
+   {
+      Print("⚠️ 开仓后未能选中持仓 #", FormatULongValue(ticket), "，无法安全附加保护止损");
+      return "position_resolve_incomplete";
+   }
+
+   string positionSymbol = PositionGetString(POSITION_SYMBOL);
+   long positionMagic = PositionGetInteger(POSITION_MAGIC);
+   double current_sl = PositionGetDouble(POSITION_SL);
+   double current_tp = PositionGetDouble(POSITION_TP);
+
+   if(current_sl == 0.0 || current_tp == 0.0)
+   {
+      double min_stop = (double)SymbolInfoInteger(positionSymbol, SYMBOL_TRADE_STOPS_LEVEL) * GetSymbolPoint(positionSymbol);
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double final_sl = sl;
+      double final_tp = tp1;
+
+      if(min_stop > 0)
+      {
+         if(MathAbs(openPrice - sl) < min_stop)
+         {
+            if(type_str == "BUY") final_sl = openPrice - min_stop;
+            else final_sl = openPrice + min_stop;
+         }
+
+         if(MathAbs(tp1 - openPrice) < min_stop)
+         {
+            if(type_str == "BUY") final_tp = openPrice + min_stop;
+            else final_tp = openPrice - min_stop;
+         }
+      }
+
+      if(final_sl != current_sl || final_tp != current_tp)
+      {
+         PrepareTrade(positionSymbol, positionMagic);
+         if(TradeOperationSucceeded(trade.PositionModify(ticket, final_sl, final_tp)))
+            Print("📝 开仓后设置 TP/SL: SL=", final_sl, " TP=", final_tp);
+         else
+         {
+            int mod_err = GetTradeErrorCode();
+            Print("⚠️ 开仓成功但保护止损附加失败: #", FormatULongValue(ticket), " Error#", mod_err);
+            return "protection_attach_failed";
+         }
+      }
+   }
+
+   if(!PositionSelectByTicket(ticket))
+   {
+      Print("⚠️ 开仓后无法重新选中持仓 #", FormatULongValue(ticket), "，保护状态未确认");
+      return "position_resolve_incomplete";
+   }
+
+   if(PositionGetDouble(POSITION_SL) == 0.0 || PositionGetDouble(POSITION_TP) == 0.0)
+   {
+      Print("⚠️ 开仓后保护止损未完整附加: #", FormatULongValue(ticket));
+      return "protection_attach_incomplete";
+   }
+
+   return "";
 }
 
 //+------------------------------------------------------------------+
@@ -293,6 +523,18 @@ int OnInit()
          (UseFixedLots ? ("固定手数=" + DoubleToString(FixedLots, 2)) : ("风险=" + DoubleToString(MaxRiskPercent, 1) + "%")),
          " | 持仓上限", MaxPositions,
          " | 日亏损", MaxDailyLoss, "% | 浮亏", MaxFloatLoss, "%");
+
+   if(!IsSymbolAvailable(Symbol_))
+   {
+      Print("❌ 主交易品种不可用：", Symbol_);
+      return INIT_FAILED;
+   }
+
+   if(_Symbol != Symbol_)
+   {
+      Print("❌ 图表品种与 Symbol_ 不一致 | Chart=", _Symbol, " | Symbol_=", Symbol_);
+      return INIT_FAILED;
+   }
 
    PrepareTrade(Symbol_, PullbackMagic);
 
@@ -337,9 +579,13 @@ int OnInit()
       if(!SelectPositionByIndex(i))
          continue;
 
+      string positionSymbol = PositionGetString(POSITION_SYMBOL);
+      if(!IsAllowedSymbol(positionSymbol))
+         continue;
+
       long magic = PositionGetInteger(POSITION_MAGIC);
       string type = ((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "BUY" : "SELL");
-      string info = PositionGetString(POSITION_SYMBOL) + " " + type + " " +
+      string info = positionSymbol + " " + type + " " +
                     DoubleToString(PositionGetDouble(POSITION_VOLUME), 2) +
                     " 手 | Ticket=" + FormatLongValue(PositionGetInteger(POSITION_TICKET));
 
@@ -492,6 +738,9 @@ void SendHeartbeat()
       if(!SelectPositionByIndex(i))
          continue;
 
+      if(!IsAllowedSymbol(PositionGetString(POSITION_SYMBOL)))
+         continue;
+
       long m = PositionGetInteger(POSITION_MAGIC);
       if(m == PullbackMagic) pullbackPos++;
       else if(m == BreakoutMagic) breakoutPos++;
@@ -550,35 +799,41 @@ void SendTick()
 
    double bid = SymbolInfoDouble(Symbol_, SYMBOL_BID);
    double ask = SymbolInfoDouble(Symbol_, SYMBOL_ASK);
-   double point = GetSymbolPoint(Symbol_);
-   double spread = 0.0;
-   if(point > 0)
-      spread = (ask - bid) / point / 10.0;
+   double spread = GetCurrentSpreadPoints(Symbol_);
+   if(spread < 0)
+      spread = 0.0;
 
    string symbols_json = "";
 
    if(EnableSpread && spreadSymbolsReady)
    {
-      double ukoil_bid = SymbolInfoDouble(SpreadSymbol1, SYMBOL_BID);
-      double usoil_bid = SymbolInfoDouble(SpreadSymbol2, SYMBOL_BID);
+       double leg1_bid = SymbolInfoDouble(SpreadSymbol1, SYMBOL_BID);
+       double leg2_bid = SymbolInfoDouble(SpreadSymbol2, SYMBOL_BID);
+       double leg1_ask = SymbolInfoDouble(SpreadSymbol1, SYMBOL_ASK);
+       double leg2_ask = SymbolInfoDouble(SpreadSymbol2, SYMBOL_ASK);
 
-      if(ukoil_bid > 0 && usoil_bid > 0)
-      {
-         double spread_val = ukoil_bid - usoil_bid;
-         symbols_json = StringFormat(
-            ",\"symbols\":{"
-            "\"UKOIL\":{\"price\":%.2f,\"bid\":%.2f,\"ask\":%.2f},"
-            "\"USOIL\":{\"price\":%.2f,\"bid\":%.2f,\"ask\":%.2f},"
-            "\"SPREAD\":%.2f"
-            "}",
-            ukoil_bid, ukoil_bid, ukoil_bid * 1.001,
-            usoil_bid, usoil_bid, usoil_bid * 1.001,
-            spread_val
-         );
-         Print("🛢️ 原油价格：UKOIL=", ukoil_bid, " | USOIL=", usoil_bid,
-               " | 价差=", DoubleToString(spread_val, 2));
-      }
-   }
+       if(leg1_ask <= 0)
+          leg1_ask = leg1_bid + GetSymbolPoint(SpreadSymbol1) * 10.0;
+       if(leg2_ask <= 0)
+          leg2_ask = leg2_bid + GetSymbolPoint(SpreadSymbol2) * 10.0;
+
+       if(leg1_bid > 0 && leg2_bid > 0)
+       {
+          double spread_val = leg1_bid - leg2_bid;
+          symbols_json = StringFormat(
+             ",\"symbols\":{"
+             "\"%s\":{\"price\":%.2f,\"bid\":%.2f,\"ask\":%.2f},"
+             "\"%s\":{\"price\":%.2f,\"bid\":%.2f,\"ask\":%.2f},"
+             "\"SPREAD\":%.2f"
+             "}",
+             SpreadSymbol1, leg1_bid, leg1_bid, leg1_ask,
+             SpreadSymbol2, leg2_bid, leg2_bid, leg2_ask,
+             spread_val
+          );
+          Print("🛢️ 原油价格：", SpreadSymbol1, "=", leg1_bid, " | ", SpreadSymbol2, "=", leg2_bid,
+                " | 价差=", DoubleToString(spread_val, 2));
+       }
+    }
 
    string json = StringFormat(
       "{"
@@ -652,7 +907,7 @@ void SendPositions()
          continue;
 
       string symbol = PositionGetString(POSITION_SYMBOL);
-      if(!IsTrackedSymbol(symbol))
+      if(!IsAllowedSymbol(symbol))
          continue;
 
       long magic = PositionGetInteger(POSITION_MAGIC);
@@ -739,10 +994,31 @@ void ExecuteOpen(string cmd, string cmd_id)
 
    Print("🛢️ 价差开仓：", symbol, " ", side, " ", lots, "手 | ", reason);
 
+   if(!EnableSpread)
+   {
+      Print("❌ 原油对冲套利未启用");
+      ReportResult(cmd_id, "ERROR", 0, "spread_disabled");
+      return;
+   }
+
+   if(!IsSpreadSymbol(symbol))
+   {
+      Print("❌ 非法价差腿品种：", symbol);
+      ReportResult(cmd_id, "ERROR", 0, "spread_symbol_not_allowed");
+      return;
+   }
+
    if(!IsSymbolAvailable(symbol))
    {
       Print("❌ 品种不可用：", symbol);
       ReportResult(cmd_id, "ERROR", 0, "symbol_not_available");
+      return;
+   }
+
+   if(side != "BUY" && side != "SELL")
+   {
+      Print("❌ 非法价差开仓方向：", side);
+      ReportResult(cmd_id, "ERROR", 0, "invalid_side");
       return;
    }
 
@@ -751,13 +1027,13 @@ void ExecuteOpen(string cmd, string cmd_id)
    PrepareTrade(symbol, SpreadMagicNumber);
 
    bool result = false;
-   ENUM_POSITION_TYPE posType = POSITION_TYPE_SELL;
+   ENUM_POSITION_TYPE posType = POSITION_TYPE_BUY;
    if(side == "BUY")
    {
       posType = POSITION_TYPE_BUY;
       result = trade.Buy(lots, symbol, 0.0, 0.0, 0.0, comment);
    }
-   else
+   else if(side == "SELL")
    {
       posType = POSITION_TYPE_SELL;
       result = trade.Sell(lots, symbol, 0.0, 0.0, 0.0, comment);
@@ -765,9 +1041,34 @@ void ExecuteOpen(string cmd, string cmd_id)
 
    if(TradeOperationSucceeded(result))
    {
-      ulong ticket = ResolvePositionTicket((ulong)trade.ResultOrder(), symbol, SpreadMagicNumber, posType);
+      ulong rawTicket = (ulong)trade.ResultOrder();
+      ulong ticket = ResolveLivePositionTicket(rawTicket, symbol, SpreadMagicNumber, posType);
+      if(ticket == 0)
+      {
+         Print("⚠️ 价差开仓成交但未能解析实时持仓：order#", FormatULongValue(rawTicket), " ", symbol, " ", side, " ", lots, "手");
+         ReportResult(cmd_id, "ERROR", (long)rawTicket, "position_resolve_incomplete");
+         return;
+      }
+
       Print("✅ 价差开仓成功：#", FormatULongValue(ticket), " ", symbol, " ", side, " ", lots, "手");
       ReportResult(cmd_id, "OK", (long)ticket, "");
+   }
+   else if(TradeOperationPartiallyFilled(result))
+   {
+      ulong rawTicket = (ulong)trade.ResultOrder();
+      ulong ticket = ResolveLivePositionTicket(rawTicket, symbol, SpreadMagicNumber, posType);
+      ulong reportTicket = ticket;
+      if(reportTicket == 0)
+         reportTicket = rawTicket;
+
+      Print("⚠️ 价差开仓部分成交：#", FormatULongValue(reportTicket), " ", symbol, " ", side, " ", lots, "手");
+      if(ticket == 0)
+      {
+         ReportResult(cmd_id, "ERROR", (long)reportTicket, "position_resolve_incomplete");
+         return;
+      }
+
+      ReportResult(cmd_id, "ERROR", (long)ticket, "open_incomplete");
    }
    else
    {
@@ -796,7 +1097,28 @@ void ExecuteClosePartial(string cmd, string cmd_id)
 
    Print("🛢️ 价差部分平仓：", symbol, " ", lots, "手 | ", reason);
 
-   for(int i = 0; i < PositionsTotal(); i++)
+   if(!EnableSpread)
+   {
+      Print("❌ 原油对冲套利未启用");
+      ReportResult(cmd_id, "ERROR", 0, "spread_disabled");
+      return;
+   }
+
+   if(!IsSpreadSymbol(symbol))
+   {
+      Print("❌ 非法价差腿品种：", symbol);
+      ReportResult(cmd_id, "ERROR", 0, "spread_symbol_not_allowed");
+      return;
+   }
+
+   double remainingLots = lots;
+   bool matchedPosition = false;
+   bool closedAny = false;
+   bool closeFailed = false;
+   ulong lastTicket = 0;
+   ulong failedTicket = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0 && remainingLots > 0.0000001; i--)
    {
       if(!SelectPositionByIndex(i))
          continue;
@@ -804,25 +1126,91 @@ void ExecuteClosePartial(string cmd, string cmd_id)
       if(PositionGetString(POSITION_SYMBOL) != symbol)
          continue;
 
-      long magic = PositionGetInteger(POSITION_MAGIC);
-      if(!IsOurMagic(magic))
-         continue;
+       long magic = PositionGetInteger(POSITION_MAGIC);
+       if(magic != SpreadMagicNumber)
+          continue;
 
-      ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
-      double closeLots = MathMin(lots, PositionGetDouble(POSITION_VOLUME));
+       matchedPosition = true;
+
+        ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
+        double positionVolumeBefore = PositionGetDouble(POSITION_VOLUME);
+        double closeLots = MathMin(remainingLots, positionVolumeBefore);
+        closeLots = NormalizeCloseVolume(symbol, closeLots);
+        if(closeLots <= 0)
+           continue;
+
       PrepareTrade(symbol, magic);
 
       bool result = trade.PositionClosePartial(ticket, closeLots, (ulong)Slippage);
-      if(TradeOperationSucceeded(result))
-      {
-         Print("✅ 部分平仓成功：#", FormatULongValue(ticket), " ", symbol, " ", closeLots, "手");
-         ReportResult(cmd_id, "OK", (long)ticket, "");
-         return;
-      }
-   }
+       if(TradeOperationSucceeded(result))
+       {
+          remainingLots -= closeLots;
+          remainingLots = MathMax(0.0, remainingLots);
+          closedAny = true;
+          lastTicket = ticket;
+          Print("✅ 部分平仓成功：#", FormatULongValue(ticket), " ", symbol, " ", closeLots,
+                "手 | 剩余=", DoubleToString(MathMax(0.0, remainingLots), 2));
+       }
+       else if(TradeOperationPartiallyFilled(result))
+       {
+          double filledLots = 0.0;
+          if(PositionSelectByTicket(ticket))
+             filledLots = NormalizeCloseVolume(symbol, MathMax(0.0, positionVolumeBefore - PositionGetDouble(POSITION_VOLUME)));
 
-   Print("❌ 未找到对应持仓");
-   ReportResult(cmd_id, "ERROR", 0, "position_not_found");
+          if(filledLots > 0.0)
+          {
+             remainingLots -= filledLots;
+             remainingLots = MathMax(0.0, remainingLots);
+             closedAny = true;
+             lastTicket = ticket;
+          }
+
+          Print("⚠️ 部分平仓部分成交：#", FormatULongValue(ticket), " ", symbol,
+                " | 请求=", DoubleToString(closeLots, GetVolumeDigits(symbol)),
+                "手 | 实际成交=", DoubleToString(filledLots, GetVolumeDigits(symbol)),
+                "手 | 剩余请求=", DoubleToString(MathMax(0.0, remainingLots), GetVolumeDigits(symbol)), "手");
+          ReportResult(cmd_id, "ERROR", (long)ticket, "partial_close_incomplete");
+          return;
+       }
+       else
+       {
+          int err = GetTradeErrorCode();
+          closeFailed = true;
+          failedTicket = ticket;
+          Print("❌ 部分平仓失败：#", FormatULongValue(ticket), " ", symbol, " ", closeLots,
+                "手 | Error#", err);
+          break;
+       }
+    }
+
+    if(!matchedPosition)
+    {
+       Print("❌ 未找到对应持仓");
+       ReportResult(cmd_id, "ERROR", 0, "position_not_found");
+       return;
+    }
+
+    if(closeFailed)
+    {
+       ReportResult(cmd_id, "ERROR", (long)failedTicket, "close_failed");
+       return;
+    }
+
+    if(remainingLots <= 0.0000001)
+    {
+       ReportResult(cmd_id, "OK", (long)lastTicket, "");
+       return;
+    }
+
+   if(closedAny)
+   {
+      Print("⚠️ 部分平仓未完成：剩余 ", DoubleToString(MathMax(0.0, remainingLots), 2), " 手未成交");
+       ReportResult(cmd_id, "ERROR", (long)lastTicket, "partial_close_incomplete");
+       return;
+    }
+
+    Print("⚠️ 部分平仓未完成：请求手数无法完全执行，剩余 ", DoubleToString(MathMax(0.0, remainingLots), 2), " 手");
+    ReportResult(cmd_id, "ERROR", 0, "partial_close_incomplete");
 }
 
 // ============================================================
@@ -836,7 +1224,26 @@ void ExecuteCloseAll(string cmd, string cmd_id)
 
    Print("🛢️ 价差全部平仓：", symbol, " ", lots, "手 | ", reason);
 
+   if(!EnableSpread)
+   {
+      Print("❌ 原油对冲套利未启用");
+      ReportResult(cmd_id, "ERROR", 0, "spread_disabled");
+      return;
+   }
+
+   if(!IsSpreadSymbol(symbol))
+   {
+      Print("❌ 非法价差腿品种：", symbol);
+      ReportResult(cmd_id, "ERROR", 0, "spread_symbol_not_allowed");
+      return;
+   }
+
    int closedCount = 0;
+   bool matchedPosition = false;
+   bool closeFailed = false;
+   bool closeIncomplete = false;
+   ulong failedTicket = 0;
+   ulong incompleteTicket = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       if(!SelectPositionByIndex(i))
@@ -845,25 +1252,56 @@ void ExecuteCloseAll(string cmd, string cmd_id)
       if(PositionGetString(POSITION_SYMBOL) != symbol)
          continue;
 
-      long magic = PositionGetInteger(POSITION_MAGIC);
-      if(!IsOurMagic(magic))
-         continue;
+       long magic = PositionGetInteger(POSITION_MAGIC);
+       if(magic != SpreadMagicNumber)
+          continue;
 
-      ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
-      PrepareTrade(symbol, magic);
+       matchedPosition = true;
 
-      bool result = trade.PositionClose(ticket, (ulong)Slippage);
-      if(TradeOperationSucceeded(result))
-      {
-         Print("✅ 平仓成功：#", FormatULongValue(ticket), " ", symbol);
-         closedCount++;
-      }
-   }
+       ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
+        PrepareTrade(symbol, magic);
 
-   if(closedCount > 0)
-      ReportResult(cmd_id, "OK", closedCount, "");
-   else
-      ReportResult(cmd_id, "ERROR", 0, "no_position_found");
+        bool result = trade.PositionClose(ticket, (ulong)Slippage);
+       if(TradeOperationSucceeded(result))
+        {
+           Print("✅ 平仓成功：#", FormatULongValue(ticket), " ", symbol);
+           closedCount++;
+        }
+       else if(TradeOperationPartiallyFilled(result))
+       {
+          closeIncomplete = true;
+          incompleteTicket = ticket;
+          Print("⚠️ 全部平仓未完成：#", FormatULongValue(ticket), " ", symbol, " | broker 部分成交，仍有剩余仓位");
+       }
+        else
+        {
+           int err = GetTradeErrorCode();
+           closeFailed = true;
+           failedTicket = ticket;
+          Print("❌ 全部平仓失败：#", FormatULongValue(ticket), " ", symbol, " | Error#", err);
+       }
+    }
+
+    if(!matchedPosition)
+    {
+       ReportResult(cmd_id, "ERROR", 0, "no_position_found");
+       return;
+    }
+
+     if(closeFailed)
+     {
+        ReportResult(cmd_id, "ERROR", (long)failedTicket, "close_failed");
+        return;
+     }
+
+     if(closeIncomplete)
+     {
+        ReportResult(cmd_id, "ERROR", (long)incompleteTicket, "close_incomplete");
+        return;
+     }
+
+     if(closedCount > 0)
+        ReportResult(cmd_id, "OK", closedCount, "");
 }
 
 // ============================================================
@@ -871,6 +1309,7 @@ void ExecuteCloseAll(string cmd, string cmd_id)
 // ============================================================
 void ExecuteSignal(string cmd, string cmd_id)
 {
+   string symbol   = GetJsonString(cmd, "symbol");
    string type_str = GetJsonString(cmd, "type");
    double sl       = GetJsonDouble(cmd, "sl");
    double tp1      = GetJsonDouble(cmd, "tp1");
@@ -880,6 +1319,35 @@ void ExecuteSignal(string cmd, string cmd_id)
    Print("📡 信号：", type_str, " | SL=", sl, " TP=", tp1,
          " | ", strategy, " 评分:", score);
 
+   if(StringLen(symbol) > 0 && !IsPrimarySymbol(symbol))
+   {
+      Print("❌ 信号品种不匹配：", symbol, " | 本实例=", Symbol_);
+      ReportResult(cmd_id, "ERROR", 0, "symbol_mismatch");
+      return;
+   }
+
+   if(type_str != "BUY" && type_str != "SELL")
+   {
+      Print("❌ 非法信号方向：", type_str);
+      ReportResult(cmd_id, "ERROR", 0, "invalid_type");
+      return;
+   }
+
+   int magicForOrder = GetStrategyMagic(strategy);
+   if(magicForOrder <= 0)
+   {
+      Print("❌ 未知策略：", strategy);
+      ReportResult(cmd_id, "ERROR", 0, "invalid_strategy");
+      return;
+   }
+
+   if(!IsStrategyEnabled(strategy))
+   {
+      Print("❌ 策略未启用：", strategy);
+      ReportResult(cmd_id, "ERROR", 0, "strategy_disabled");
+      return;
+   }
+
    if(!CheckRisk(type_str))
    {
       ReportResult(cmd_id, "REJECTED", 0, "risk_check_failed");
@@ -887,13 +1355,13 @@ void ExecuteSignal(string cmd, string cmd_id)
    }
 
    double price = 0.0;
-   ENUM_POSITION_TYPE posType = POSITION_TYPE_SELL;
+   ENUM_POSITION_TYPE posType = POSITION_TYPE_BUY;
    if(type_str == "BUY")
    {
       posType = POSITION_TYPE_BUY;
       price = SymbolInfoDouble(Symbol_, SYMBOL_ASK);
    }
-   else
+   else if(type_str == "SELL")
    {
       posType = POSITION_TYPE_SELL;
       price = SymbolInfoDouble(Symbol_, SYMBOL_BID);
@@ -901,58 +1369,64 @@ void ExecuteSignal(string cmd, string cmd_id)
 
    double sl_distance = MathAbs(price - sl);
    double lots = CalcLots(sl_distance);
-   int magicForOrder = GetStrategyMagic(strategy);
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);
 
    PrepareTrade(Symbol_, magicForOrder);
 
    bool result = false;
    if(type_str == "BUY")
-      result = trade.Buy(lots, Symbol_, 0.0, sl, tp1, comment);
+      result = trade.Buy(lots, Symbol_, 0.0, 0.0, 0.0, comment);
    else
-      result = trade.Sell(lots, Symbol_, 0.0, sl, tp1, comment);
+      result = trade.Sell(lots, Symbol_, 0.0, 0.0, 0.0, comment);
+
+   ulong rawTicket = (ulong)trade.ResultOrder();
 
    if(TradeOperationSucceeded(result))
    {
-      ulong ticket = ResolvePositionTicket((ulong)trade.ResultOrder(), Symbol_, magicForOrder, posType);
-      Print("✅ 开仓：#", FormatULongValue(ticket), " ", type_str, " ", lots, "手 @ ", price,
-            " | Magic=", magicForOrder, " (", strategy, ")");
-
-      if(ticket != 0 && PositionSelectByTicket(ticket))
+      ulong ticket = ResolveLivePositionTicket(rawTicket, Symbol_, magicForOrder, posType);
+      if(ticket == 0)
       {
-         double current_sl = PositionGetDouble(POSITION_SL);
-         double current_tp = PositionGetDouble(POSITION_TP);
-
-         if(current_sl == 0.0 || current_tp == 0.0)
-         {
-            double min_stop = (double)SymbolInfoInteger(Symbol_, SYMBOL_TRADE_STOPS_LEVEL) * GetSymbolPoint(Symbol_);
-            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-            double final_sl = sl;
-            double final_tp = tp1;
-
-            if(min_stop > 0)
-            {
-               if(MathAbs(openPrice - sl) < min_stop)
-               {
-                  if(type_str == "BUY") final_sl = openPrice - min_stop;
-                  else final_sl = openPrice + min_stop;
-               }
-
-               if(MathAbs(tp1 - openPrice) < min_stop)
-               {
-                  if(type_str == "BUY") final_tp = openPrice + min_stop;
-                  else final_tp = openPrice - min_stop;
-               }
-            }
-
-            if(TradeOperationSucceeded(trade.PositionModify(ticket, final_sl, final_tp)))
-               Print("📝 开仓后设置 TP/SL: SL=", final_sl, " TP=", final_tp);
-            else
-               Print("⚠️ 设置 TP/SL 失败: Error#", GetTradeErrorCode());
-         }
+         Print("⚠️ 开仓成交但未能解析实时持仓：order#", FormatULongValue(rawTicket), " ", type_str, " ", lots, "手");
+         ReportResult(cmd_id, "ERROR", (long)rawTicket, "position_resolve_incomplete");
+         return;
       }
 
+      string protectionStatus = EnsureSignalProtectionAttached(ticket, type_str, sl, tp1);
+      if(protectionStatus != "")
+      {
+         ReportResult(cmd_id, "ERROR", (long)ticket, protectionStatus);
+         return;
+      }
+
+      Print("✅ 开仓：#", FormatULongValue(ticket), " ", type_str, " ", lots, "手 @ ", price,
+            " | Magic=", magicForOrder, " (", strategy, ")");
       ReportResult(cmd_id, "OK", (long)ticket, "");
+   }
+   else if(TradeOperationPartiallyFilled(result))
+   {
+      ulong ticket = ResolveLivePositionTicket(rawTicket, Symbol_, magicForOrder, posType);
+      ulong reportTicket = ticket;
+      if(reportTicket == 0)
+         reportTicket = rawTicket;
+
+      Print("⚠️ 开仓部分成交：#", FormatULongValue(reportTicket), " ", type_str, " ", lots, "手 @ ", price,
+            " | Magic=", magicForOrder, " (", strategy, ")");
+
+      if(ticket == 0)
+      {
+         ReportResult(cmd_id, "ERROR", (long)reportTicket, "position_resolve_incomplete");
+         return;
+      }
+
+      string protectionStatus = EnsureSignalProtectionAttached(ticket, type_str, sl, tp1);
+      if(protectionStatus != "")
+      {
+         ReportResult(cmd_id, "ERROR", (long)ticket, protectionStatus);
+         return;
+      }
+
+      ReportResult(cmd_id, "ERROR", (long)ticket, "open_incomplete");
+      return;
    }
    else
    {
@@ -980,7 +1454,22 @@ void ExecuteModify(string cmd, string cmd_id)
       return;
    }
 
-   PrepareTrade(PositionGetString(POSITION_SYMBOL), PositionGetInteger(POSITION_MAGIC));
+   string symbol = PositionGetString(POSITION_SYMBOL);
+   if(!IsAllowedSymbol(symbol))
+   {
+      Print("❌ 订单品种不属于本实例：", symbol);
+      ReportResult(cmd_id, "ERROR", 0, "symbol_not_allowed");
+      return;
+   }
+
+   if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
+   {
+      Print("❌ 订单不属于本 EA：Magic=", FormatLongValue(PositionGetInteger(POSITION_MAGIC)));
+      ReportResult(cmd_id, "ERROR", 0, "order_not_owned");
+      return;
+   }
+
+   PrepareTrade(symbol, PositionGetInteger(POSITION_MAGIC));
    bool result = trade.PositionModify(ticket, sl, tp);
    if(TradeOperationSucceeded(result))
    {
@@ -1013,6 +1502,20 @@ void ExecuteClose(string cmd, string cmd_id)
    }
 
    string sym = PositionGetString(POSITION_SYMBOL);
+   if(!IsAllowedSymbol(sym))
+   {
+      Print("❌ 订单品种不属于本实例：", sym);
+      ReportResult(cmd_id, "ERROR", 0, "symbol_not_allowed");
+      return;
+   }
+
+   if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
+   {
+      Print("❌ 订单不属于本 EA：Magic=", FormatLongValue(PositionGetInteger(POSITION_MAGIC)));
+      ReportResult(cmd_id, "ERROR", 0, "order_not_owned");
+      return;
+   }
+
    long magic = PositionGetInteger(POSITION_MAGIC);
    PrepareTrade(sym, magic);
 
@@ -1021,6 +1524,11 @@ void ExecuteClose(string cmd, string cmd_id)
    {
       Print("✅ 平仓成功");
       ReportResult(cmd_id, "OK", (long)ticket, "");
+   }
+   else if(TradeOperationPartiallyFilled(result))
+   {
+      Print("⚠️ 平仓未完成：#", FormatULongValue(ticket), " | broker 部分成交，仍有剩余仓位");
+      ReportResult(cmd_id, "ERROR", (long)ticket, "close_incomplete");
    }
    else
    {
@@ -1035,7 +1543,36 @@ void ExecuteClose(string cmd, string cmd_id)
 // ============================================================
 bool CheckRisk(string type_str)
 {
-   if(PositionsTotal() >= MaxPositions)
+   double currentSpread = GetCurrentSpreadPoints(Symbol_);
+   if(currentSpread < 0)
+   {
+      Print("⚠️ 风控：无法获取有效报价/点差");
+      return false;
+   }
+
+   if(currentSpread > MaxSpread)
+   {
+      Print("⚠️ 风控：点差过高 ", DoubleToString(currentSpread, 2), " > ", DoubleToString(MaxSpread, 2));
+      return false;
+   }
+
+   int managedPositions = 0;
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      if(!SelectPositionByIndex(i))
+         continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      if(!IsAllowedSymbol(symbol))
+         continue;
+
+      if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
+         continue;
+
+      managedPositions++;
+   }
+
+   if(managedPositions >= MaxPositions)
    {
       Print("⚠️ 风控：达到最大持仓数 ", MaxPositions);
       return false;
@@ -1047,8 +1584,8 @@ bool CheckRisk(string type_str)
       if(!SelectPositionByIndex(i))
          continue;
 
-      if(PositionGetString(POSITION_SYMBOL) != Symbol_)
-         continue;
+      if(!IsPrimarySymbol(PositionGetString(POSITION_SYMBOL)))
+          continue;
 
       if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
          continue;
@@ -1082,8 +1619,17 @@ bool CheckRisk(string type_str)
    double totalProfit = 0.0;
    for(int i = 0; i < PositionsTotal(); i++)
    {
-      if(SelectPositionByIndex(i))
-         totalProfit += PositionGetDouble(POSITION_PROFIT);
+      if(!SelectPositionByIndex(i))
+         continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      if(!IsAllowedSymbol(symbol))
+         continue;
+
+      if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
+         continue;
+
+      totalProfit += PositionGetDouble(POSITION_PROFIT);
    }
 
    double floatLoss_pct = 0.0;

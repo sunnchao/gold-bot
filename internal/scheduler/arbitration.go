@@ -136,7 +136,7 @@ func (m *ArbitrationManager) waitForArbitration(ctx context.Context, signalID in
 			}
 		case <-ticker.C:
 			// Check arbitration result from database
-			signals, err := m.store.GetPendingSignals(ctx, "", "") // Get all pending signals
+			signals, err := m.store.GetPendingSignals(ctx, "", "")
 			if err != nil {
 				log.Printf("[ARBITRATION] ⚠️ 检查仲裁结果失败: %v", err)
 				continue
@@ -170,7 +170,7 @@ func (m *ArbitrationManager) UpdateArbitrationResult(ctx context.Context, signal
 }
 
 // ExpireStaleSignals marks expired signals as timeout.
-func (m *ArbitrationManager) ExpireStaleSignals(ctx context.Context) error {
+func (m *ArbitrationManager) ExpireStaleSignals(ctx context.Context) (int64, error) {
 	return m.store.ExpireStaleSignals(ctx)
 }
 

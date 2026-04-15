@@ -1,5 +1,15 @@
 # 更新日志
 
+## 2026-04-15
+
+### v1.5.0
+
+- Go 服务端补齐 `pending_signal` / arbitration 存储接线，新增 App 级 API wiring 与多 symbol 迁移校验
+- SQLite/PG 待仲裁信号仓储增强：支持 `RETURNING id`、全量查询、超时过期计数与更新命中校验
+- 持仓状态持久化改为按 `account + symbol` 隔离，回放快照与仓位管理分析链路增加 `symbol`
+- MT4/MT5 EA 强化 symbol policy：限制可交易品种、按品种计算 spread/volume，并补充 `close_all`/保护挂单相关回归测试
+- 同步 AI 风控命令契约与 replay 基线夹具到当前策略输出
+
 ## 2026-04-13
 
 ### v1.1.1

@@ -225,6 +225,7 @@ type PositionState struct {
 
 type PositionSnapshot struct {
 	AccountID    string     `json:"account_id,omitempty"`
+	Symbol       string     `json:"symbol,omitempty"`
 	CurrentPrice float64    `json:"current_price"`
 	CurrentATR   float64    `json:"current_atr"`
 	AvgATR       float64    `json:"avg_atr,omitempty"`

@@ -108,7 +108,7 @@ func (r *AccountRepository) DeleteStalePositionStates(ctx context.Context, accou
 			return err
 		}
 
-		placeholders := phs(len(activeTickets))
+		placeholders := phsFrom(3, len(activeTickets))
 		args := make([]any, 0, len(activeTickets)+2)
 		args = append(args, accountID, symbol)
 		for _, t := range activeTickets {
