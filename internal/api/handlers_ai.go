@@ -151,6 +151,8 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 		exitSuggestion := strings.ToLower(asString(payload["exit_suggestion"]))
 		if exitSuggestion == "close_all" {
 			action = domain.CommandActionCloseAll
+		} else if exitSuggestion == "close_short" {
+			action = domain.CommandActionClose
 		}
 		log.Printf("[AI] 🚨 account=%s/%s | 触发风控指令: %s | reason=%s", accountID, symbol, action, asString(payload["alert_reason"]))
 
@@ -167,10 +169,13 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 			commandPayload["lots_pct"] = 0.5
 			commandPayload["reason"] = fmt.Sprintf("AI风险警报(减仓50%%): %s", asString(payload["alert_reason"]))
 			log.Printf("[AI] 📉 account=%s/%s | 自动减仓50%% | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
-		} else if exitSuggestion == "close_all" {
-			commandPayload["reason"] = fmt.Sprintf("AI风险警报(全平): %s", asString(payload["alert_reason"]))
-			log.Printf("[AI] 🔴 account=%s/%s | 自动全平 | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
-		}
+	} else if exitSuggestion == "close_all" {
+		commandPayload["reason"] = fmt.Sprintf("AI风险警报(全平): %s", asString(payload["alert_reason"]))
+		log.Printf("[AI] 🔴 account=%s/%s | 自动全平 | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
+	} else if exitSuggestion == "close_short" {
+		commandPayload["reason"] = fmt.Sprintf("AI风险警报(平空): %s", asString(payload["alert_reason"]))
+		log.Printf("[AI] 📈 account=%s/%s | 自动平空 | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
+	}
 
 		command := domain.Command{
 			CommandID: commandID,
@@ -202,7 +207,7 @@ func shouldQueueRiskCommand(payload map[string]any) bool {
 		return false
 	}
 	exitSuggestion := strings.ToLower(asString(payload["exit_suggestion"]))
-	return exitSuggestion == "close_partial" || exitSuggestion == "close_all"
+	return exitSuggestion == "close_partial" || exitSuggestion == "close_all" || exitSuggestion == "close_short"
 }
 
 func asString(value any) string {
