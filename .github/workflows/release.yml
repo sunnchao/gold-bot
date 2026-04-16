@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREVIOUS_TAG=$(git tag --sort=-v:refname | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+$" | head -2 | tail -1)
+          if [ -z "$PREVIOUS_TAG" ]; then
+            PREVIOUS_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
+          fi
+          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+          
+          echo "## 变更日志" > /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          echo "比较: [\`$PREVIOUS_TAG → ${{ github.ref_name }}\`](https://github.com/${{ github.repository }}/compare/$PREVIOUS_TAG...${{ github.ref_name }})" >> /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          
+          echo "### 提交记录" >> /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          git log "$PREVIOUS_TAG"..HEAD --pretty=format:"- %h %s" >> /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          
+          # 按类型分类
+          echo "### 功能变更" >> /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          FEAT=$(git log "$PREVIOUS_TAG"..HEAD --pretty=format:"- %s" | grep -i "^feat" || true)
+          if [ -n "$FEAT" ]; then
+            echo "$FEAT" >> /tmp/changelog.md
+          else
+            echo "无" >> /tmp/changelog.md
+          fi
+          echo "" >> /tmp/changelog.md
+          
+          echo "### 缺陷修复" >> /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          FIX=$(git log "$PREVIOUS_TAG"..HEAD --pretty=format:"- %s" | grep -i "^fix" || true)
+          if [ -n "$FIX" ]; then
+            echo "$FIX" >> /tmp/changelog.md
+          else
+            echo "无" >> /tmp/changelog.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          body_path: /tmp/changelog.md
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
