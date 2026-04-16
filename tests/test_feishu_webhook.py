@@ -27,7 +27,11 @@ def load_env():
 
 
 def gen_sign(secret: str, timestamp: int) -> str:
-    """生成飞书签名（官方标准：timestamp + \n + secret 作为消息体）"""
+    """生成飞书签名（按 gold-bot 现网实现）
+
+    注意：这里保持与项目内 Go 实现一致：
+    key = f"{timestamp}\\n{secret}", msg = empty
+    """
     string_to_sign = f"{timestamp}\n{secret}"
     hmac_code = hmac.new(
         string_to_sign.encode("utf-8"),

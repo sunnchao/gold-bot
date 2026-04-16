@@ -185,11 +185,14 @@ func (r *AccountRepository) GetStateSymbol(ctx context.Context, accountID, symbo
 	})
 }
 
-// ListSymbols returns all symbols stored for a given account_id.
+// ListSymbols returns active symbols for a given account_id.
+// Only returns symbols that have been updated within the last 30 minutes,
+// filtering out stale entries from old EA configurations.
 func (r *AccountRepository) ListSymbols(ctx context.Context, accountID string) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT symbol FROM account_state
 		WHERE account_id = `+ph(1)+pgText()+`
+		  AND updated_at > NOW() - INTERVAL '30 minutes'
 		ORDER BY symbol
 	`, accountID)
 	if err != nil {

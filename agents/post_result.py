@@ -76,12 +76,16 @@ STRATEGY_DISPLAY_MAP = {
 
 
 def gen_sign():
-    """生成飞书签名（官方标准方式）"""
+    """生成飞书签名（按 gold-bot 现网实现）
+
+    注意：这里沿用项目现有 Go/Python 逻辑：
+      key = timestamp + "\n" + secret
+      msg = empty
+    不改为“官方常见写法”，以保持与现网一致。
+    """
     ts = str(int(time.time()))
     string_to_sign = ts + "\n" + WEBHOOK_SECRET
-    # 飞书签名规范: secret 为 key, timestamp+\n+secret 为 msg
     hmac_code = hmac.new(
-        WEBHOOK_SECRET.encode("utf-8"),
         string_to_sign.encode("utf-8"),
         digestmod=hashlib.sha256
     ).digest()
@@ -158,66 +162,143 @@ def check_positions_profit(account_id):
     return positions, has_profit
 
 
+def _fetch_price(account_id):
+    """获取实时报价"""
+    try:
+        pd = _fetch_account_info(account_id)
+        if pd:
+            bid = pd.get("market", {}).get("bid", 0)
+            ask = pd.get("market", {}).get("ask", 0)
+            if bid and ask:
+                return f"{float(bid):.2f}", f"{float(ask):.2f}"
+    except Exception:
+        pass
+    return None, None
+
+
 def post_feishu_card(account_id, combined_bias, confidence, reasoning,
                      exit_suggestion, risk_alert, alert_reason,
                      strategy_name="pullback", symbol="XAUUSD"):
-    """飞书 interactive 卡片推送"""
+    """飞书 interactive 卡片推送（优化版）
+
+    卡片结构:
+      - config: 宽屏模式
+      - header: 策略色 + 标题含价格
+      - elements: div+lark_md 多区块布局
+    """
     ts, sig = gen_sign()
 
+    # ── 显示名映射 ──────────────────────────────────
     strategy_display = STRATEGY_DISPLAY_MAP.get(strategy_name.lower(), strategy_name.upper())
 
-    bias_map = {"bullish": "偏多", "bearish": "偏空", "neutral": "中性"}
-    exit_map = {
-        "hold": "持仓",
-        "tighten": "移动止损",
-        "close_long": "平多",
-        "close_short": "平空",
-        "close_all": "清仓",
-        "close_partial": "减仓",
+    bias_map   = {"bullish": "偏多", "bearish": "偏空", "neutral": "中性"}
+    exit_map   = {
+        "hold": "持仓", "tighten": "移动止损",
+        "close_long": "平多", "close_short": "平空",
+        "close_all": "清仓", "close_partial": "减仓",
     }
     bias_cn = bias_map.get(combined_bias.lower(), combined_bias)
     exit_cn = exit_map.get(exit_suggestion.lower(), exit_suggestion)
 
-    # 卡片颜色
-    tmpl_map = {"bullish": "green", "bearish": "red", "neutral": "grey"}
-    template = tmpl_map.get(combined_bias.lower(), "blue")
+    # ── 卡片配色 ───────────────────────────────────
+    # green=看多, red=看空, grey=中性, purple=信息/风险
+    tmpl_map = {
+        "bullish": "green", "bearish": "red",
+        "neutral": "grey",  "risk":    "purple",
+    }
+    # 风险提示用紫色标题
+    template = tmpl_map.get("risk" if risk_alert else combined_bias.lower(), "blue")
 
-    # 置信度进度条
-    conf_bar = "▓" * (confidence // 10) + "░" * (10 - confidence // 10)
+    # ── 实时价格 ───────────────────────────────────
+    bid_str, ask_str = _fetch_price(account_id)
+    if bid_str:
+        price_suffix = f" | {bid_str}"
+    else:
+        price_suffix = ""
 
-    # 风险提示
-    risk_block = f"\n\n⚠️ **风险提示**\n{alert_reason}" if risk_alert else ""
+    # ── 置信度进度条 ▓░ ─────────────────────────────
+    conf_bar = "▓" * max(1, confidence // 10) + "░" * max(0, 10 - confidence // 10)
+    conf_pct = confidence
 
-    # 信号类型标签
-    signal_label = "📈 **开单信号**" if exit_suggestion.lower() == "hold" and combined_bias.lower() != "neutral" else "🔄 **持仓调整**"
+    # ── 信号标签 ───────────────────────────────────
+    if risk_alert:
+        signal_tag = "🚨 **风险警报**"
+    elif exit_suggestion.lower() == "hold" and combined_bias.lower() != "neutral":
+        signal_tag = "📈 **开单信号**"
+    elif exit_suggestion.lower() in ("close_long", "close_short", "close_all"):
+        signal_tag = "📤 **平仓信号**"
+    elif exit_suggestion.lower() in ("tighten", "close_partial"):
+        signal_tag = "🔄 **持仓调整**"
+    else:
+        signal_tag = "📋 **分析报告**"
 
-    # 标题
-    card_title = f"📊 {strategy_display} | {account_id} | {symbol}"
+    # ── 卡片标题（header） ─────────────────────────
+    # 标题尽量短，飞书卡片 header 有长度限制
+    card_title = f"📊 {strategy_display} | {account_id}{price_suffix}"
 
-    content = (
-        f"{signal_label}\n\n"
-        f"**账户**: `{account_id}`\n"
-        f"**品种**: {symbol}\n"
-        f"**策略**: {strategy_display}\n"
-        f"**信号**: {bias_cn} | 置信度 {confidence}%\n"
-        f"`{conf_bar}`\n\n"
-        f"**操作建议**: {exit_cn}\n\n"
-        f"**分析摘要**\n{reasoning}"
-        f"{risk_block}"
+    # ── 构建卡片内容（div+lark_md 分区） ─────────────
+    # 区块1: 信号摘要
+    section_signal = (
+        f"**信号**: {bias_cn}　|　**置信度**: {conf_pct}%\n"
+        f"`{conf_bar}`"
     )
 
+    # 区块2: 操作建议
+    section_action = f"**操作**: {exit_cn}"
+
+    # 区块3: 分析摘要（截断防止过长）
+    reasoning_snippet = reasoning[:400] + ("..." if len(reasoning) > 400 else "")
+    section_analysis = f"**分析摘要**\n{reasoning_snippet}"
+
+    # 区块4: 风险提示（有则显示）
+    section_risk = f"🚨 **风险提示**\n{alert_reason[:200]}" if risk_alert and alert_reason else ""
+
+    # 区块5: 持仓状态摘要
+    positions, has_profit = check_positions_profit(account_id)
+    if positions is not None:
+        if positions:
+            longs  = sum(1 for p in positions if p.get("type", "").lower() == "buy")
+            shorts = sum(1 for p in positions if p.get("type", "").lower() == "sell")
+            total_profit = sum(p.get("profit", 0) for p in positions)
+            profit_str = f"+{total_profit:.2f}" if total_profit >= 0 else f"{total_profit:.2f}"
+            section_positions = (
+                f"**持仓**: 多头×{longs} 空头×{shorts}　|　"
+                f"浮盈浮亏 `{profit_str}`"
+            )
+        else:
+            section_positions = "**持仓**: 当前无持仓"
+    else:
+        section_positions = None  # 未知时不显示
+
+    # ── 组装 lark_md 内容 ────────────────────────────
+    # 用 \n\n 分隔区块，lark_md 中连续空行会渲染为空隙
+    parts = [
+        f"{signal_tag}\n\n{section_signal}",
+        section_action,
+        section_analysis,
+    ]
+    if section_risk:
+        parts.append(section_risk)
+    if section_positions:
+        parts.append(section_positions)
+
+    lark_md_content = "\n\n".join(parts)
+
+    # ── 构建完整卡片 ────────────────────────────────
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     payload = {
         "timestamp": ts,
         "sign": sig,
         "msg_type": "interactive",
         "card": {
+            "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"tag": "plain_text", "content": card_title},
                 "template": template,
             },
             "elements": [
-                {"tag": "markdown", "content": content},
+                {"tag": "div", "text": {"tag": "lark_md", "content": lark_md_content}},
+                {"tag": "hr"},
                 {
                     "tag": "note",
                     "elements": [
