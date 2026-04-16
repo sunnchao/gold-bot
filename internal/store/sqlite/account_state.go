@@ -185,16 +185,26 @@ func (r *AccountRepository) GetStateSymbol(ctx context.Context, accountID, symbo
 	})
 }
 
+// recentCutoff returns the SQL expression for "30 minutes ago" appropriate to the dialect.
+func recentCutoff() string {
+	if isPg() {
+		return "updated_at::timestamptz > NOW() - INTERVAL '30 minutes'"
+	}
+	return "updated_at > datetime('now', '-30 minutes')"
+}
+
 // ListSymbols returns active symbols for a given account_id.
 // Only returns symbols that have been updated within the last 30 minutes,
 // filtering out stale entries from old EA configurations.
 func (r *AccountRepository) ListSymbols(ctx context.Context, accountID string) ([]string, error) {
+	// Compute cutoff time in Go to avoid PG text/timestamp comparison issues.
+	cutoff := time.Now().Add(-30 * time.Minute).UTC().Format(time.RFC3339)
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT symbol FROM account_state
 		WHERE account_id = `+ph(1)+pgText()+`
-		  AND updated_at > NOW() - INTERVAL '30 minutes'
+		  AND updated_at >= `+ph(2)+`
 		ORDER BY symbol
-	`, accountID)
+	`, accountID, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("list symbols for %s: %w", accountID, err)
 	}
