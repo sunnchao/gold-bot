@@ -139,12 +139,33 @@ def _fetch_account_info(account_id):
 
 
 def get_account_symbol(account_id):
-    """获取账户的交易品种（如 GOLDm#、XAUUSD 等）"""
+    """获取账户的真实交易品种（优先从 /api/symbols 获取活跃 symbol）"""
+    # 方案1：从 /api/symbols 获取活跃品种列表（排除历史遗留 symbol）
+    try:
+        req = urllib.request.Request(
+            f"{API_BASE}/api/symbols/{account_id}",
+            headers={"X-API-Token": API_TOKEN}
+        )
+        resp = urllib.request.urlopen(req, timeout=5)
+        symbols = json.loads(resp.read().decode())
+        if symbols:
+            # 过滤掉历史遗留的旧 symbol（不带 # 的旧版命名）
+            active = [s for s in symbols if s.endswith("#")]
+            if active:
+                return active[-1]  # 取最后一个（通常是最新的）
+            # 如果全是旧版 symbol，取最后一个
+            return symbols[-1]
+    except Exception:
+        pass
+
+    # 方案2：fallback 到 analysis_payload（但旧版 API 硬编码 XAUUSD，不可靠）
     pd = _fetch_account_info(account_id)
     if pd:
         symbol = pd.get("market", {}).get("symbol", "")
         if symbol:
             return symbol
+
+    # 最终 fallback
     return "XAUUSD"  # 默认
 
 
