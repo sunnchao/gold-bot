@@ -100,16 +100,27 @@ func (r *CommandRepository) takePendingOnce(ctx context.Context, accountID strin
 	if err != nil {
 		return nil, fmt.Errorf("query pending commands for %s: %w", accountID, err)
 	}
-	defer rows.Close()
 
 	ts := normalizeTime(deliveredAt)
-	commands := make([]domain.Command, 0)
+	pending := make([]domain.Command, 0)
 	for rows.Next() {
 		command, err := scanCommand(rows)
 		if err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
+		pending = append(pending, command)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate pending commands for %s: %w", accountID, err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close pending commands rows for %s: %w", accountID, err)
+	}
 
+	commands := make([]domain.Command, 0, len(pending))
+	for _, command := range pending {
 		result, err := tx.ExecContext(ctx, `
 			UPDATE commands
 			SET status = `+ph(1)+pgText()+`, delivered_at = `+ph(2)+`
@@ -135,9 +146,6 @@ func (r *CommandRepository) takePendingOnce(ctx context.Context, accountID strin
 		command.Status = domain.CommandStatusDelivered
 		command.DeliveredAt = ts
 		commands = append(commands, command)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending commands for %s: %w", accountID, err)
 	}
 
 	if err := tx.Commit(); err != nil {

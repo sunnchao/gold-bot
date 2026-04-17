@@ -12,8 +12,8 @@
 #include <Trade/Trade.mqh>
 
 // ============ 版本信息 ============
-#define EA_VERSION  "2.8.0"
-#define EA_BUILD    6
+#define EA_VERSION  "2.8.1"
+#define EA_BUILD    7
 
 CTrade trade;
 
@@ -57,6 +57,12 @@ input int      CounterMagic        = 20250235; // 反向回调 Magic
 
 input bool     EnableRange         = false;    // 📊 震荡市区间策略
 input int      RangeMagic          = 20250236; // 震荡市区间 Magic
+
+input bool     EnableMomentumScalp       = false;    // ⚡ 动量剥头皮策略
+input int      MomentumScalpMagic        = 20250237; // 动量剥头皮 Magic
+input bool     MomentumScalpUseFixedLots = true;     // 动量剥头皮使用固定手数
+input double   MomentumScalpFixedLots    = 0.05;     // 动量剥头皮固定手数
+input double   MomentumScalpRiskPercent  = 0.5;      // 动量剥头皮单笔风险 %
 
 //+------------------------------------------------------------------+
 //| 原油对冲套利配置                                                   |
@@ -103,6 +109,7 @@ int GetStrategyMagic(string strategy)
    if(strategy == "breakout_pyramid") return PyramidMagic;
    if(strategy == "counter_pullback") return CounterMagic;
    if(strategy == "range") return RangeMagic;
+   if(strategy == "momentum_scalp") return MomentumScalpMagic;
    return 0;
 }
 
@@ -115,6 +122,7 @@ bool IsStrategyEnabled(string strategy)
    if(strategy == "breakout_pyramid") return EnablePyramid;
    if(strategy == "counter_pullback") return EnableCounter;
    if(strategy == "range") return EnableRange;
+   if(strategy == "momentum_scalp") return EnableMomentumScalp;
    return false;
 }
 
@@ -140,6 +148,7 @@ bool IsOurMagic(long magic)
    if(magic == PyramidMagic) return true;
    if(magic == CounterMagic) return true;
    if(magic == RangeMagic) return true;
+   if(magic == MomentumScalpMagic) return true;
    if(magic == SpreadMagicNumber) return true;
    return false;
 }
@@ -518,11 +527,16 @@ int OnInit()
    Print("账户 ID: ", AccountID);
    Print("策略Magic: 趋势回调=", PullbackMagic, " 突破回踩=", BreakoutMagic,
          " RSI背离=", DivergenceMagic, " 突破加仓=", PyramidMagic,
-         " 反向回调=", CounterMagic, " 震荡区间=", RangeMagic);
+         " 反向回调=", CounterMagic, " 震荡区间=", RangeMagic,
+         " 动量剥头皮=", MomentumScalpMagic);
    Print("风控：",
          (UseFixedLots ? ("固定手数=" + DoubleToString(FixedLots, 2)) : ("风险=" + DoubleToString(MaxRiskPercent, 1) + "%")),
          " | 持仓上限", MaxPositions,
          " | 日亏损", MaxDailyLoss, "% | 浮亏", MaxFloatLoss, "%");
+   Print("动量剥头皮：",
+         (EnableMomentumScalp ? "启用" : "禁用"),
+         " | ",
+         (MomentumScalpUseFixedLots ? ("固定手数=" + DoubleToString(MomentumScalpFixedLots, 2)) : ("风险=" + DoubleToString(MomentumScalpRiskPercent, 1) + "%")));
 
    if(!IsSymbolAvailable(Symbol_))
    {
@@ -572,7 +586,7 @@ int OnInit()
 
    Print("📊 扫描已有持仓...");
    int pullbackCount = 0, breakoutCount = 0, divergenceCount = 0;
-   int pyramidCount = 0, counterCount = 0, rangeCount = 0, spreadCount = 0;
+   int pyramidCount = 0, counterCount = 0, rangeCount = 0, momentumScalpCount = 0, spreadCount = 0;
 
    for(int i = 0; i < PositionsTotal(); i++)
    {
@@ -595,11 +609,12 @@ int OnInit()
       else if(magic == PyramidMagic)  { pyramidCount++;   Print("   🏗️ 突破加仓: ", info); }
       else if(magic == CounterMagic)  { counterCount++;   Print("   🔄 反向回调: ", info); }
       else if(magic == RangeMagic)    { rangeCount++;     Print("   📊 震荡区间: ", info); }
+      else if(magic == MomentumScalpMagic){ momentumScalpCount++; Print("   ⚡ 动量剥头皮: ", info); }
       else if(magic == SpreadMagicNumber){ spreadCount++; Print("   🛢️ 原油对冲: ", info); }
    }
 
    Print("   趋势回调: ", pullbackCount, " 单 | 突破回踩: ", breakoutCount, " 单 | RSI背离: ", divergenceCount, " 单");
-   Print("   突破加仓: ", pyramidCount, " 单 | 反向回调: ", counterCount, " 单 | 震荡区间: ", rangeCount, " 单");
+   Print("   突破加仓: ", pyramidCount, " 单 | 反向回调: ", counterCount, " 单 | 震荡区间: ", rangeCount, " 单 | 动量剥头皮: ", momentumScalpCount, " 单");
    Print("   原油对冲: ", spreadCount, " 单");
    Print("=============================================");
 
@@ -704,7 +719,16 @@ bool RegisterAccount()
       "\"account_type\":\"%s\"," 
       "\"currency\":\"%s\"," 
       "\"leverage\":%d," 
-      "\"spread_enabled\":%s"
+      "\"spread_enabled\":%s,"
+      "\"strategy_mapping\":{"
+      "\"pullback\":\"pullback\","
+      "\"breakout_retest\":\"breakout_retest\","
+      "\"divergence\":\"divergence\","
+      "\"breakout_pyramid\":\"breakout_pyramid\","
+      "\"counter_pullback\":\"counter_pullback\","
+      "\"range\":\"range\","
+      "\"momentum_scalp\":\"momentum_scalp\""
+      "}"
       "}",
       AccountID, Symbol_, PullbackMagic, broker, server, name, type, currency, leverage,
       (EnableSpread ? "true" : "false")
@@ -731,7 +755,7 @@ bool RegisterAccount()
 void SendHeartbeat()
 {
    int pullbackPos = 0, breakoutPos = 0, divergencePos = 0;
-   int pyramidPos = 0, counterPos = 0, rangePos = 0;
+   int pyramidPos = 0, counterPos = 0, rangePos = 0, momentumScalpPos = 0;
 
    for(int i = 0; i < PositionsTotal(); i++)
    {
@@ -748,6 +772,7 @@ void SendHeartbeat()
       else if(m == PyramidMagic) pyramidPos++;
       else if(m == CounterMagic) counterPos++;
       else if(m == RangeMagic) rangePos++;
+      else if(m == MomentumScalpMagic) momentumScalpPos++;
    }
 
    string json = StringFormat(
@@ -766,7 +791,8 @@ void SendHeartbeat()
       "\"divergence\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
       "\"breakout_pyramid\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
       "\"counter_pullback\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
-      "\"range\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d}"
+      "\"range\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
+      "\"momentum_scalp\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d}"
       "}"
       "}",
       AccountID, Symbol_, PullbackMagic,
@@ -780,7 +806,8 @@ void SendHeartbeat()
       (EnableDivergence ? "true" : "false"), DivergenceMagic, divergencePos,
       (EnablePyramid ? "true" : "false"), PyramidMagic, pyramidPos,
       (EnableCounter ? "true" : "false"), CounterMagic, counterPos,
-      (EnableRange ? "true" : "false"), RangeMagic, rangePos
+      (EnableRange ? "true" : "false"), RangeMagic, rangePos,
+      (EnableMomentumScalp ? "true" : "false"), MomentumScalpMagic, momentumScalpPos
    );
 
    HttpPost("/heartbeat", json);
@@ -1371,7 +1398,7 @@ void ExecuteSignal(string cmd, string cmd_id)
    }
 
    double sl_distance = MathAbs(price - sl);
-   double lots = CalcLots(sl_distance);
+   double lots = CalcLotsForStrategy(strategy, sl_distance);
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);
 
    PrepareTrade(Symbol_, magicForOrder);
@@ -1651,12 +1678,12 @@ bool CheckRisk(string type_str)
 // ============================================================
 // 计算手数（基于固定手数或风险百分比）
 // ============================================================
-double CalcLots(double sl_distance)
+double CalcLotsWithConfig(bool useFixedLots, double fixedLots, double riskPercent, double sl_distance)
 {
-   if(UseFixedLots)
-      return NormalizeVolume(Symbol_, FixedLots);
+   if(useFixedLots)
+      return NormalizeVolume(Symbol_, fixedLots);
 
-   double riskAmount = AccountInfoDouble(ACCOUNT_EQUITY) * (MaxRiskPercent / 100.0);
+   double riskAmount = AccountInfoDouble(ACCOUNT_EQUITY) * (riskPercent / 100.0);
    double tickValue = SymbolInfoDouble(Symbol_, SYMBOL_TRADE_TICK_VALUE);
    double tickSize = SymbolInfoDouble(Symbol_, SYMBOL_TRADE_TICK_SIZE);
 
@@ -1666,6 +1693,19 @@ double CalcLots(double sl_distance)
    double lots = riskAmount / (sl_distance / tickSize * tickValue);
    lots = NormalizeDouble(lots, 2);
    return NormalizeVolume(Symbol_, MathMax(0.01, lots));
+}
+
+double CalcLots(double sl_distance)
+{
+   return CalcLotsWithConfig(UseFixedLots, FixedLots, MaxRiskPercent, sl_distance);
+}
+
+double CalcLotsForStrategy(string strategy, double sl_distance)
+{
+   if(strategy == "momentum_scalp")
+      return CalcLotsWithConfig(MomentumScalpUseFixedLots, MomentumScalpFixedLots, MomentumScalpRiskPercent, sl_distance);
+
+   return CalcLots(sl_distance);
 }
 
 // ============================================================

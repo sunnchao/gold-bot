@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +11,58 @@ import (
 	"gold-bot/internal/domain"
 	"gold-bot/internal/store"
 )
+
+func TestPollTakePendingPostgresMarksDelivered(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN not set")
+	}
+
+	setPgForTest(true)
+	defer resetDialectForTest()
+
+	repo, db := newTestPostgresCommandRepository(t, dsn)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 13, 1, 2, 3, 0, time.UTC)
+
+	if err := repo.Enqueue(ctx, domain.Command{
+		CommandID: "sig_pg_1",
+		AccountID: "90011087",
+		Action:    domain.CommandActionSignal,
+		Status:    domain.CommandStatusPending,
+		Payload: map[string]any{
+			"command_id": "sig_pg_1",
+			"action":     "SIGNAL",
+			"symbol":     "XAUUSD",
+			"type":       "BUY",
+		},
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+
+	commands, err := repo.TakePending(ctx, "90011087", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("TakePending returned error: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("len(commands) = %d, want %d", len(commands), 1)
+	}
+	if commands[0].Status != domain.CommandStatusDelivered {
+		t.Fatalf("status = %q, want %q", commands[0].Status, domain.CommandStatusDelivered)
+	}
+	if commands[0].DeliveredAt != now.Add(time.Minute) {
+		t.Fatalf("delivered_at = %v, want %v", commands[0].DeliveredAt, now.Add(time.Minute))
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM commands WHERE command_id = $1`, "sig_pg_1").Scan(&status); err != nil {
+		t.Fatalf("query command status returned error: %v", err)
+	}
+	if status != string(domain.CommandStatusDelivered) {
+		t.Fatalf("stored status = %q, want %q", status, domain.CommandStatusDelivered)
+	}
+}
 
 func TestPollTakePendingMarksDelivered(t *testing.T) {
 	repo, history := newTestCommandRepositories(t)
@@ -417,6 +470,35 @@ func newTestCommandRepositoriesWithPath(t *testing.T) (*CommandRepository, *Hist
 	}
 
 	return NewCommandRepository(db), NewHistoryRepository(db), dbPath
+}
+
+func newTestPostgresCommandRepository(t *testing.T, dsn string) (*CommandRepository, *sql.DB) {
+	t.Helper()
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open(postgres) returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close postgres db returned error: %v", err)
+		}
+	})
+
+	if err := db.Ping(); err != nil {
+		t.Fatalf("postgres ping returned error: %v", err)
+	}
+
+	if _, err := db.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
+		t.Fatalf("reset postgres schema returned error: %v", err)
+	}
+
+	store.SetPostgres()
+	if err := store.RunMigrations(db); err != nil {
+		t.Fatalf("RunMigrations(postgres) returned error: %v", err)
+	}
+
+	return NewCommandRepository(db), db
 }
 
 func countCommandResults(t *testing.T, db *sql.DB, commandID string) int {
