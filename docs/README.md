@@ -9,6 +9,7 @@
 | [API.md](API.md) | API 端点参考 |
 | [STRATEGIES.md](STRATEGIES.md) | 策略描述 |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | 部署指南 |
+| [RELEASE.md](RELEASE.md) | 版本发布流程 |
 | [CHANGELOG.md](CHANGELOG.md) | 更新日志 |
 
 ---
@@ -24,6 +25,7 @@
 ### 运维人员
 
 - 部署新服务器？读 [DEPLOYMENT.md](DEPLOYMENT.md)
+- 发布新版本？读 [RELEASE.md](RELEASE.md)
 - 故障排查？看 DEPLOYMENT.md 的 [故障排查](DEPLOYMENT.md#故障排查) 章节
 
 ### 交易员

@@ -5,9 +5,12 @@
 当前推荐部署形态：
 
 - Go 二进制负责全部 HTTP 服务
-- SQLite 同时用于开发和生产
-- Next.js 控制台提前静态构建，产物由 Go 直接托管
-- 不再依赖 Python 运行时，也不需要 Node SSR 常驻进程
+- 控制台前端静态构建后由 Go 统一托管
+- 生产环境通过 Docker / GHCR 发布与部署
+- **生产数据库优先使用 PostgreSQL（`DSN`）**，避免 SQLite 并发锁问题
+- 本地开发或一次性演示可使用 SQLite
+
+> 正式版本发布步骤请看：[RELEASE.md](RELEASE.md)
 
 ## 依赖要求
 
@@ -20,18 +23,28 @@
 
 ## 环境变量
 
-Go 服务端当前只需要两项核心配置：
+Go 服务端当前有两套数据库配置路径：
+
+### 1) SQLite（默认，本地开发 / 单机演示）
 
 ```bash
 export GB_HTTP_ADDR=":8880"
 export GB_DB_PATH="data/gold_bolt.sqlite"
 ```
 
+### 2) PostgreSQL（生产推荐）
+
+```bash
+export GB_HTTP_ADDR=":8880"
+export DSN="postgres://user:password@127.0.0.1:5432/gold_bot?sslmode=disable"
+```
+
 说明：
 
-- 开发与生产都使用 SQLite
-- 路径可按环境调整
-- 上层业务通过 `database/sql` 访问数据库，未来可迁移 PostgreSQL，但当前不需要额外配置
+- **`DSN` 非空时优先连接 PostgreSQL**
+- `DSN` 为空时回退到 SQLite，默认路径是 `data/gold_bolt.sqlite`
+- 当前仓库自带的 `Dockerfile` / `docker-compose.yaml` 只是提供运行容器的默认骨架；是否真正使用 PostgreSQL，取决于部署时 `.env` 是否提供 `DSN`
+- 因为 SQLite 在高并发写入下容易出现锁竞争，**生产环境优先推荐 PostgreSQL**
 
 ## 一次性构建
 
@@ -112,6 +125,8 @@ http://127.0.0.1:8880/?token=<admin-token>
 
 ## systemd 示例
 
+下面这个 systemd 示例是 **SQLite 单机模式**。如果生产切 PostgreSQL，把 `Environment=GB_DB_PATH=...` 改成 `Environment=DSN=...` 即可。
+
 ```ini
 [Unit]
 Description=Gold Bot Go Server
@@ -168,7 +183,8 @@ server {
 
 推荐至少备份：
 
-- SQLite 主库：`data/gold_bolt.sqlite`
+- SQLite 模式：`data/gold_bolt.sqlite`
+- PostgreSQL 模式：数据库逻辑备份（`pg_dump`）
 - EA 发布元数据与文件
 - `.env` / 部署脚本
 
