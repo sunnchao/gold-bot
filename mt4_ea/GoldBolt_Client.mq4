@@ -580,6 +580,9 @@ void SendTick()
 //+------------------------------------------------------------------+
 void SendAllBars()
 {
+   SendBars("M1", PERIOD_M1);
+   SendBars("M5", PERIOD_M5);
+   SendBars("M15", PERIOD_M15);
    SendBars("M30", PERIOD_M30);
    SendBars("H1", PERIOD_H1);
    SendBars("H4", PERIOD_H4);

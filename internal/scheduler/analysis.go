@@ -101,6 +101,8 @@ func RunReplay(snapshot ReplaySnapshot) (ReplayResult, error) {
 		CurrentATR:   currentATR,
 		AvgATR:       avgATR,
 		H1Bars:       h1,
+		M5Bars:       enriched["M5"],
+		M1Bars:       enriched["M1"],
 		Positions:    snapshot.Positions,
 	})
 

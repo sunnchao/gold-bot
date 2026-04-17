@@ -21,38 +21,43 @@
   "logs": [
     {
       "level": "info",
-      "strategy": "\u5e02\u573a",
-      "msg": "Price=3335.75 | ATR=2.67 | RSI=64.7 | ADX=71.5 | EMA\u8d8b\u52bf(H1)=\u591a\u5934 | H4=\u5f3a\u591a\u5934(ADX=100.0) | MACD\u67f1=-0.82"
+      "strategy": "市场",
+      "msg": "Price=3335.75 | ATR=2.67 | RSI=64.7 | ADX=71.5 | EMA趋势(H1)=多头 | H4=强多头(ADX=100.0) | MACD柱=-0.82"
     },
     {
       "level": "signal",
-      "strategy": "\u8d8b\u52bf\u56de\u8c03",
-      "msg": "\ud83d\udfe2 BUY \u8bc4\u5206=6 | EMA20\u56de\u8c03 dist=0.74 | ADX=71.5>30"
+      "strategy": "趋势回调",
+      "msg": "🟢 BUY 评分=6 | EMA20回调 dist=0.74 | ADX=71.5>30"
     },
     {
       "level": "info",
-      "strategy": "\u7a81\u7834\u56de\u8e29",
-      "msg": "\u963b\u529b=3340.18 \u652f\u6491=3300.83 | \u672a\u7a81\u7834 \u23ed"
+      "strategy": "突破回踩",
+      "msg": "阻力=3340.18 支撑=3300.83 | 未突破 ⏭"
     },
     {
       "level": "info",
-      "strategy": "RSI\u80cc\u79bb",
-      "msg": "RSI=64.7 | \u65e0\u80cc\u79bb \u23ed"
+      "strategy": "RSI背离",
+      "msg": "RSI=64.7 | 无背离 ⏭"
     },
     {
       "level": "info",
-      "strategy": "\u7a81\u7834\u52a0\u4ed3",
-      "msg": "BB=[3330.80, 3341.03] Price=3335.75 | \u5728\u901a\u9053\u5185 \u23ed"
+      "strategy": "突破加仓",
+      "msg": "BB=[3330.80, 3341.03] Price=3335.75 | 在通道内 ⏭"
     },
     {
       "level": "info",
-      "strategy": "M15\u786e\u8ba4",
-      "msg": "\u23ed pullback | M15\u672a\u786e\u8ba4: RSI=77.2\u226540"
+      "strategy": "动量剥头皮",
+      "msg": "M5数据不足: 0/12 ⏭"
+    },
+    {
+      "level": "info",
+      "strategy": "M15确认",
+      "msg": "⏭ pullback | M15未确认: RSI=77.2≥40"
     },
     {
       "level": "signal",
-      "strategy": "\u6c47\u603b",
-      "msg": "\u2705 \u53d1\u51fa\u4fe1\u53f7: BUY @ 3335.75 | SL=3331.74 | \u7b56\u7565=pullback | \u8bc4\u5206=6"
+      "strategy": "汇总",
+      "msg": "✅ 发出信号: BUY @ 3335.75 | SL=3331.74 | 策略=pullback | 评分=6"
     }
   ],
   "position_commands": null

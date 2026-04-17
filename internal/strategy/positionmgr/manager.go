@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gold-bot/internal/domain"
+	"gold-bot/internal/strategy/engine"
+	"gold-bot/internal/strategy/indicator"
 )
 
 type Option func(*Manager)
@@ -129,6 +131,16 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			position.Ticket, side, position.Lots, position.OpenPrice,
 			profitPips, profitATR, state.MaxProfitATR, state.BEMoved)
 
+		if strings.Contains(strings.ToLower(position.Comment), "momentum_scalp") {
+			if command, ok := m.checkMomentumScalpExit(position, &state, side, profitATR, snapshot.M5Bars, snapshot.M1Bars); ok {
+				log.Printf("[POSMGR] ⚡ #%d | MomentumScalp出场: %s | reason=%s", position.Ticket, command.Action, command.Reason)
+				commands = append(commands, command)
+				m.states[position.Ticket] = state
+				m.persistState(snapshot.AccountID, snapshot.Symbol, state)
+				continue
+			}
+		}
+
 		if command, ok := m.checkTimeStop(position, state, side, profitATR, snapshot.CurrentATR, snapshot.AvgATR); ok {
 			log.Printf("[POSMGR] ⏰ #%d | 时间止损: %s", position.Ticket, command.Reason)
 			commands = append(commands, command)
@@ -193,6 +205,67 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 		log.Printf("[POSMGR] ✅ 生成 %d 条持仓管理指令", len(commands))
 	}
 	return commands
+}
+
+func (m *Manager) checkMomentumScalpExit(position domain.Position, state *domain.PositionState, side string, profitATR float64, m5Bars, m1Bars []domain.Bar) (domain.PositionCommand, bool) {
+	maxHolding := engine.DefaultStrategyConfig().MomentumScalpMaxHoldingMin
+	if maxHolding <= 0 {
+		maxHolding = 20
+	}
+
+	if m.now().Sub(state.OpenTime) > time.Duration(maxHolding)*time.Minute && profitATR < 0.2 {
+		return domain.PositionCommand{
+			Action: domain.PositionActionClose,
+			Ticket: position.Ticket,
+			Lots:   position.Lots,
+			Reason: "momentum_scalp_time_stop_0.2ATR",
+		}, true
+	}
+
+	if len(m5Bars) > 0 {
+		closes := make([]float64, len(m5Bars))
+		for i, bar := range m5Bars {
+			closes[i] = bar.Close
+		}
+		ema5 := indicator.EMA(closes, 5)
+		ema8 := indicator.EMA(closes, 8)
+		lastIdx := len(closes) - 1
+		if (side == "BUY" && ema5[lastIdx] < ema8[lastIdx]) || (side == "SELL" && ema5[lastIdx] > ema8[lastIdx]) {
+			return domain.PositionCommand{
+				Action: domain.PositionActionClose,
+				Ticket: position.Ticket,
+				Lots:   position.Lots,
+				Reason: "momentum_scalp_m5_structure_break",
+			}, true
+		}
+	}
+
+	if len(m1Bars) > 0 {
+		rsi := m1Bars[len(m1Bars)-1].RSI
+		if (side == "BUY" && rsi > 80) || (side == "SELL" && rsi < 20) {
+			return domain.PositionCommand{
+				Action: domain.PositionActionClose,
+				Ticket: position.Ticket,
+				Lots:   position.Lots,
+				Reason: "momentum_scalp_rsi_extreme",
+			}, true
+		}
+		if !state.RSITp75Triggered && ((side == "BUY" && rsi > 75) || (side == "SELL" && rsi < 25)) {
+			closeLots := roundLots(position.Lots * 0.5)
+			if closeLots < 0.01 {
+				closeLots = position.Lots
+			}
+			state.RSITp75Triggered = true
+			return domain.PositionCommand{
+				Action: domain.PositionActionClose,
+				Ticket: position.Ticket,
+				Lots:   closeLots,
+				Reason: "momentum_scalp_rsi_tp75",
+			}, true
+		}
+	}
+
+	return domain.PositionCommand{}, false
 }
 
 func (m *Manager) persistState(accountID, symbol string, state domain.PositionState) {

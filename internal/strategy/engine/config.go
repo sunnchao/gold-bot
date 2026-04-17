@@ -3,46 +3,62 @@ package engine
 // StrategyConfig holds all configurable parameters for the strategy engine.
 type StrategyConfig struct {
 	// Pullback strategy
-	PullbackMinADX      float64 `json:"pullback_min_adx" yaml:"pullback_min_adx"`
-	PullbackRSIOversold float64 `json:"pullback_rsi_oversold" yaml:"pullback_rsi_oversold"`
+	PullbackMinADX        float64 `json:"pullback_min_adx" yaml:"pullback_min_adx"`
+	PullbackRSIOversold   float64 `json:"pullback_rsi_oversold" yaml:"pullback_rsi_oversold"`
 	PullbackRSIOverbought float64 `json:"pullback_rsi_overbought" yaml:"pullback_rsi_overbought"`
-	PullbackDistATR    float64 `json:"pullback_dist_atr" yaml:"pullback_dist_atr"`
-	PullbackADXBonus   float64 `json:"pullback_adx_bonus" yaml:"pullback_adx_bonus"`
-	PullbackSLATR      float64 `json:"pullback_sl_atr" yaml:"pullback_sl_atr"`
-	PullbackTP1ATR     float64 `json:"pullback_tp1_atr" yaml:"pullback_tp1_atr"`
-	PullbackTP2ATR     float64 `json:"pullback_tp2_atr" yaml:"pullback_tp2_atr"`
+	PullbackDistATR       float64 `json:"pullback_dist_atr" yaml:"pullback_dist_atr"`
+	PullbackADXBonus      float64 `json:"pullback_adx_bonus" yaml:"pullback_adx_bonus"`
+	PullbackSLATR         float64 `json:"pullback_sl_atr" yaml:"pullback_sl_atr"`
+	PullbackTP1ATR        float64 `json:"pullback_tp1_atr" yaml:"pullback_tp1_atr"`
+	PullbackTP2ATR        float64 `json:"pullback_tp2_atr" yaml:"pullback_tp2_atr"`
 
 	// BreakoutRetest strategy
-	BreakoutRetestLookback     int     `json:"breakout_retest_lookback" yaml:"breakout_retest_lookback"`
-	BreakoutRetestConfirmWindow int    `json:"breakout_retest_confirm_window" yaml:"breakout_retest_confirm_window"`
-	BreakoutRetestDistATR     float64  `json:"breakout_retest_dist_atr" yaml:"breakout_retest_dist_atr"`
-	BreakoutRetestSLATR       float64  `json:"breakout_retest_sl_atr" yaml:"breakout_retest_sl_atr"`
-	BreakoutRetestTP1ATR      float64  `json:"breakout_retest_tp1_atr" yaml:"breakout_retest_tp1_atr"`
-	BreakoutRetestTP2ATR      float64  `json:"breakout_retest_tp2_atr" yaml:"breakout_retest_tp2_atr"`
+	BreakoutRetestLookback      int     `json:"breakout_retest_lookback" yaml:"breakout_retest_lookback"`
+	BreakoutRetestConfirmWindow int     `json:"breakout_retest_confirm_window" yaml:"breakout_retest_confirm_window"`
+	BreakoutRetestDistATR       float64 `json:"breakout_retest_dist_atr" yaml:"breakout_retest_dist_atr"`
+	BreakoutRetestSLATR         float64 `json:"breakout_retest_sl_atr" yaml:"breakout_retest_sl_atr"`
+	BreakoutRetestTP1ATR        float64 `json:"breakout_retest_tp1_atr" yaml:"breakout_retest_tp1_atr"`
+	BreakoutRetestTP2ATR        float64 `json:"breakout_retest_tp2_atr" yaml:"breakout_retest_tp2_atr"`
 
 	// Divergence strategy
-	DivergenceWindowRecent int     `json:"divergence_window_recent" yaml:"divergence_window_recent"`
-	DivergenceWindowPrev   int     `json:"divergence_window_prev" yaml:"divergence_window_prev"`
+	DivergenceWindowRecent  int     `json:"divergence_window_recent" yaml:"divergence_window_recent"`
+	DivergenceWindowPrev    int     `json:"divergence_window_prev" yaml:"divergence_window_prev"`
 	DivergenceRSIBullThresh float64 `json:"divergence_rsi_bull_thresh" yaml:"divergence_rsi_bull_thresh"`
 	DivergenceRSIBearThresh float64 `json:"divergence_rsi_bear_thresh" yaml:"divergence_rsi_bear_thresh"`
-	DivergenceSLATR       float64  `json:"divergence_sl_atr" yaml:"divergence_sl_atr"`
-	DivergenceTP1ATR      float64  `json:"divergence_tp1_atr" yaml:"divergence_tp1_atr"`
-	DivergenceTP2ATR      float64  `json:"divergence_tp2_atr" yaml:"divergence_tp2_atr"`
+	DivergenceSLATR         float64 `json:"divergence_sl_atr" yaml:"divergence_sl_atr"`
+	DivergenceTP1ATR        float64 `json:"divergence_tp1_atr" yaml:"divergence_tp1_atr"`
+	DivergenceTP2ATR        float64 `json:"divergence_tp2_atr" yaml:"divergence_tp2_atr"`
 
 	// BreakoutPyramid strategy
-	BreakoutPyramidMinADX       float64 `json:"breakout_pyramid_min_adx" yaml:"breakout_pyramid_min_adx"`
-	BreakoutPyramidSLATR       float64 `json:"breakout_pyramid_sl_atr" yaml:"breakout_pyramid_sl_atr"`
+	BreakoutPyramidMinADX        float64 `json:"breakout_pyramid_min_adx" yaml:"breakout_pyramid_min_adx"`
+	BreakoutPyramidSLATR         float64 `json:"breakout_pyramid_sl_atr" yaml:"breakout_pyramid_sl_atr"`
 	BreakoutPyramidMinSpacingATR float64 `json:"breakout_pyramid_min_spacing_atr" yaml:"breakout_pyramid_min_spacing_atr"`
 
 	// H4 trend filter
-	H4ADXThreshold          float64 `json:"h4_adx_threshold" yaml:"h4_adx_threshold"`
-	H4RequireConsecutive    int     `json:"h4_require_consecutive" yaml:"h4_require_consecutive"`
+	H4ADXThreshold       float64 `json:"h4_adx_threshold" yaml:"h4_adx_threshold"`
+	H4RequireConsecutive int     `json:"h4_require_consecutive" yaml:"h4_require_consecutive"`
 
 	// M15 confirmation
 	M15ConfirmRSIThreshold float64 `json:"m15_confirm_rsi_threshold" yaml:"m15_confirm_rsi_threshold"`
 
 	// Minimum signal score
 	MinScore int `json:"min_score" yaml:"min_score"`
+
+	// MomentumScalp strategy
+	MomentumScalpMinADX           float64 `json:"momentum_scalp_min_adx" yaml:"momentum_scalp_min_adx"`
+	MomentumScalpEMAPeriod1       int     `json:"momentum_scalp_ema_period_1" yaml:"momentum_scalp_ema_period_1"`
+	MomentumScalpEMAPeriod2       int     `json:"momentum_scalp_ema_period_2" yaml:"momentum_scalp_ema_period_2"`
+	MomentumScalpEMAPeriod3       int     `json:"momentum_scalp_ema_period_3" yaml:"momentum_scalp_ema_period_3"`
+	MomentumScalpRSIBullThresh    float64 `json:"momentum_scalp_rsi_bull_thresh" yaml:"momentum_scalp_rsi_bull_thresh"`
+	MomentumScalpRSIBearThresh    float64 `json:"momentum_scalp_rsi_bear_thresh" yaml:"momentum_scalp_rsi_bear_thresh"`
+	MomentumScalpRSICrossoverBull float64 `json:"momentum_scalp_rsi_crossover_bull" yaml:"momentum_scalp_rsi_crossover_bull"`
+	MomentumScalpRSICrossoverBear float64 `json:"momentum_scalp_rsi_crossover_bear" yaml:"momentum_scalp_rsi_crossover_bear"`
+	MomentumScalpSLATR            float64 `json:"momentum_scalp_sl_atr" yaml:"momentum_scalp_sl_atr"`
+	MomentumScalpTP1ATR           float64 `json:"momentum_scalp_tp1_atr" yaml:"momentum_scalp_tp1_atr"`
+	MomentumScalpTP2ATR           float64 `json:"momentum_scalp_tp2_atr" yaml:"momentum_scalp_tp2_atr"`
+	MomentumScalpVolConfirm       float64 `json:"momentum_scalp_vol_confirm" yaml:"momentum_scalp_vol_confirm"`
+	MomentumScalpMinScore         int     `json:"momentum_scalp_min_score" yaml:"momentum_scalp_min_score"`
+	MomentumScalpMaxHoldingMin    int     `json:"momentum_scalp_max_holding_min" yaml:"momentum_scalp_max_holding_min"`
 }
 
 // DefaultStrategyConfig returns the recommended strategy parameters.
@@ -76,9 +92,9 @@ func DefaultStrategyConfig() StrategyConfig {
 		DivergenceTP2ATR:        4.0,
 
 		// BreakoutPyramid - higher ADX, wider SL, wider spacing
-		BreakoutPyramidMinADX:         30.0,
-		BreakoutPyramidSLATR:          1.5,
-		BreakoutPyramidMinSpacingATR:   2.0,
+		BreakoutPyramidMinADX:        30.0,
+		BreakoutPyramidSLATR:         1.5,
+		BreakoutPyramidMinSpacingATR: 2.0,
 
 		// H4 trend - higher threshold, require 3 bars
 		H4ADXThreshold:       30.0,
@@ -88,6 +104,21 @@ func DefaultStrategyConfig() StrategyConfig {
 		M15ConfirmRSIThreshold: 40.0,
 
 		MinScore: 5,
+
+		MomentumScalpMinADX:           25.0,
+		MomentumScalpEMAPeriod1:       5,
+		MomentumScalpEMAPeriod2:       8,
+		MomentumScalpEMAPeriod3:       12,
+		MomentumScalpRSIBullThresh:    40.0,
+		MomentumScalpRSIBearThresh:    60.0,
+		MomentumScalpRSICrossoverBull: 45.0,
+		MomentumScalpRSICrossoverBear: 55.0,
+		MomentumScalpSLATR:            0.4,
+		MomentumScalpTP1ATR:           0.5,
+		MomentumScalpTP2ATR:           0.8,
+		MomentumScalpVolConfirm:       1.3,
+		MomentumScalpMinScore:         7,
+		MomentumScalpMaxHoldingMin:    20,
 	}
 }
 

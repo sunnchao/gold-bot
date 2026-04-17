@@ -213,14 +213,15 @@ type PositionCommand struct {
 }
 
 type PositionState struct {
-	Ticket         int64     `json:"ticket"`
-	TP1Hit         bool      `json:"tp1_hit"`
-	TP2Hit         bool      `json:"tp2_hit"`
-	MaxProfitATR   float64   `json:"max_profit_atr"`
-	OpenTime       time.Time `json:"open_time"`
-	LastModifyTime time.Time `json:"last_modify_time"`
-	BEMoved        bool      `json:"be_moved"`
-	BETriggerATR   float64   `json:"be_trigger_atr"`
+	Ticket           int64     `json:"ticket"`
+	TP1Hit           bool      `json:"tp1_hit"`
+	TP2Hit           bool      `json:"tp2_hit"`
+	RSITp75Triggered bool      `json:"rsi_tp75_triggered"`
+	MaxProfitATR     float64   `json:"max_profit_atr"`
+	OpenTime         time.Time `json:"open_time"`
+	LastModifyTime   time.Time `json:"last_modify_time"`
+	BEMoved          bool      `json:"be_moved"`
+	BETriggerATR     float64   `json:"be_trigger_atr"`
 }
 
 type PositionSnapshot struct {
@@ -230,6 +231,8 @@ type PositionSnapshot struct {
 	CurrentATR   float64    `json:"current_atr"`
 	AvgATR       float64    `json:"avg_atr,omitempty"`
 	H1Bars       []Bar      `json:"h1_bars"`
+	M5Bars       []Bar      `json:"m5_bars"`
+	M1Bars       []Bar      `json:"m1_bars"`
 	Positions    []Position `json:"positions"`
 }
 

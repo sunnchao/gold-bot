@@ -150,6 +150,178 @@ func TestManagerLoadAndPersistStatesIncludeSymbol(t *testing.T) {
 	}
 }
 
+func TestAnalyzeMomentumScalpTimeStopWinsBeforeOtherRules(t *testing.T) {
+	now := time.Date(2026, 4, 13, 8, 0, 0, 0, time.UTC)
+	manager := positionmgr.New(positionmgr.WithNow(func() time.Time { return now }))
+	manager.SeedState(domain.PositionState{
+		Ticket:       404,
+		OpenTime:     now.Add(-21 * time.Minute),
+		BETriggerATR: 1.5,
+	})
+
+	got := manager.Analyze(domain.PositionSnapshot{
+		CurrentPrice: 100.15,
+		CurrentATR:   1.0,
+		AvgATR:       1.0,
+		H1Bars:       samplePositionBars(),
+		M5Bars: []domain.Bar{
+			{Close: 99.6},
+			{Close: 99.8},
+			{Close: 100.0},
+			{Close: 100.1},
+			{Close: 100.2},
+			{Close: 100.3},
+			{Close: 100.35},
+			{Close: 100.4},
+		},
+		M1Bars: []domain.Bar{
+			{RSI: 82},
+		},
+		Positions: []domain.Position{
+			{
+				Ticket:    404,
+				Type:      "BUY",
+				OpenPrice: 100.0,
+				Lots:      0.5,
+				Comment:   "bot momentum_scalp entry",
+			},
+		},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("len(commands) = %d, want 1", len(got))
+	}
+	if got[0].Reason != "momentum_scalp_time_stop_0.2ATR" {
+		t.Fatalf("reason = %q, want %q", got[0].Reason, "momentum_scalp_time_stop_0.2ATR")
+	}
+	if got[0].Action != domain.PositionActionClose {
+		t.Fatalf("action = %q, want %q", got[0].Action, domain.PositionActionClose)
+	}
+	if got[0].Lots != 0.5 {
+		t.Fatalf("lots = %v, want 0.5", got[0].Lots)
+	}
+}
+
+func TestAnalyzeMomentumScalpRSIPartialThenFullExit(t *testing.T) {
+	now := time.Date(2026, 4, 13, 8, 0, 0, 0, time.UTC)
+	manager := positionmgr.New(positionmgr.WithNow(func() time.Time { return now }))
+	manager.SeedState(domain.PositionState{
+		Ticket:           505,
+		OpenTime:         now.Add(-5 * time.Minute),
+		BETriggerATR:     1.5,
+		RSITp75Triggered: false,
+	})
+
+	first := manager.Analyze(domain.PositionSnapshot{
+		CurrentPrice: 101.0,
+		CurrentATR:   1.0,
+		AvgATR:       1.0,
+		H1Bars:       samplePositionBars(),
+		M5Bars:       bullishMomentumM5Bars(),
+		M1Bars: []domain.Bar{
+			{RSI: 76},
+		},
+		Positions: []domain.Position{
+			{
+				Ticket:    505,
+				Type:      "BUY",
+				OpenPrice: 100.0,
+				Lots:      0.5,
+				Comment:   "momentum_scalp",
+			},
+		},
+	})
+
+	if len(first) != 1 {
+		t.Fatalf("first len(commands) = %d, want 1", len(first))
+	}
+	if first[0].Action != domain.PositionActionClose {
+		t.Fatalf("first action = %q, want %q", first[0].Action, domain.PositionActionClose)
+	}
+	if first[0].Lots != 0.25 {
+		t.Fatalf("first lots = %v, want 0.25", first[0].Lots)
+	}
+	if first[0].Reason != "momentum_scalp_rsi_tp75" {
+		t.Fatalf("first reason = %q, want %q", first[0].Reason, "momentum_scalp_rsi_tp75")
+	}
+
+	second := manager.Analyze(domain.PositionSnapshot{
+		CurrentPrice: 101.2,
+		CurrentATR:   1.0,
+		AvgATR:       1.0,
+		H1Bars:       samplePositionBars(),
+		M5Bars:       bullishMomentumM5Bars(),
+		M1Bars: []domain.Bar{
+			{RSI: 82},
+		},
+		Positions: []domain.Position{
+			{
+				Ticket:    505,
+				Type:      "BUY",
+				OpenPrice: 100.0,
+				Lots:      0.5,
+				Comment:   "momentum_scalp",
+			},
+		},
+	})
+
+	if len(second) != 1 {
+		t.Fatalf("second len(commands) = %d, want 1", len(second))
+	}
+	if second[0].Lots != 0.5 {
+		t.Fatalf("second lots = %v, want 0.5", second[0].Lots)
+	}
+	if second[0].Reason != "momentum_scalp_rsi_extreme" {
+		t.Fatalf("second reason = %q, want %q", second[0].Reason, "momentum_scalp_rsi_extreme")
+	}
+}
+
+func TestAnalyzeMomentumScalpClosesWhenM5StructureBreaks(t *testing.T) {
+	now := time.Date(2026, 4, 13, 8, 0, 0, 0, time.UTC)
+	manager := positionmgr.New(positionmgr.WithNow(func() time.Time { return now }))
+	manager.SeedState(domain.PositionState{
+		Ticket:       606,
+		OpenTime:     now.Add(-5 * time.Minute),
+		BETriggerATR: 1.5,
+	})
+
+	got := manager.Analyze(domain.PositionSnapshot{
+		CurrentPrice: 100.9,
+		CurrentATR:   1.0,
+		AvgATR:       1.0,
+		H1Bars:       samplePositionBars(),
+		M5Bars: []domain.Bar{
+			{Close: 100.8},
+			{Close: 100.7},
+			{Close: 100.6},
+			{Close: 100.5},
+			{Close: 100.4},
+			{Close: 100.3},
+			{Close: 100.2},
+			{Close: 100.1},
+		},
+		M1Bars: []domain.Bar{
+			{RSI: 60},
+		},
+		Positions: []domain.Position{
+			{
+				Ticket:    606,
+				Type:      "BUY",
+				OpenPrice: 100.0,
+				Lots:      0.5,
+				Comment:   "momentum_scalp",
+			},
+		},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("len(commands) = %d, want 1", len(got))
+	}
+	if got[0].Reason != "momentum_scalp_m5_structure_break" {
+		t.Fatalf("reason = %q, want %q", got[0].Reason, "momentum_scalp_m5_structure_break")
+	}
+}
+
 type recordingStateStore struct {
 	loadAccount string
 	loadSymbol  string
@@ -181,5 +353,18 @@ func samplePositionBars() []domain.Bar {
 		{EMA20: 3342.0, EMA50: 3338.0, RSI: 60, ADX: 30, MACDHist: 0.4, ATR: 2.0},
 		{EMA20: 3342.5, EMA50: 3338.5, RSI: 58, ADX: 31, MACDHist: 0.3, ATR: 2.0},
 		{EMA20: 3343.0, EMA50: 3339.0, RSI: 56, ADX: 29, MACDHist: 0.2, ATR: 2.0},
+	}
+}
+
+func bullishMomentumM5Bars() []domain.Bar {
+	return []domain.Bar{
+		{Close: 99.6},
+		{Close: 99.8},
+		{Close: 100.0},
+		{Close: 100.1},
+		{Close: 100.2},
+		{Close: 100.3},
+		{Close: 100.35},
+		{Close: 100.4},
 	}
 }
