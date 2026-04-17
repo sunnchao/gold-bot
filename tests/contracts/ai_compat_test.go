@@ -144,6 +144,151 @@ func TestAIResultQueuesRiskCommandForEA(t *testing.T) {
 	}
 }
 
+func TestAIResultQueuesTicketedCloseCommandsForShortPositions(t *testing.T) {
+	ts, _ := newAdminServer(t)
+	seedAnalysisFixture(t, ts, "user-token")
+
+	positionsBody := `{
+		"account_id":"90011087",
+		"positions":[
+			{
+				"ticket":111001,
+				"symbol":"XAUUSD",
+				"type":"BUY",
+				"lots":0.10,
+				"open_price":3330.00,
+				"profit":12.50
+			},
+			{
+				"ticket":222002,
+				"symbol":"XAUUSD",
+				"type":"SELL",
+				"lots":0.10,
+				"open_price":3340.00,
+				"profit":-8.00
+			},
+			{
+				"ticket":333003,
+				"symbol":"XAUUSD",
+				"type":"SELL",
+				"lots":0.20,
+				"open_price":3345.00,
+				"profit":-15.00
+			}
+		]
+	}`
+	postJSON(t, ts, "user-token", "/positions", positionsBody)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/ai_result/90011087", bytes.NewBufferString(`{
+		"combined_bias":"bullish",
+		"confidence":84,
+		"reasoning":"short exposure invalidated",
+		"exit_suggestion":"close_short",
+		"risk_alert":true,
+		"alert_reason":"多周期强bullish共振"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "user-token")
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/ai_result status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	pollRec := httptest.NewRecorder()
+	pollReq := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewBufferString(`{"account_id":"90011087"}`))
+	pollReq.Header.Set("Content-Type", "application/json")
+	pollReq.Header.Set("X-API-Token", "user-token")
+	ts.ServeHTTP(pollRec, pollReq)
+
+	if pollRec.Code != http.StatusOK {
+		t.Fatalf("POST /poll status = %d, want %d", pollRec.Code, http.StatusOK)
+	}
+
+	var pollBody struct {
+		Count    int                      `json:"count"`
+		Commands []map[string]interface{} `json:"commands"`
+	}
+	if err := json.Unmarshal(pollRec.Body.Bytes(), &pollBody); err != nil {
+		t.Fatalf("Unmarshal poll response returned error: %v", err)
+	}
+	if pollBody.Count != 2 {
+		t.Fatalf("count = %d, want 2", pollBody.Count)
+	}
+
+	gotTickets := map[int]bool{}
+	for i, command := range pollBody.Commands {
+		if got := command["action"]; got != "CLOSE" {
+			t.Fatalf("commands[%d].action = %v, want CLOSE", i, got)
+		}
+		if got := command["reason"]; got != "AI风险警报(平空): 多周期强bullish共振" {
+			t.Fatalf("commands[%d].reason = %v, want %q", i, got, "AI风险警报(平空): 多周期强bullish共振")
+		}
+		ticket, ok := command["ticket"].(float64)
+		if !ok {
+			t.Fatalf("commands[%d].ticket type = %T, want float64 JSON number", i, command["ticket"])
+		}
+		if ticket == 0 {
+			t.Fatalf("commands[%d].ticket = 0, want real position ticket", i)
+		}
+		gotTickets[int(ticket)] = true
+	}
+
+	if !gotTickets[222002] || !gotTickets[333003] {
+		t.Fatalf("queued tickets = %v, want tickets 222002 and 333003", gotTickets)
+	}
+	if gotTickets[111001] {
+		t.Fatalf("queued tickets unexpectedly contained BUY ticket 111001: %v", gotTickets)
+	}
+}
+
+func TestAIResultSkipsCloseShortWhenNoShortPositions(t *testing.T) {
+	ts, _ := newAdminServer(t)
+	seedAnalysisFixture(t, ts, "user-token")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/ai_result/90011087", bytes.NewBufferString(`{
+		"combined_bias":"bullish",
+		"confidence":84,
+		"reasoning":"short exposure invalidated",
+		"exit_suggestion":"close_short",
+		"risk_alert":true,
+		"alert_reason":"多周期强bullish共振"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "user-token")
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/ai_result status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	pollRec := httptest.NewRecorder()
+	pollReq := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewBufferString(`{"account_id":"90011087"}`))
+	pollReq.Header.Set("Content-Type", "application/json")
+	pollReq.Header.Set("X-API-Token", "user-token")
+	ts.ServeHTTP(pollRec, pollReq)
+
+	if pollRec.Code != http.StatusOK {
+		t.Fatalf("POST /poll status = %d, want %d", pollRec.Code, http.StatusOK)
+	}
+
+	var pollBody struct {
+		Count    int                      `json:"count"`
+		Commands []map[string]interface{} `json:"commands"`
+	}
+	if err := json.Unmarshal(pollRec.Body.Bytes(), &pollBody); err != nil {
+		t.Fatalf("Unmarshal poll response returned error: %v", err)
+	}
+	if pollBody.Count != 0 {
+		t.Fatalf("count = %d, want 0 when no short positions exist", pollBody.Count)
+	}
+	if len(pollBody.Commands) != 0 {
+		t.Fatalf("len(commands) = %d, want 0", len(pollBody.Commands))
+	}
+}
+
 func newAdminServer(t *testing.T) (http.Handler, *sql.DB) {
 	t.Helper()
 

@@ -146,52 +146,106 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 	}
 
 	if shouldQueueRiskCommand(payload) {
-		commandID := fmt.Sprintf("ai_close_%d", now.Unix())
-		action := domain.CommandActionClosePartial
 		exitSuggestion := strings.ToLower(asString(payload["exit_suggestion"]))
-		if exitSuggestion == "close_all" {
-			action = domain.CommandActionCloseAll
-		} else if exitSuggestion == "close_short" {
-			action = domain.CommandActionClose
-		}
-		log.Printf("[AI] 🚨 account=%s/%s | 触发风控指令: %s | reason=%s", accountID, symbol, action, asString(payload["alert_reason"]))
+		if exitSuggestion == "close_short" {
+			state, err := h.deps.Accounts.GetStateSymbol(r.Context(), accountID, symbol)
+			if err != nil {
+				log.Printf("[AI] ❌ account=%s/%s | 获取持仓状态失败: %v", accountID, symbol, err)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
+				return
+			}
 
-		commandPayload := map[string]any{
-			"command_id": commandID,
-			"action":     string(action),
-			"reason":     fmt.Sprintf("AI风险警报: %s", asString(payload["alert_reason"])),
-			"confidence": payload["confidence"],
-			"source":     "ai_risk_alert",
-		}
+			commands := buildCloseShortCommands(accountID, symbol, payload, state.Positions, now)
+			if len(commands) == 0 {
+				log.Printf("[AI] ⚠️ account=%s/%s | 风险警报要求平空，但当前无可执行 SELL 持仓，跳过下发", accountID, symbol)
+			} else {
+				tickets := make([]string, 0, len(commands))
+				for _, command := range commands {
+					tickets = append(tickets, fmt.Sprintf("%v", command.Payload["ticket"]))
+					if err := h.deps.Commands.Enqueue(r.Context(), command); err != nil {
+						writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
+						return
+					}
+				}
+				log.Printf("[AI] 📈 account=%s/%s | 自动平空 | tickets=%s | reason=%s", accountID, symbol, strings.Join(tickets, ","), asString(payload["alert_reason"]))
+			}
+		} else {
+			commandID := fmt.Sprintf("ai_close_%d", now.Unix())
+			action := domain.CommandActionClosePartial
+			if exitSuggestion == "close_all" {
+				action = domain.CommandActionCloseAll
+			}
+			log.Printf("[AI] 🚨 account=%s/%s | 触发风控指令: %s | reason=%s", accountID, symbol, action, asString(payload["alert_reason"]))
 
-		// P3-14: Auto-execution with specific lot reduction for close_partial
-		if exitSuggestion == "close_partial" {
-			commandPayload["lots_pct"] = 0.5
-			commandPayload["reason"] = fmt.Sprintf("AI风险警报(减仓50%%): %s", asString(payload["alert_reason"]))
-			log.Printf("[AI] 📉 account=%s/%s | 自动减仓50%% | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
-	} else if exitSuggestion == "close_all" {
-		commandPayload["reason"] = fmt.Sprintf("AI风险警报(全平): %s", asString(payload["alert_reason"]))
-		log.Printf("[AI] 🔴 account=%s/%s | 自动全平 | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
-	} else if exitSuggestion == "close_short" {
-		commandPayload["reason"] = fmt.Sprintf("AI风险警报(平空): %s", asString(payload["alert_reason"]))
-		log.Printf("[AI] 📈 account=%s/%s | 自动平空 | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
-	}
+			commandPayload := map[string]any{
+				"command_id": commandID,
+				"action":     string(action),
+				"reason":     fmt.Sprintf("AI风险警报: %s", asString(payload["alert_reason"])),
+				"confidence": payload["confidence"],
+				"source":     "ai_risk_alert",
+			}
 
-		command := domain.Command{
-			CommandID: commandID,
-			AccountID: accountID,
-			Action:    action,
-			Status:    domain.CommandStatusPending,
-			CreatedAt: now,
-			Payload:   commandPayload,
-		}
-		if err := h.deps.Commands.Enqueue(r.Context(), command); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
-			return
+			// P3-14: Auto-execution with specific lot reduction for close_partial
+			if exitSuggestion == "close_partial" {
+				commandPayload["lots_pct"] = 0.5
+				commandPayload["reason"] = fmt.Sprintf("AI风险警报(减仓50%%): %s", asString(payload["alert_reason"]))
+				log.Printf("[AI] 📉 account=%s/%s | 自动减仓50%% | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
+			} else if exitSuggestion == "close_all" {
+				commandPayload["reason"] = fmt.Sprintf("AI风险警报(全平): %s", asString(payload["alert_reason"]))
+				log.Printf("[AI] 🔴 account=%s/%s | 自动全平 | reason=%s", accountID, symbol, asString(payload["alert_reason"]))
+			}
+
+			command := domain.Command{
+				CommandID: commandID,
+				AccountID: accountID,
+				Action:    action,
+				Status:    domain.CommandStatusPending,
+				CreatedAt: now,
+				Payload:   commandPayload,
+			}
+			if err := h.deps.Commands.Enqueue(r.Context(), command); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
+				return
+			}
 		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"status": "OK", "received": true})
+}
+
+func buildCloseShortCommands(accountID, symbol string, payload map[string]any, positions []domain.Position, now time.Time) []domain.Command {
+	reason := fmt.Sprintf("AI风险警报(平空): %s", asString(payload["alert_reason"]))
+	commands := make([]domain.Command, 0, len(positions))
+	for _, position := range positions {
+		if position.Ticket <= 0 {
+			continue
+		}
+		if position.Symbol != "" && !strings.EqualFold(position.Symbol, symbol) {
+			continue
+		}
+		if !strings.EqualFold(position.Type, "SELL") {
+			continue
+		}
+
+		commandID := fmt.Sprintf("ai_close_%d_%d", now.UnixNano(), position.Ticket)
+		commands = append(commands, domain.Command{
+			CommandID: commandID,
+			AccountID: accountID,
+			Action:    domain.CommandActionClose,
+			Status:    domain.CommandStatusPending,
+			CreatedAt: now,
+			Payload: map[string]any{
+				"command_id": commandID,
+				"action":     string(domain.CommandActionClose),
+				"ticket":     position.Ticket,
+				"symbol":     symbol,
+				"reason":     reason,
+				"confidence": payload["confidence"],
+				"source":     "ai_risk_alert",
+			},
+		})
+	}
+	return commands
 }
 
 func (h aiHandler) triggerAI(w http.ResponseWriter, _ *http.Request) {
