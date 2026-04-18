@@ -37,6 +37,28 @@ func TestMT5MomentumScalpHooksPresent(t *testing.T) {
 	})
 }
 
+func TestMT4HeartbeatPayloadContainsMarketStatusFields(t *testing.T) {
+	assertEAContainsAll(t, filepath.Join("..", "..", "mt4_ea", "GoldBolt_Client.mq4"), []string{
+		`string serverTime = TimeToStr(TimeCurrent(), TIME_DATE|TIME_MINUTES);`,
+		`bool isTradeAllowed = IsTradeAllowed();`,
+		`bool marketOpen = (MarketInfo(Symbol_, MODE_TRADEALLOWED) != 0);`,
+		`\"server_time\":\"%s\",`,
+		`\"market_open\":%s,`,
+		`\"is_trade_allowed\":%s,`,
+	})
+}
+
+func TestMT5HeartbeatPayloadContainsMarketStatusFields(t *testing.T) {
+	assertEAContainsAll(t, filepath.Join("..", "..", "mt5_ea", "GoldBolt_Client.mq5"), []string{
+		`string serverTime = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES);`,
+		`bool isTradeAllowed = (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0);`,
+		`bool marketOpen = ((ENUM_SYMBOL_TRADE_MODE)SymbolInfoInteger(Symbol_, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_DISABLED);`,
+		`\"server_time\":\"%s\",`,
+		`\"market_open\":%s,`,
+		`\"is_trade_allowed\":%s,`,
+	})
+}
+
 func assertEAContainsAll(t *testing.T, path string, needles []string) {
 	t.Helper()
 

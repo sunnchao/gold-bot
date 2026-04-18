@@ -12,8 +12,8 @@
 #include <Trade/Trade.mqh>
 
 // ============ 版本信息 ============
-#define EA_VERSION  "2.8.1"
-#define EA_BUILD    7
+#define EA_VERSION  "2.8.2"
+#define EA_BUILD    8
 
 CTrade trade;
 
@@ -754,6 +754,10 @@ bool RegisterAccount()
 //+------------------------------------------------------------------+
 void SendHeartbeat()
 {
+   string serverTime = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES);
+   bool isTradeAllowed = (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0);
+   bool marketOpen = ((ENUM_SYMBOL_TRADE_MODE)SymbolInfoInteger(Symbol_, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_DISABLED);
+
    int pullbackPos = 0, breakoutPos = 0, divergencePos = 0;
    int pyramidPos = 0, counterPos = 0, rangePos = 0, momentumScalpPos = 0;
 
@@ -785,6 +789,9 @@ void SendHeartbeat()
       "\"margin\":%.2f," 
       "\"free_margin\":%.2f," 
       "\"currency\":\"%s\"," 
+      "\"server_time\":\"%s\"," 
+      "\"market_open\":%s," 
+      "\"is_trade_allowed\":%s," 
       "\"strategies\":{"
       "\"pullback\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
       "\"breakout_retest\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
@@ -801,6 +808,9 @@ void SendHeartbeat()
       AccountInfoDouble(ACCOUNT_MARGIN),
       AccountInfoDouble(ACCOUNT_MARGIN_FREE),
       AccountInfoString(ACCOUNT_CURRENCY),
+      serverTime,
+      (marketOpen ? "true" : "false"),
+      (isTradeAllowed ? "true" : "false"),
       (EnablePullback ? "true" : "false"), PullbackMagic, pullbackPos,
       (EnableBreakout ? "true" : "false"), BreakoutMagic, breakoutPos,
       (EnableDivergence ? "true" : "false"), DivergenceMagic, divergencePos,

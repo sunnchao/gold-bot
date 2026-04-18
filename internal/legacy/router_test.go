@@ -101,6 +101,39 @@ func TestHeartbeatPersistsRuntimeSnapshot(t *testing.T) {
 	}
 }
 
+func TestHeartbeatMissingMarketFlagsDefaultsClosed(t *testing.T) {
+	ts, accounts, _ := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/heartbeat", bytes.NewBufferString(`{
+		"account_id":"90011087",
+		"balance":1000.5,
+		"equity":1100.25,
+		"margin":100,
+		"free_margin":1000.25,
+		"server_time":"2026.04.12 11:04"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "test-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /heartbeat status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	runtime, err := accounts.GetRuntime(context.Background(), "90011087")
+	if err != nil {
+		t.Fatalf("GetRuntime returned error: %v", err)
+	}
+	if runtime.MarketOpen {
+		t.Fatal("MarketOpen = true, want false when heartbeat omits market_open")
+	}
+	if runtime.IsTradeAllowed {
+		t.Fatal("IsTradeAllowed = true, want false when heartbeat omits is_trade_allowed")
+	}
+}
+
 func TestTickUpdatesRuntimeTimestamp(t *testing.T) {
 	ts, accounts, _ := newTestServer(t)
 

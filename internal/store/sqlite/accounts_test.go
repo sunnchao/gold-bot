@@ -131,6 +131,48 @@ func TestAccountRepositorySaveBarsHandlesConcurrentWrites(t *testing.T) {
 	}
 }
 
+func TestAccountRepositorySaveTickDefaultsMarketFlagsClosedOnInsert(t *testing.T) {
+	repo := newTestAccountRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 13, 6, 49, 41, 0, time.UTC)
+
+	if err := repo.SaveTick(ctx, "90011087", now); err != nil {
+		t.Fatalf("SaveTick returned error: %v", err)
+	}
+
+	runtime, err := repo.GetRuntime(ctx, "90011087")
+	if err != nil {
+		t.Fatalf("GetRuntime returned error: %v", err)
+	}
+	if runtime.MarketOpen {
+		t.Fatal("MarketOpen = true, want false for runtime rows created via SaveTick")
+	}
+	if runtime.IsTradeAllowed {
+		t.Fatal("IsTradeAllowed = true, want false for runtime rows created via SaveTick")
+	}
+}
+
+func TestAccountRepositoryTouchRuntimeDefaultsMarketFlagsClosedOnInsert(t *testing.T) {
+	repo := newTestAccountRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 13, 6, 49, 41, 0, time.UTC)
+
+	if err := repo.TouchRuntime(ctx, "90011087", now); err != nil {
+		t.Fatalf("TouchRuntime returned error: %v", err)
+	}
+
+	runtime, err := repo.GetRuntime(ctx, "90011087")
+	if err != nil {
+		t.Fatalf("GetRuntime returned error: %v", err)
+	}
+	if runtime.MarketOpen {
+		t.Fatal("MarketOpen = true, want false for runtime rows created via TouchRuntime")
+	}
+	if runtime.IsTradeAllowed {
+		t.Fatal("IsTradeAllowed = true, want false for runtime rows created via TouchRuntime")
+	}
+}
+
 func newTestAccountRepository(t *testing.T) *AccountRepository {
 	t.Helper()
 

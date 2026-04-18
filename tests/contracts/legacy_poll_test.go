@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"gold-bot/internal/domain"
 	"gold-bot/internal/legacy"
 	"gold-bot/internal/store"
 	sqlitestore "gold-bot/internal/store/sqlite"
@@ -353,6 +354,136 @@ func TestOrderResultIgnoresPendingAndDuplicateTerminalCallbacks(t *testing.T) {
 	}
 }
 
+func TestBarsThenPollReturnsLiveSignalPayloadCompatibleWithEA(t *testing.T) {
+	trader := &scriptedLiveTrading{
+		commandID: "live_sig_contract",
+		payload: map[string]any{
+			"symbol":        "XAUUSD",
+			"type":          "BUY",
+			"entry":         3345.5,
+			"sl":            3338.0,
+			"tp1":           3358.0,
+			"tp2":           3364.0,
+			"score":         7,
+			"strategy":      "pullback",
+			"atr":           1.4,
+			"trigger_key":   "H1:2026.04.18 10:00",
+			"source":        "live_strategy",
+			"analysis_mode": "bars",
+		},
+	}
+	ts, db := newLegacyServerWithLiveTrading(t, trader)
+
+	barRec := httptest.NewRecorder()
+	barReq := httptest.NewRequest(http.MethodPost, "/bars", bytes.NewBufferString(`{
+		"account_id":"90011087",
+		"symbol":"XAUUSD",
+		"timeframe":"H1",
+		"bars":[
+			{"time":"2026.04.18 10:00","open":3330.0,"high":3348.0,"low":3329.0,"close":3345.5}
+		]
+	}`))
+	barReq.Header.Set("Content-Type", "application/json")
+	barReq.Header.Set("X-API-Token", "test-token")
+	ts.ServeHTTP(barRec, barReq)
+
+	if barRec.Code != http.StatusOK {
+		t.Fatalf("POST /bars status = %d, want %d body=%s", barRec.Code, http.StatusOK, barRec.Body.String())
+	}
+	if trader.onBarsCalls != 1 {
+		t.Fatalf("OnBars calls = %d, want 1", trader.onBarsCalls)
+	}
+	if trader.lastAccountID != "90011087" {
+		t.Fatalf("OnBars account_id = %q, want 90011087", trader.lastAccountID)
+	}
+	if trader.lastSymbol != "XAUUSD" {
+		t.Fatalf("OnBars symbol = %q, want XAUUSD", trader.lastSymbol)
+	}
+	if trader.lastTimeframe != "H1" {
+		t.Fatalf("OnBars timeframe = %q, want H1", trader.lastTimeframe)
+	}
+
+	pollRec := httptest.NewRecorder()
+	pollReq := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewBufferString(`{"account_id":"90011087"}`))
+	pollReq.Header.Set("Content-Type", "application/json")
+	pollReq.Header.Set("X-API-Token", "test-token")
+	ts.ServeHTTP(pollRec, pollReq)
+
+	if pollRec.Code != http.StatusOK {
+		t.Fatalf("POST /poll status = %d, want %d body=%s", pollRec.Code, http.StatusOK, pollRec.Body.String())
+	}
+
+	var pollBody struct {
+		Status   string                   `json:"status"`
+		Count    int                      `json:"count"`
+		Commands []map[string]interface{} `json:"commands"`
+	}
+	if err := json.Unmarshal(pollRec.Body.Bytes(), &pollBody); err != nil {
+		t.Fatalf("Unmarshal poll response returned error: %v", err)
+	}
+	if pollBody.Status != "OK" {
+		t.Fatalf("status = %q, want OK", pollBody.Status)
+	}
+	if pollBody.Count != 1 {
+		t.Fatalf("count = %d, want 1", pollBody.Count)
+	}
+	if len(pollBody.Commands) != 1 {
+		t.Fatalf("len(commands) = %d, want 1", len(pollBody.Commands))
+	}
+
+	command := pollBody.Commands[0]
+	if got := command["command_id"]; got != "live_sig_contract" {
+		t.Fatalf("command_id = %#v, want live_sig_contract", got)
+	}
+	if got := command["action"]; got != "SIGNAL" {
+		t.Fatalf("action = %#v, want SIGNAL", got)
+	}
+	if got := command["symbol"]; got != "XAUUSD" {
+		t.Fatalf("symbol = %#v, want XAUUSD", got)
+	}
+	if got := command["type"]; got != "BUY" {
+		t.Fatalf("type = %#v, want BUY", got)
+	}
+	if got := command["entry"]; got != 3345.5 {
+		t.Fatalf("entry = %#v, want 3345.5", got)
+	}
+	if got := command["sl"]; got != 3338.0 {
+		t.Fatalf("sl = %#v, want 3338.0", got)
+	}
+	if got := command["tp1"]; got != 3358.0 {
+		t.Fatalf("tp1 = %#v, want 3358.0", got)
+	}
+	if got := command["tp2"]; got != 3364.0 {
+		t.Fatalf("tp2 = %#v, want 3364.0", got)
+	}
+	if got := command["atr"]; got != 1.4 {
+		t.Fatalf("atr = %#v, want 1.4", got)
+	}
+	if got := command["score"]; got != float64(7) {
+		t.Fatalf("score = %#v, want 7", got)
+	}
+	if got := command["strategy"]; got != "pullback" {
+		t.Fatalf("strategy = %#v, want pullback", got)
+	}
+	if got := command["source"]; got != "live_strategy" {
+		t.Fatalf("source = %#v, want live_strategy", got)
+	}
+	if got := command["analysis_mode"]; got != "bars" {
+		t.Fatalf("analysis_mode = %#v, want bars", got)
+	}
+	if got := command["trigger_key"]; got != "H1:2026.04.18 10:00" {
+		t.Fatalf("trigger_key = %#v, want H1:2026.04.18 10:00", got)
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM commands WHERE command_id = ?`, "live_sig_contract").Scan(&status); err != nil {
+		t.Fatalf("query delivered live command returned error: %v", err)
+	}
+	if status != "delivered" {
+		t.Fatalf("status = %q, want delivered", status)
+	}
+}
+
 func newLegacyServerWithDB(t *testing.T) (http.Handler, *sql.DB) {
 	t.Helper()
 
@@ -381,6 +512,78 @@ func newLegacyServerWithDB(t *testing.T) (http.Handler, *sql.DB) {
 		Accounts: accounts,
 		Tokens:   tokens,
 	}), db
+}
+
+func newLegacyServerWithLiveTrading(t *testing.T, liveTrading legacy.LiveTrading) (http.Handler, *sql.DB) {
+	t.Helper()
+
+	dbPath := filepath.Join(t.TempDir(), "contracts-live-poll.sqlite")
+	db, err := store.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	if err := store.RunMigrations(db); err != nil {
+		t.Fatalf("RunMigrations returned error: %v", err)
+	}
+
+	accounts := sqlitestore.NewAccountRepository(db)
+	tokens := sqlitestore.NewTokenRepository(db)
+	commands := sqlitestore.NewCommandRepository(db)
+	if err := tokens.PutToken(context.Background(), "test-token", "test", false, time.Now().UTC()); err != nil {
+		t.Fatalf("PutToken returned error: %v", err)
+	}
+
+	if stub, ok := liveTrading.(*scriptedLiveTrading); ok {
+		stub.commands = commands
+	}
+
+	return legacy.NewRouter(legacy.Dependencies{
+		Accounts:    accounts,
+		Tokens:      tokens,
+		Commands:    commands,
+		LiveTrading: liveTrading,
+	}), db
+}
+
+type scriptedLiveTrading struct {
+	commands  *sqlitestore.CommandRepository
+	commandID string
+	payload   map[string]any
+	onBarsCalls int
+	lastAccountID string
+	lastSymbol string
+	lastTimeframe string
+}
+
+func (s *scriptedLiveTrading) OnBars(ctx context.Context, accountID, symbol string, timeframe string) error {
+	if s == nil || s.commands == nil {
+		return nil
+	}
+	s.onBarsCalls++
+	s.lastAccountID = accountID
+	s.lastSymbol = symbol
+	s.lastTimeframe = timeframe
+	payload := make(map[string]any, len(s.payload))
+	for k, v := range s.payload {
+		payload[k] = v
+	}
+	return s.commands.Enqueue(ctx, domain.Command{
+		CommandID: s.commandID,
+		AccountID: accountID,
+		Action:    domain.CommandActionSignal,
+		CreatedAt: time.Date(2026, 4, 18, 2, 3, 4, 0, time.UTC),
+		Payload:   payload,
+	})
+}
+
+func (s *scriptedLiveTrading) OnPositions(context.Context, string, string) error {
+	return nil
 }
 
 func commandResultCount(t *testing.T, db *sql.DB, commandID string) int {

@@ -98,6 +98,8 @@ var defaultStrategyMapping = map[string]string{
 	"20250236": "range",
 }
 
+const staleTickTradeableWindow = 10 * time.Minute
+
 func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime, state domain.AccountState, now time.Time) AnalysisPayload {
 	mapping := state.StrategyMapping
 	if len(mapping) == 0 {
@@ -179,6 +181,16 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 		market.Symbol = "XAUUSD"
 	}
 
+	tradeable := runtime.MarketOpen && runtime.IsTradeAllowed
+	if runtime.LastTickAt.IsZero() {
+		tradeable = false
+	} else {
+		tickAge := now.UTC().Sub(runtime.LastTickAt)
+		if tickAge > staleTickTradeableWindow {
+			tradeable = false
+		}
+	}
+
 	shanghai := time.FixedZone("CST", 8*3600)
 	return AnalysisPayload{
 		Status:    "OK",
@@ -202,7 +214,7 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 			MarketOpen:     runtime.MarketOpen,
 			IsTradeAllowed: runtime.IsTradeAllowed,
 			MT4ServerTime:  runtime.MT4ServerTime,
-			Tradeable:      runtime.MarketOpen && runtime.IsTradeAllowed,
+			Tradeable:      tradeable,
 		},
 		StrategyMapping: mapping,
 	}

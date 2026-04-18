@@ -9,9 +9,10 @@ import (
 )
 
 type BarsHandler struct {
-	accounts AccountStore
-	tokens   TokenStore
-	now      func() time.Time
+	accounts    AccountStore
+	tokens      TokenStore
+	liveTrading LiveTrading
+	now         func() time.Time
 }
 
 type BarsRequest struct {
@@ -88,6 +89,11 @@ func (h *BarsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"message": err.Error(),
 		})
 		return
+	}
+	if h.liveTrading != nil {
+		if err := h.liveTrading.OnBars(r.Context(), accountID, symbol, req.Timeframe); err != nil {
+			log.Printf("[BARS] ⚠️ account=%s/%s | tf=%s | live trading 降级跳过: %v", accountID, symbol, req.Timeframe, err)
+		}
 	}
 
 	log.Printf("[BARS] ✅ account=%s | tf=%s | 已保存 %d 根K线", accountID, req.Timeframe, len(req.Bars))

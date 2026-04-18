@@ -141,9 +141,11 @@ func (r *AccountRepository) SaveTick(ctx context.Context, accountID string, upda
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO account_runtime (
 			account_id,
+			market_open,
+			is_trade_allowed,
 			last_tick_at,
 			updated_at
-		) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`, `+ph(3)+`)
+		) VALUES (`+ph(1)+pgText()+`, 0, 0, `+ph(2)+`, `+ph(3)+`)
 		ON CONFLICT(account_id) DO UPDATE SET
 			last_tick_at = excluded.last_tick_at,
 			updated_at = excluded.updated_at
@@ -165,8 +167,10 @@ func (r *AccountRepository) TouchRuntime(ctx context.Context, accountID string, 
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO account_runtime (
 			account_id,
+			market_open,
+			is_trade_allowed,
 			updated_at
-		) VALUES (`+ph(1)+pgText()+`, `+ph(2)+`)
+		) VALUES (`+ph(1)+pgText()+`, 0, 0, `+ph(2)+`)
 		ON CONFLICT(account_id) DO UPDATE SET
 			updated_at = excluded.updated_at
 	`,

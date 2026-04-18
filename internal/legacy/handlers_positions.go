@@ -9,9 +9,10 @@ import (
 )
 
 type PositionsHandler struct {
-	accounts AccountStore
-	tokens   TokenStore
-	now      func() time.Time
+	accounts    AccountStore
+	tokens      TokenStore
+	liveTrading LiveTrading
+	now         func() time.Time
 }
 
 type PositionsRequest struct {
@@ -77,6 +78,11 @@ func (h *PositionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"message": err.Error(),
 		})
 		return
+	}
+	if h.liveTrading != nil {
+		if err := h.liveTrading.OnPositions(r.Context(), accountID, symbol); err != nil {
+			log.Printf("[POSITIONS] ⚠️ account=%s/%s | live trading 降级跳过: %v", accountID, symbol, err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

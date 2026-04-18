@@ -92,8 +92,10 @@ func New(cfg config.Config) (*App, error) {
 	})
 
 	legacy.RegisterRoutes(mux, legacy.Dependencies{
-		Accounts: accounts,
-		Tokens:   tokens,
+		Accounts:    accounts,
+		Tokens:      tokens,
+		Commands:    commands,
+		LiveTrading: legacy.NewLiveTradingExecutor(accounts, commands),
 	})
 	api.RegisterRoutes(mux, api.Dependencies{
 		Accounts:    accounts,

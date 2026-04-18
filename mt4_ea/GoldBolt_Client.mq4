@@ -12,8 +12,8 @@
 #include <StdLib.mqh>
 
 // ============ 版本信息 ============
-#define EA_VERSION  "2.8.1"
-#define EA_BUILD    7
+#define EA_VERSION  "2.8.2"
+#define EA_BUILD    8
 
 //+------------------------------------------------------------------+
 //| 服务器连接配置                                                      |
@@ -511,6 +511,9 @@ void SendHeartbeat()
       "\"margin\":%.2f,"
       "\"free_margin\":%.2f,"
       "\"currency\":\"%s\","
+      "\"server_time\":\"%s\","
+      "\"market_open\":%s,"
+      "\"is_trade_allowed\":%s,"
       "\"strategies\":{"
       "\"pullback\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
       "\"breakout_retest\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
@@ -522,7 +525,9 @@ void SendHeartbeat()
       "}"
       "}",
       AccountID, Symbol_, PullbackMagic, AccountBalance(), AccountEquity(), 
-      AccountMargin(), AccountFreeMargin(), AccountCurrency(),
+      AccountMargin(), AccountFreeMargin(), AccountCurrency(), serverTime,
+      (marketOpen ? "true" : "false"),
+      (isTradeAllowed ? "true" : "false"),
       (EnablePullback ? "true" : "false"), PullbackMagic, pullbackPos,
       (EnableBreakout ? "true" : "false"), BreakoutMagic, breakoutPos,
       (EnableDivergence ? "true" : "false"), DivergenceMagic, divergencePos,

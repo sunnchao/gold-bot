@@ -1,5 +1,5 @@
 {
-  "version": "2.8.1",
-  "build": 7,
-  "changelog": "新增 momentum_scalp 策略开关与独立头寸入口；补齐 register/heartbeat 策略映射；修复 PostgreSQL Poll TakePending 交付标记兼容问题"
+  "version": "2.8.2",
+  "build": 8,
+  "changelog": "修复 heartbeat 缺失 market_open/is_trade_allowed 默认误判可交易；MT4/MT5 显式上报市场状态；补齐 live trading /poll 契约与 stale-tick 保护"
 }
