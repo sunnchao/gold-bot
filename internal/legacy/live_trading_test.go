@@ -6,9 +6,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -511,8 +514,54 @@ func TestLiveTradingExecutorSkipsWhenTradingDisabled(t *testing.T) {
 	}
 }
 
+func TestLiveTradingExecutorLogsScalpContextWithAccountAndSymbol(t *testing.T) {
+	_, _, accounts, _, commands := newLegacyLiveServer(t, nil)
+	ctx := context.Background()
+	now := time.Date(2026, time.April, 18, 10, 2, 0, 0, time.UTC)
+
+	seedTradeableState(t, accounts, now, "90011087", "XAUUSD", "2026.04.18 10:00")
+
+	analyzer := &fakeLiveSignalAnalyzer{
+		logs: []domain.AnalysisLog{
+			{Level: "info", Strategy: "动量剥头皮", Message: "M5 EMA多头排列未满足 ⏭"},
+		},
+	}
+	executor := &LiveTradingExecutor{
+		accounts: accounts,
+		commands: commands,
+		analyzerFactory: func(symbol string) liveSignalAnalyzer {
+			return analyzer
+		},
+		now: func() time.Time { return now },
+	}
+
+	var buf bytes.Buffer
+	prevWriter := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prevWriter)
+	defer log.SetOutput(io.Discard)
+
+	if err := executor.OnBars(ctx, "90011087", "XAUUSD", "H1"); err != nil {
+		t.Fatalf("OnBars returned error: %v", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{
+		"[STRATEGY-SCALP]",
+		"account=90011087",
+		"symbol=XAUUSD",
+		"info",
+		"M5 EMA多头排列未满足",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("log output = %q, want substring %q", output, want)
+		}
+	}
+}
+
 type fakeLiveSignalAnalyzer struct {
 	signal   *domain.Signal
+	logs     []domain.AnalysisLog
 	calls    int
 	snapshot domain.AnalysisSnapshot
 }
@@ -520,7 +569,7 @@ type fakeLiveSignalAnalyzer struct {
 func (f *fakeLiveSignalAnalyzer) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []domain.AnalysisLog) {
 	f.calls++
 	f.snapshot = snapshot
-	return f.signal, nil
+	return f.signal, f.logs
 }
 
 type liveTradingBarCall struct {

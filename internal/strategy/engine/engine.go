@@ -973,19 +973,37 @@ func (e Engine) checkMomentumScalp(m15, m5, m1 []domain.Bar, price float64) (*do
 
 	switch side {
 	case "BUY":
-		if !(emaFast[lastIdx] > emaMid[lastIdx] && emaMid[lastIdx] > emaSlow[lastIdx] && lastM5.MACDHist > prevM5.MACDHist) {
+		emaAligned := emaFast[lastIdx] > emaMid[lastIdx] && emaMid[lastIdx] > emaSlow[lastIdx]
+		macdMomentum := lastM5.MACDHist > prevM5.MACDHist
+		if !emaAligned {
 			return nil, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: name,
-				Message:  "M5 EMA多头排列/MACD动能未满足 ⏭",
+				Message:  fmt.Sprintf("M5 BUY EMA多头排列未满足: EMA5=%.2f EMA8=%.2f EMA12=%.2f ⏭", emaFast[lastIdx], emaMid[lastIdx], emaSlow[lastIdx]),
+			}
+		}
+		if !macdMomentum {
+			return nil, domain.AnalysisLog{
+				Level:    "info",
+				Strategy: name,
+				Message:  fmt.Sprintf("M5 BUY MACD动能未满足: prev=%.2f curr=%.2f ⏭", prevM5.MACDHist, lastM5.MACDHist),
 			}
 		}
 	case "SELL":
-		if !(emaFast[lastIdx] < emaMid[lastIdx] && emaMid[lastIdx] < emaSlow[lastIdx] && lastM5.MACDHist < prevM5.MACDHist) {
+		emaAligned := emaFast[lastIdx] < emaMid[lastIdx] && emaMid[lastIdx] < emaSlow[lastIdx]
+		macdMomentum := lastM5.MACDHist < prevM5.MACDHist
+		if !emaAligned {
 			return nil, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: name,
-				Message:  "M5 EMA空头排列/MACD动能未满足 ⏭",
+				Message:  fmt.Sprintf("M5 SELL EMA空头排列未满足: EMA5=%.2f EMA8=%.2f EMA12=%.2f ⏭", emaFast[lastIdx], emaMid[lastIdx], emaSlow[lastIdx]),
+			}
+		}
+		if !macdMomentum {
+			return nil, domain.AnalysisLog{
+				Level:    "info",
+				Strategy: name,
+				Message:  fmt.Sprintf("M5 SELL MACD动能未满足: prev=%.2f curr=%.2f ⏭", prevM5.MACDHist, lastM5.MACDHist),
 			}
 		}
 	}

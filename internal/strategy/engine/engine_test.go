@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 
 	"gold-bot/internal/domain"
@@ -150,6 +151,117 @@ func TestAnalyzeSkipsMomentumScalpWhenM1BarsInsufficient(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected momentum scalp skip log when M1 bars are insufficient")
+	}
+}
+
+func TestCheckMomentumScalpReportsSpecificM5FailureReason(t *testing.T) {
+	e := New()
+
+	tests := []struct {
+		name    string
+		m15     []domain.Bar
+		m5      []domain.Bar
+		wantAll []string
+	}{
+		{
+			name: "buy ema alignment failure",
+			m15: []domain.Bar{
+				{EMA20: 97, EMA50: 95, ADX: 30},
+			},
+			m5: []domain.Bar{
+				{Close: 100.0, MACDHist: 0.10},
+				{Close: 99.8, MACDHist: 0.15},
+				{Close: 99.6, MACDHist: 0.20},
+				{Close: 99.4, MACDHist: 0.25},
+				{Close: 99.2, MACDHist: 0.30},
+				{Close: 99.0, MACDHist: 0.35},
+				{Close: 98.8, MACDHist: 0.40},
+				{Close: 98.6, MACDHist: 0.45},
+				{Close: 98.4, MACDHist: 0.50},
+				{Close: 98.2, MACDHist: 0.55},
+				{Close: 98.0, MACDHist: 0.60},
+				{Close: 97.8, MACDHist: 0.65},
+			},
+			wantAll: []string{"BUY", "EMA多头排列未满足", "EMA5=", "EMA8=", "EMA12="},
+		},
+		{
+			name: "buy macd momentum failure",
+			m15: []domain.Bar{
+				{EMA20: 97, EMA50: 95, ADX: 30},
+			},
+			m5: []domain.Bar{
+				{Close: 98.0, MACDHist: 0.80},
+				{Close: 98.4, MACDHist: 0.78},
+				{Close: 98.8, MACDHist: 0.76},
+				{Close: 99.0, MACDHist: 0.74},
+				{Close: 99.2, MACDHist: 0.72},
+				{Close: 99.4, MACDHist: 0.70},
+				{Close: 99.5, MACDHist: 0.68},
+				{Close: 99.6, MACDHist: 0.66},
+				{Close: 99.7, MACDHist: 0.64},
+				{Close: 99.8, MACDHist: 0.62},
+				{Close: 99.9, MACDHist: 0.60},
+				{Close: 100.0, MACDHist: 0.58},
+			},
+			wantAll: []string{"BUY", "MACD动能未满足", "prev=", "curr="},
+		},
+		{
+			name: "sell ema alignment failure",
+			m15: []domain.Bar{
+				{EMA20: 95, EMA50: 97, ADX: 30},
+			},
+			m5: []domain.Bar{
+				{Close: 98.0, MACDHist: -0.10},
+				{Close: 98.2, MACDHist: -0.15},
+				{Close: 98.4, MACDHist: -0.20},
+				{Close: 98.6, MACDHist: -0.25},
+				{Close: 98.8, MACDHist: -0.30},
+				{Close: 99.0, MACDHist: -0.35},
+				{Close: 99.2, MACDHist: -0.40},
+				{Close: 99.4, MACDHist: -0.45},
+				{Close: 99.6, MACDHist: -0.50},
+				{Close: 99.8, MACDHist: -0.55},
+				{Close: 100.0, MACDHist: -0.60},
+				{Close: 100.2, MACDHist: -0.65},
+			},
+			wantAll: []string{"SELL", "EMA空头排列未满足", "EMA5=", "EMA8=", "EMA12="},
+		},
+		{
+			name: "sell macd momentum failure",
+			m15: []domain.Bar{
+				{EMA20: 95, EMA50: 97, ADX: 30},
+			},
+			m5: []domain.Bar{
+				{Close: 100.0, MACDHist: -0.80},
+				{Close: 99.8, MACDHist: -0.78},
+				{Close: 99.6, MACDHist: -0.76},
+				{Close: 99.4, MACDHist: -0.74},
+				{Close: 99.2, MACDHist: -0.72},
+				{Close: 99.0, MACDHist: -0.70},
+				{Close: 98.8, MACDHist: -0.68},
+				{Close: 98.6, MACDHist: -0.66},
+				{Close: 98.4, MACDHist: -0.64},
+				{Close: 98.2, MACDHist: -0.62},
+				{Close: 98.0, MACDHist: -0.60},
+				{Close: 97.8, MACDHist: -0.58},
+			},
+			wantAll: []string{"SELL", "MACD动能未满足", "prev=", "curr="},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signal, detail := e.checkMomentumScalp(tt.m15, tt.m5, momentumM1BarsForTests(), 100)
+
+			if signal != nil {
+				t.Fatalf("signal = %+v, want nil", signal)
+			}
+			for _, want := range tt.wantAll {
+				if !strings.Contains(detail.Message, want) {
+					t.Fatalf("detail.Message = %q, want substring %q", detail.Message, want)
+				}
+			}
+		})
 	}
 }
 
