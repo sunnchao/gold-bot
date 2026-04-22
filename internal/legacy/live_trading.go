@@ -95,7 +95,11 @@ func (e *LiveTradingExecutor) analyzeAndQueue(ctx context.Context, accountID, sy
 		return nil
 	}
 	signal, logs := analyzer(symbol).Analyze(snapshot)
-	_ = logs
+	for _, l := range logs {
+		if l.Strategy == "动量剥头皮" || l.Strategy == "H4过滤" {
+			log.Printf("[STRATEGY-SCALP] %s | %s", l.Level, l.Message)
+		}
+	}
 	if signal == nil {
 		return nil
 	}
