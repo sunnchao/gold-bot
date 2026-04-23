@@ -145,6 +145,9 @@ func GoldStrategyConfig() StrategyConfig {
 	cfg.PullbackSLATR = 1.5
 	cfg.PullbackTP1ATR = 1.5
 	cfg.PullbackTP2ATR = 3.0
+	cfg.MomentumScalpMinADX = 23.0
+	cfg.MomentumScalpVolConfirm = 1.15
+	cfg.MomentumScalpMinScore = 6
 	return cfg
 }
 
