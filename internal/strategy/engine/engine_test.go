@@ -10,8 +10,8 @@ import (
 func TestDefaultStrategyConfigIncludesMomentumScalpDefaults(t *testing.T) {
 	cfg := DefaultStrategyConfig()
 
-	if cfg.MomentumScalpMinADX != 25 {
-		t.Fatalf("MomentumScalpMinADX = %v, want 25", cfg.MomentumScalpMinADX)
+	if cfg.MomentumScalpMinADX != 20 {
+		t.Fatalf("MomentumScalpMinADX = %v, want 20", cfg.MomentumScalpMinADX)
 	}
 	if cfg.MomentumScalpEMAPeriod1 != 5 {
 		t.Fatalf("MomentumScalpEMAPeriod1 = %d, want 5", cfg.MomentumScalpEMAPeriod1)
@@ -22,17 +22,17 @@ func TestDefaultStrategyConfigIncludesMomentumScalpDefaults(t *testing.T) {
 	if cfg.MomentumScalpEMAPeriod3 != 12 {
 		t.Fatalf("MomentumScalpEMAPeriod3 = %d, want 12", cfg.MomentumScalpEMAPeriod3)
 	}
-	if cfg.MomentumScalpRSIBullThresh != 40 {
-		t.Fatalf("MomentumScalpRSIBullThresh = %v, want 40", cfg.MomentumScalpRSIBullThresh)
+	if cfg.MomentumScalpRSIBullThresh != 45 {
+		t.Fatalf("MomentumScalpRSIBullThresh = %v, want 45", cfg.MomentumScalpRSIBullThresh)
 	}
-	if cfg.MomentumScalpRSIBearThresh != 60 {
-		t.Fatalf("MomentumScalpRSIBearThresh = %v, want 60", cfg.MomentumScalpRSIBearThresh)
+	if cfg.MomentumScalpRSIBearThresh != 55 {
+		t.Fatalf("MomentumScalpRSIBearThresh = %v, want 55", cfg.MomentumScalpRSIBearThresh)
 	}
-	if cfg.MomentumScalpRSICrossoverBull != 45 {
-		t.Fatalf("MomentumScalpRSICrossoverBull = %v, want 45", cfg.MomentumScalpRSICrossoverBull)
+	if cfg.MomentumScalpRSICrossoverBull != 48 {
+		t.Fatalf("MomentumScalpRSICrossoverBull = %v, want 48", cfg.MomentumScalpRSICrossoverBull)
 	}
-	if cfg.MomentumScalpRSICrossoverBear != 55 {
-		t.Fatalf("MomentumScalpRSICrossoverBear = %v, want 55", cfg.MomentumScalpRSICrossoverBear)
+	if cfg.MomentumScalpRSICrossoverBear != 52 {
+		t.Fatalf("MomentumScalpRSICrossoverBear = %v, want 52", cfg.MomentumScalpRSICrossoverBear)
 	}
 	if cfg.MomentumScalpSLATR != 0.4 {
 		t.Fatalf("MomentumScalpSLATR = %v, want 0.4", cfg.MomentumScalpSLATR)
@@ -43,8 +43,8 @@ func TestDefaultStrategyConfigIncludesMomentumScalpDefaults(t *testing.T) {
 	if cfg.MomentumScalpTP2ATR != 0.8 {
 		t.Fatalf("MomentumScalpTP2ATR = %v, want 0.8", cfg.MomentumScalpTP2ATR)
 	}
-	if cfg.MomentumScalpVolConfirm != 1.3 {
-		t.Fatalf("MomentumScalpVolConfirm = %v, want 1.3", cfg.MomentumScalpVolConfirm)
+	if cfg.MomentumScalpVolConfirm != 1.05 {
+		t.Fatalf("MomentumScalpVolConfirm = %v, want 1.05", cfg.MomentumScalpVolConfirm)
 	}
 	if cfg.MomentumScalpMinScore != 7 {
 		t.Fatalf("MomentumScalpMinScore = %d, want 7", cfg.MomentumScalpMinScore)
@@ -102,7 +102,7 @@ func TestCheckMomentumScalpBlocksWhenM15ADXBelowThreshold(t *testing.T) {
 
 	signal, detail := e.checkMomentumScalp(
 		[]domain.Bar{
-			{EMA20: 96, EMA50: 94, ADX: 24.9},
+			{EMA20: 96, EMA50: 94, ADX: 19.9}, // 新阈值是20，19.9应被阻止
 		},
 		momentumM5BarsForTests(),
 		momentumM1BarsForTests(),
@@ -182,7 +182,7 @@ func TestCheckMomentumScalpReportsSpecificM5FailureReason(t *testing.T) {
 				{Close: 98.0, MACDHist: 0.60},
 				{Close: 97.8, MACDHist: 0.65},
 			},
-			wantAll: []string{"BUY", "EMA多头排列未满足", "EMA5=", "EMA8=", "EMA12="},
+			wantAll: []string{"BUY", "EMA部分排列未满足", "EMA5=", "EMA8="},
 		},
 		{
 			name: "buy macd momentum failure",
@@ -224,7 +224,7 @@ func TestCheckMomentumScalpReportsSpecificM5FailureReason(t *testing.T) {
 				{Close: 100.0, MACDHist: -0.60},
 				{Close: 100.2, MACDHist: -0.65},
 			},
-			wantAll: []string{"SELL", "EMA空头排列未满足", "EMA5=", "EMA8=", "EMA12="},
+			wantAll: []string{"SELL", "EMA部分排列未满足", "EMA5=", "EMA8="},
 		},
 		{
 			name: "sell macd momentum failure",
@@ -309,8 +309,9 @@ func momentumM1BarsForTests() []domain.Bar {
 			VolSMA: 80,
 		}
 	}
-	bars[12].RSI = 38
-	bars[13].RSI = 46
-	bars[13].Volume = 130
+	// 新阈值: prev < 45 && curr >= 48
+	bars[12].RSI = 38   // < 45 ✓
+	bars[13].RSI = 49   // >= 48 ✓
+	bars[13].Volume = 130 // > 80*1.05 ✓
 	return bars
 }

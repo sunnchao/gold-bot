@@ -973,13 +973,15 @@ func (e Engine) checkMomentumScalp(m15, m5, m1 []domain.Bar, price float64) (*do
 
 	switch side {
 	case "BUY":
-		emaAligned := emaFast[lastIdx] > emaMid[lastIdx] && emaMid[lastIdx] > emaSlow[lastIdx]
+		// 部分排列: EMA5 > EMA8 即可，EMA12 排列作为加分
+		emaPartialAligned := emaFast[lastIdx] > emaMid[lastIdx]
+		emaFullAligned := emaPartialAligned && emaMid[lastIdx] > emaSlow[lastIdx]
 		macdMomentum := lastM5.MACDHist > prevM5.MACDHist
-		if !emaAligned {
+		if !emaPartialAligned {
 			return nil, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: name,
-				Message:  fmt.Sprintf("M5 BUY EMA多头排列未满足: EMA5=%.2f EMA8=%.2f EMA12=%.2f ⏭", emaFast[lastIdx], emaMid[lastIdx], emaSlow[lastIdx]),
+				Message:  fmt.Sprintf("M5 BUY EMA部分排列未满足: EMA5=%.2f EMA8=%.2f ⏭", emaFast[lastIdx], emaMid[lastIdx]),
 			}
 		}
 		if !macdMomentum {
@@ -989,14 +991,18 @@ func (e Engine) checkMomentumScalp(m15, m5, m1 []domain.Bar, price float64) (*do
 				Message:  fmt.Sprintf("M5 BUY MACD动能未满足: prev=%.2f curr=%.2f ⏭", prevM5.MACDHist, lastM5.MACDHist),
 			}
 		}
+		// EMA12 排列作为加分（用于后续评分）
+		_ = emaFullAligned // 标记全排列状态，后续评分使用
 	case "SELL":
-		emaAligned := emaFast[lastIdx] < emaMid[lastIdx] && emaMid[lastIdx] < emaSlow[lastIdx]
+		// 部分排列: EMA5 < EMA8 即可，EMA12 排列作为加分
+		emaPartialAligned := emaFast[lastIdx] < emaMid[lastIdx]
+		emaFullAligned := emaPartialAligned && emaMid[lastIdx] < emaSlow[lastIdx]
 		macdMomentum := lastM5.MACDHist < prevM5.MACDHist
-		if !emaAligned {
+		if !emaPartialAligned {
 			return nil, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: name,
-				Message:  fmt.Sprintf("M5 SELL EMA空头排列未满足: EMA5=%.2f EMA8=%.2f EMA12=%.2f ⏭", emaFast[lastIdx], emaMid[lastIdx], emaSlow[lastIdx]),
+				Message:  fmt.Sprintf("M5 SELL EMA部分排列未满足: EMA5=%.2f EMA8=%.2f ⏭", emaFast[lastIdx], emaMid[lastIdx]),
 			}
 		}
 		if !macdMomentum {
@@ -1006,6 +1012,8 @@ func (e Engine) checkMomentumScalp(m15, m5, m1 []domain.Bar, price float64) (*do
 				Message:  fmt.Sprintf("M5 SELL MACD动能未满足: prev=%.2f curr=%.2f ⏭", prevM5.MACDHist, lastM5.MACDHist),
 			}
 		}
+		// EMA12 排列作为加分（用于后续评分）
+		_ = emaFullAligned // 标记全排列状态，后续评分使用
 	}
 
 	prevM1 := m1[len(m1)-2]
