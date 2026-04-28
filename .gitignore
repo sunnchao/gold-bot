@@ -46,3 +46,4 @@ coverage.out
 web/dashboard/node_modules/
 web/dashboard/.next/
 web/dashboard/dist/
+data/goldbot.db*
