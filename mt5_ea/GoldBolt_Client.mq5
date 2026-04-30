@@ -1596,28 +1596,6 @@ bool CheckRisk(string type_str)
       return false;
    }
 
-   int managedPositions = 0;
-   for(int i = 0; i < PositionsTotal(); i++)
-   {
-      if(!SelectPositionByIndex(i))
-         continue;
-
-      string symbol = PositionGetString(POSITION_SYMBOL);
-      if(!IsAllowedSymbol(symbol))
-         continue;
-
-      if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
-         continue;
-
-      managedPositions++;
-   }
-
-   if(managedPositions >= MaxPositions)
-   {
-      Print("⚠️ 风控：达到最大持仓数 ", MaxPositions);
-      return false;
-   }
-
    int sameDir = 0;
    for(int i = 0; i < PositionsTotal(); i++)
    {

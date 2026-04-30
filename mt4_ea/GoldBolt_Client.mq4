@@ -1282,28 +1282,6 @@ bool CheckRisk(string type_str)
       return false;
    }
 
-   int managedPositions = 0;
-   for(int i = 0; i < OrdersTotal(); i++)
-   {
-      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
-         continue;
-
-      if(!IsAllowedSymbol(OrderSymbol()))
-         continue;
-
-      if(!IsOurMagic(OrderMagicNumber()))
-         continue;
-
-      managedPositions++;
-   }
-
-   // 检查最大持仓数
-   if(managedPositions >= MaxPositions)
-   {
-      Print("⚠️ 风控：达到最大持仓数 ", MaxPositions);
-      return false;
-   }
-
    // 检查同方向持仓数
    int sameDir = 0;
     
