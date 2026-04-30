@@ -236,10 +236,17 @@ type PositionSnapshot struct {
 	Positions    []Position `json:"positions"`
 }
 
-// BaseSymbol extracts the base symbol from a raw symbol string by removing broker suffixes.
-// Examples: "GOLDm#" -> "GOLD", "XAUUSD" -> "XAUUSD", "GBPJPYm#" -> "GBPJPY"
+// BaseSymbol normalizes a raw symbol string to a canonical base symbol.
+// Examples: "GOLDm#" -> "XAUUSD", "xauusd" -> "XAUUSD", "GBPJPYm#" -> "GBPJPY"
 func BaseSymbol(raw string) string {
-	s := strings.TrimSuffix(raw, "m#")
+	s := strings.ToUpper(strings.TrimSpace(raw))
+	s = strings.TrimSuffix(s, "M#")
 	s = strings.TrimSuffix(s, "#")
+	switch s {
+	case "GOLD", "XAUUSD":
+		return "XAUUSD"
+	case "GBPJPY":
+		return "GBPJPY"
+	}
 	return s
 }

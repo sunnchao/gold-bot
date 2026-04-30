@@ -105,18 +105,18 @@ func DefaultStrategyConfig() StrategyConfig {
 
 		MinScore: 5,
 
-		MomentumScalpMinADX:           25.0,
+		MomentumScalpMinADX:           20.0,
 		MomentumScalpEMAPeriod1:       5,
 		MomentumScalpEMAPeriod2:       8,
 		MomentumScalpEMAPeriod3:       12,
-		MomentumScalpRSIBullThresh:    40.0,
-		MomentumScalpRSIBearThresh:    60.0,
-		MomentumScalpRSICrossoverBull: 45.0,
-		MomentumScalpRSICrossoverBear: 55.0,
+		MomentumScalpRSIBullThresh:    45.0,
+		MomentumScalpRSIBearThresh:    55.0,
+		MomentumScalpRSICrossoverBull: 48.0,
+		MomentumScalpRSICrossoverBear: 52.0,
 		MomentumScalpSLATR:            0.4,
 		MomentumScalpTP1ATR:           0.5,
 		MomentumScalpTP2ATR:           0.8,
-		MomentumScalpVolConfirm:       1.3,
+		MomentumScalpVolConfirm:       1.05,
 		MomentumScalpMinScore:         7,
 		MomentumScalpMaxHoldingMin:    20,
 	}
@@ -145,6 +145,9 @@ func GoldStrategyConfig() StrategyConfig {
 	cfg.PullbackSLATR = 1.5
 	cfg.PullbackTP1ATR = 1.5
 	cfg.PullbackTP2ATR = 3.0
+	cfg.MomentumScalpMinADX = 18.0
+	cfg.MomentumScalpVolConfirm = 1.05
+	cfg.MomentumScalpMinScore = 6
 	return cfg
 }
 

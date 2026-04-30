@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 
 	"gold-bot/internal/domain"
@@ -9,8 +10,8 @@ import (
 func TestDefaultStrategyConfigIncludesMomentumScalpDefaults(t *testing.T) {
 	cfg := DefaultStrategyConfig()
 
-	if cfg.MomentumScalpMinADX != 25 {
-		t.Fatalf("MomentumScalpMinADX = %v, want 25", cfg.MomentumScalpMinADX)
+	if cfg.MomentumScalpMinADX != 20 {
+		t.Fatalf("MomentumScalpMinADX = %v, want 20", cfg.MomentumScalpMinADX)
 	}
 	if cfg.MomentumScalpEMAPeriod1 != 5 {
 		t.Fatalf("MomentumScalpEMAPeriod1 = %d, want 5", cfg.MomentumScalpEMAPeriod1)
@@ -21,17 +22,17 @@ func TestDefaultStrategyConfigIncludesMomentumScalpDefaults(t *testing.T) {
 	if cfg.MomentumScalpEMAPeriod3 != 12 {
 		t.Fatalf("MomentumScalpEMAPeriod3 = %d, want 12", cfg.MomentumScalpEMAPeriod3)
 	}
-	if cfg.MomentumScalpRSIBullThresh != 40 {
-		t.Fatalf("MomentumScalpRSIBullThresh = %v, want 40", cfg.MomentumScalpRSIBullThresh)
+	if cfg.MomentumScalpRSIBullThresh != 45 {
+		t.Fatalf("MomentumScalpRSIBullThresh = %v, want 45", cfg.MomentumScalpRSIBullThresh)
 	}
-	if cfg.MomentumScalpRSIBearThresh != 60 {
-		t.Fatalf("MomentumScalpRSIBearThresh = %v, want 60", cfg.MomentumScalpRSIBearThresh)
+	if cfg.MomentumScalpRSIBearThresh != 55 {
+		t.Fatalf("MomentumScalpRSIBearThresh = %v, want 55", cfg.MomentumScalpRSIBearThresh)
 	}
-	if cfg.MomentumScalpRSICrossoverBull != 45 {
-		t.Fatalf("MomentumScalpRSICrossoverBull = %v, want 45", cfg.MomentumScalpRSICrossoverBull)
+	if cfg.MomentumScalpRSICrossoverBull != 48 {
+		t.Fatalf("MomentumScalpRSICrossoverBull = %v, want 48", cfg.MomentumScalpRSICrossoverBull)
 	}
-	if cfg.MomentumScalpRSICrossoverBear != 55 {
-		t.Fatalf("MomentumScalpRSICrossoverBear = %v, want 55", cfg.MomentumScalpRSICrossoverBear)
+	if cfg.MomentumScalpRSICrossoverBear != 52 {
+		t.Fatalf("MomentumScalpRSICrossoverBear = %v, want 52", cfg.MomentumScalpRSICrossoverBear)
 	}
 	if cfg.MomentumScalpSLATR != 0.4 {
 		t.Fatalf("MomentumScalpSLATR = %v, want 0.4", cfg.MomentumScalpSLATR)
@@ -42,8 +43,8 @@ func TestDefaultStrategyConfigIncludesMomentumScalpDefaults(t *testing.T) {
 	if cfg.MomentumScalpTP2ATR != 0.8 {
 		t.Fatalf("MomentumScalpTP2ATR = %v, want 0.8", cfg.MomentumScalpTP2ATR)
 	}
-	if cfg.MomentumScalpVolConfirm != 1.3 {
-		t.Fatalf("MomentumScalpVolConfirm = %v, want 1.3", cfg.MomentumScalpVolConfirm)
+	if cfg.MomentumScalpVolConfirm != 1.05 {
+		t.Fatalf("MomentumScalpVolConfirm = %v, want 1.05", cfg.MomentumScalpVolConfirm)
 	}
 	if cfg.MomentumScalpMinScore != 7 {
 		t.Fatalf("MomentumScalpMinScore = %d, want 7", cfg.MomentumScalpMinScore)
@@ -101,7 +102,7 @@ func TestCheckMomentumScalpBlocksWhenM15ADXBelowThreshold(t *testing.T) {
 
 	signal, detail := e.checkMomentumScalp(
 		[]domain.Bar{
-			{EMA20: 96, EMA50: 94, ADX: 24.9},
+			{EMA20: 96, EMA50: 94, ADX: 19.9}, // 新阈值是20，19.9应被阻止
 		},
 		momentumM5BarsForTests(),
 		momentumM1BarsForTests(),
@@ -153,6 +154,117 @@ func TestAnalyzeSkipsMomentumScalpWhenM1BarsInsufficient(t *testing.T) {
 	}
 }
 
+func TestCheckMomentumScalpReportsSpecificM5FailureReason(t *testing.T) {
+	e := New()
+
+	tests := []struct {
+		name    string
+		m15     []domain.Bar
+		m5      []domain.Bar
+		wantAll []string
+	}{
+		{
+			name: "buy ema alignment failure",
+			m15: []domain.Bar{
+				{EMA20: 97, EMA50: 95, ADX: 30},
+			},
+			m5: []domain.Bar{
+				{Close: 100.0, MACDHist: 0.10},
+				{Close: 99.8, MACDHist: 0.15},
+				{Close: 99.6, MACDHist: 0.20},
+				{Close: 99.4, MACDHist: 0.25},
+				{Close: 99.2, MACDHist: 0.30},
+				{Close: 99.0, MACDHist: 0.35},
+				{Close: 98.8, MACDHist: 0.40},
+				{Close: 98.6, MACDHist: 0.45},
+				{Close: 98.4, MACDHist: 0.50},
+				{Close: 98.2, MACDHist: 0.55},
+				{Close: 98.0, MACDHist: 0.60},
+				{Close: 97.8, MACDHist: 0.65},
+			},
+			wantAll: []string{"BUY", "EMA部分排列未满足", "EMA5=", "EMA8="},
+		},
+		{
+			name: "buy macd momentum failure",
+			m15: []domain.Bar{
+				{EMA20: 97, EMA50: 95, ADX: 30},
+			},
+			m5: []domain.Bar{
+				{Close: 98.0, MACDHist: 0.80},
+				{Close: 98.4, MACDHist: 0.78},
+				{Close: 98.8, MACDHist: 0.76},
+				{Close: 99.0, MACDHist: 0.74},
+				{Close: 99.2, MACDHist: 0.72},
+				{Close: 99.4, MACDHist: 0.70},
+				{Close: 99.5, MACDHist: 0.68},
+				{Close: 99.6, MACDHist: 0.66},
+				{Close: 99.7, MACDHist: 0.64},
+				{Close: 99.8, MACDHist: 0.62},
+				{Close: 99.9, MACDHist: 0.60},
+				{Close: 100.0, MACDHist: 0.58},
+			},
+			wantAll: []string{"BUY", "MACD动能未满足", "prev=", "curr="},
+		},
+		{
+			name: "sell ema alignment failure",
+			m15: []domain.Bar{
+				{EMA20: 95, EMA50: 97, ADX: 30},
+			},
+			m5: []domain.Bar{
+				{Close: 98.0, MACDHist: -0.10},
+				{Close: 98.2, MACDHist: -0.15},
+				{Close: 98.4, MACDHist: -0.20},
+				{Close: 98.6, MACDHist: -0.25},
+				{Close: 98.8, MACDHist: -0.30},
+				{Close: 99.0, MACDHist: -0.35},
+				{Close: 99.2, MACDHist: -0.40},
+				{Close: 99.4, MACDHist: -0.45},
+				{Close: 99.6, MACDHist: -0.50},
+				{Close: 99.8, MACDHist: -0.55},
+				{Close: 100.0, MACDHist: -0.60},
+				{Close: 100.2, MACDHist: -0.65},
+			},
+			wantAll: []string{"SELL", "EMA部分排列未满足", "EMA5=", "EMA8="},
+		},
+		{
+			name: "sell macd momentum failure",
+			m15: []domain.Bar{
+				{EMA20: 95, EMA50: 97, ADX: 30},
+			},
+			m5: []domain.Bar{
+				{Close: 100.0, MACDHist: -0.80},
+				{Close: 99.8, MACDHist: -0.78},
+				{Close: 99.6, MACDHist: -0.76},
+				{Close: 99.4, MACDHist: -0.74},
+				{Close: 99.2, MACDHist: -0.72},
+				{Close: 99.0, MACDHist: -0.70},
+				{Close: 98.8, MACDHist: -0.68},
+				{Close: 98.6, MACDHist: -0.66},
+				{Close: 98.4, MACDHist: -0.64},
+				{Close: 98.2, MACDHist: -0.62},
+				{Close: 98.0, MACDHist: -0.60},
+				{Close: 97.8, MACDHist: -0.58},
+			},
+			wantAll: []string{"SELL", "MACD动能未满足", "prev=", "curr="},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signal, detail := e.checkMomentumScalp(tt.m15, tt.m5, momentumM1BarsForTests(), 100)
+
+			if signal != nil {
+				t.Fatalf("signal = %+v, want nil", signal)
+			}
+			for _, want := range tt.wantAll {
+				if !strings.Contains(detail.Message, want) {
+					t.Fatalf("detail.Message = %q, want substring %q", detail.Message, want)
+				}
+			}
+		})
+	}
+}
+
 func flatH1BarsForMomentumTests() []domain.Bar {
 	bars := make([]domain.Bar, 50)
 	for i := range bars {
@@ -197,8 +309,9 @@ func momentumM1BarsForTests() []domain.Bar {
 			VolSMA: 80,
 		}
 	}
-	bars[12].RSI = 38
-	bars[13].RSI = 46
-	bars[13].Volume = 130
+	// 新阈值: prev < 45 && curr >= 48
+	bars[12].RSI = 38   // < 45 ✓
+	bars[13].RSI = 49   // >= 48 ✓
+	bars[13].Volume = 130 // > 80*1.05 ✓
 	return bars
 }
