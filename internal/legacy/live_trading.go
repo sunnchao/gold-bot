@@ -349,6 +349,8 @@ func (e *LiveTradingExecutor) buildModifyCommand(accountID, symbol string, pos d
 			"symbol":       symbol,
 			"ticket":       pos.Ticket,
 			"new_sl":       newSL,
+			"sl":           newSL, // 兼容 EA 旧字段名
+			"tp":           pos.TP, // 保持原 TP
 			"old_sl":       pos.SL,
 			"distance":     distance,
 			"atr":          atr,

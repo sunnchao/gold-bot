@@ -1482,9 +1482,14 @@ void ExecuteSignal(string cmd, string cmd_id)
 void ExecuteModify(string cmd, string cmd_id)
 {
    ulong ticket = (ulong)GetJsonDouble(cmd, "ticket");
-   double sl    = GetJsonDouble(cmd, "sl");
-   double tp    = GetJsonDouble(cmd, "tp");
-
+   
+   // 兼容两种字段名：new_sl（AI 止损）或 sl（传统）
+   double sl = GetJsonDouble(cmd, "new_sl");
+   if(sl == 0.0) sl = GetJsonDouble(cmd, "sl");
+   
+   // TP 保持原值，服务端不修改 TP
+   double tp = GetJsonDouble(cmd, "tp");
+   
    Print("📝 改单：#", FormatULongValue(ticket), " SL=", sl, " TP=", tp);
 
    if(!PositionSelectByTicket(ticket))
