@@ -168,6 +168,29 @@ type AnalysisSnapshot struct {
 	CurrentPrice float64          `json:"current_price"`
 	Bars         map[string][]Bar `json:"bars"`
 	Positions    []Position       `json:"positions"`
+	AIResult     *AIResult        `json:"ai_result,omitempty"` // AI 分析结果（包含建议止损）
+}
+
+// AIResult holds AI analysis result from gold-analysis-agent
+type AIResult struct {
+	Bias            string   `json:"bias"`              // bullish/bearish/neutral
+	Confidence      int      `json:"confidence"`        // 0-100
+	SuggestedSL     float64  `json:"suggested_sl"`      // AI 建议止损价格
+	SuggestedTP     float64  `json:"suggested_tp"`      // AI 建议止盈价格
+	MaxPositionSize float64  `json:"max_position_size"` // AI 建议最大仓位
+	SRLevels        *SRLevels `json:"sr_levels"`        // 支撑阻力位
+	Arbitration     *Arbitration `json:"arbitration"`   // AI 仲裁结果
+}
+
+type SRLevels struct {
+	Support    []float64 `json:"support"`
+	Resistance []float64 `json:"resistance"`
+}
+
+type Arbitration struct {
+	Direction string `json:"direction"` // buy/sell/hold/close
+	Action    string `json:"action"`    // open/close/modify/hold
+	Reasoning string `json:"reasoning"`
 }
 
 type AnalysisLog struct {

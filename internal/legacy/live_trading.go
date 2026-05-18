@@ -5,9 +5,11 @@ import (
 	"crypto/sha1"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -90,6 +92,25 @@ func (e *LiveTradingExecutor) analyzeAndQueue(ctx context.Context, accountID, sy
 		Positions:    filterPositionsForSymbol(symbol, state.Positions),
 	}
 
+	// 计算 ATR 用于止损调整判断
+	atr := 0.0
+	if h1Bars := snapshot.Bars["H1"]; len(h1Bars) > 0 {
+		atr = h1Bars[len(h1Bars)-1].ATR
+	}
+
+	// Parse AI result for stop-loss override
+	if len(state.AIResultJSON) > 2 && state.AIResultJSON[0] == '{' {
+		var aiResult domain.AIResult
+		if err := json.Unmarshal(state.AIResultJSON, &aiResult); err == nil {
+			snapshot.AIResult = &aiResult
+			if aiResult.SuggestedSL > 0 {
+				log.Printf("[STRATEGY] 🤖 AI 止损可用: %.2f | account=%s/%s", aiResult.SuggestedSL, accountID, symbol)
+			}
+		} else {
+			log.Printf("[STRATEGY] ⚠️ AI 结果解析失败: %v | account=%s/%s", err, accountID, symbol)
+		}
+	}
+
 	analyzer := e.analyzerFactory
 	if analyzer == nil {
 		return nil
@@ -101,6 +122,10 @@ func (e *LiveTradingExecutor) analyzeAndQueue(ctx context.Context, accountID, sy
 		}
 	}
 	if signal == nil {
+		// 没有新信号时，检查是否需要用 AI 止损调整现有持仓
+		if snapshot.AIResult != nil && snapshot.AIResult.SuggestedSL > 0 && len(snapshot.Positions) > 0 {
+			return e.checkAIStopLossAdjust(ctx, accountID, symbol, &snapshot, atr)
+		}
 		return nil
 	}
 
@@ -254,4 +279,81 @@ func isDuplicateCommandErr(err error) bool {
 	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "unique") || strings.Contains(text, "duplicate") || strings.Contains(text, "primary key")
+}
+
+// checkAIStopLossAdjust 检查是否需要用 AI 止损调整现有持仓
+func (e *LiveTradingExecutor) checkAIStopLossAdjust(ctx context.Context, accountID, symbol string, snapshot *domain.AnalysisSnapshot, atr float64) error {
+	if atr <= 0 {
+		log.Printf("[STRATEGY] ⚠️ ATR 无效，跳过止损调整 | account=%s/%s", accountID, symbol)
+		return nil
+	}
+
+	aiSL := snapshot.AIResult.SuggestedSL
+	positions := snapshot.Positions
+	if len(positions) == 0 {
+		return nil
+	}
+
+	// 只处理第一个持仓（通常只有一个）
+	pos := positions[0]
+	currentSL := pos.SL
+
+	// 计算 AI 止损与当前止损的差距
+	distance := math.Abs(aiSL - currentSL)
+	threshold := 0.3 * atr // 差距超过 0.3 ATR 才调整
+
+	if distance < threshold {
+		log.Printf("[STRATEGY] 📊 AI 止损差距不足 (%.2f < %.2f ATR)，不调整 | account=%s/%s current=%.2f ai=%.2f",
+			distance, threshold, accountID, symbol, currentSL, aiSL)
+		return nil
+	}
+
+	// 生成 MODIFY 命令
+	command := e.buildModifyCommand(accountID, symbol, pos, aiSL, distance, atr)
+	if _, err := e.commands.Get(ctx, command.CommandID); err == nil {
+		log.Printf("[STRATEGY] 🔁 重复 MODIFY 命令跳过 | account=%s/%s command_id=%s",
+			accountID, symbol, command.CommandID)
+		return nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check existing modify command %s: %w", command.CommandID, err)
+	}
+
+	if err := e.commands.Enqueue(ctx, command); err != nil {
+		if isDuplicateCommandErr(err) {
+			return nil
+		}
+		return fmt.Errorf("enqueue modify command %s: %w", command.CommandID, err)
+	}
+
+	log.Printf("[STRATEGY] ✅ AI 止损调整已发送 | account=%s/%s ticket=%d current=%.2f -> ai=%.2f (%.2f 点)",
+		accountID, symbol, pos.Ticket, currentSL, aiSL, distance)
+	return nil
+}
+
+func (e *LiveTradingExecutor) buildModifyCommand(accountID, symbol string, pos domain.Position, newSL, distance, atr float64) domain.Command {
+	createdAt := time.Now().UTC()
+	if e.now != nil {
+		createdAt = e.now().UTC()
+	}
+	// 唯一 ID 基于账户、品种、ticket 和时间戳（每分钟一个命令）
+	seed := fmt.Sprintf("%s|%s|%d|%s", accountID, strings.ToUpper(symbol), pos.Ticket, createdAt.Format("200601021504"))
+	sum := sha1.Sum([]byte(seed))
+	commandID := "mod_" + hex.EncodeToString(sum[:8])
+
+	return domain.Command{
+		CommandID: commandID,
+		AccountID: accountID,
+		Action:    domain.CommandActionModify,
+		CreatedAt: createdAt,
+		Payload: map[string]any{
+			"symbol":       symbol,
+			"ticket":       pos.Ticket,
+			"new_sl":       newSL,
+			"old_sl":       pos.SL,
+			"distance":     distance,
+			"atr":          atr,
+			"source":       "ai_stop_loss",
+			"trigger_time": createdAt.Format(time.RFC3339),
+		},
+	}
 }

@@ -49,6 +49,30 @@ func NewForSymbol(symbol string, options ...func(*Engine)) Engine {
 	return e
 }
 
+// calculateSL calculates stop-loss price, preferring AI suggestion over ATR-based calculation.
+// aiResult: AI analysis result (may contain suggested_sl based on support/resistance)
+// side: "BUY" or "SELL"
+// price: current entry price
+// atr: ATR value for fallback calculation
+// atrMult: ATR multiplier for fallback (e.g., 1.5 for pullback strategy)
+// Returns: stop-loss price and whether AI suggestion was used
+func calculateSL(aiResult *domain.AIResult, side string, price, atr, atrMult float64) (sl float64, usedAI bool) {
+	if aiResult != nil && aiResult.SuggestedSL > 0 {
+		// Validate AI SL is reasonable (within 3×ATR from entry)
+		dist := math.Abs(price - aiResult.SuggestedSL)
+		if dist < atr*3.0 && dist > atr*0.3 {
+			log.Printf("[STRATEGY] 🤖 使用 AI 止损: %.2f (距离=%.2f, ATR=%.2f)", aiResult.SuggestedSL, dist, atr)
+			return aiResult.SuggestedSL, true
+		}
+		log.Printf("[STRATEGY] ⚠️ AI 止损 %.2f 不合理 (距离=%.2f > 3×ATR=%.2f), 使用 ATR 计算", aiResult.SuggestedSL, dist, atr*3.0)
+	}
+	// Fallback: ATR-based calculation
+	if side == "BUY" {
+		return round2(price - atr*atrMult), false
+	}
+	return round2(price + atr*atrMult), false
+}
+
 // checkM15Entry checks M15 bars for early entry confirmation.
 // Returns true if M15 RSI confirms the signal direction and price is near a Fib level.
 func (e Engine) checkM15Entry(m15 []domain.Bar, side string, price float64) (bool, string) {
@@ -380,6 +404,26 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	if best.ATR <= 0 {
 		best.ATR = atr
 	}
+
+	// Apply AI stop-loss override if available
+	if snapshot.AIResult != nil && snapshot.AIResult.SuggestedSL > 0 {
+		aiSL := snapshot.AIResult.SuggestedSL
+		dist := math.Abs(best.Entry - aiSL)
+		// Validate: AI SL should be within reasonable range (0.3-3×ATR)
+		if dist >= atr*0.3 && dist <= atr*3.0 {
+			originalSL := best.StopLoss
+			best.StopLoss = aiSL
+			log.Printf("[STRATEGY] 🤖 AI 止损覆盖: %.2f → %.2f (距离=%.2f, ATR=%.2f)", originalSL, aiSL, dist, atr)
+			logs = append(logs, domain.AnalysisLog{
+				Level:    "info",
+				Strategy: "AI止损",
+				Message:  fmt.Sprintf("🤖 AI止损覆盖: %.2f → %.2f (基于支撑阻力位)", originalSL, aiSL),
+			})
+		} else {
+			log.Printf("[STRATEGY] ⚠️ AI 止损 %.2f 不合理 (距离=%.2f, ATR=%.2f), 保持 ATR 止损 %.2f", aiSL, dist, atr, best.StopLoss)
+		}
+	}
+
 	best.AllStrategies = make([]domain.StrategyScore, 0, len(signals))
 	for _, signal := range signals {
 		best.AllStrategies = append(best.AllStrategies, domain.StrategyScore{
