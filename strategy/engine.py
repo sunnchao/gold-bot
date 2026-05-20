@@ -153,6 +153,105 @@ class StrategyEngine:
     # 策略实现
     # ============================================
 
+    def _calculate_dynamic_sl_tp(self, price: float, atr: float, side: str,
+                                 market_context: dict) -> tuple:
+        """
+        动态计算止损止盈，使用 ATR 为核心，并参考市场上下文微调倍数。
+
+        返回: (stop_loss, tp1, tp2, adjustment_reason)
+        """
+        base_sl_mult = {
+            "pullback": 1.5,
+            "breakout_retest": 1.0,
+            "divergence": 0.5,
+            "breakout_pyramid": 0.5,
+        }
+        base_tp1_mult = {
+            "pullback": 1.5,
+            "breakout_retest": 2.0,
+            "divergence": 2.0,
+            "breakout_pyramid": 2.0,
+        }
+        base_tp2_mult = {
+            "pullback": 3.0,
+            "breakout_retest": 4.0,
+            "divergence": 4.0,
+            "breakout_pyramid": 5.0,
+        }
+
+        strategy = market_context.get("strategy", "pullback")
+        sl_mult = base_sl_mult.get(strategy, 1.5)
+        tp1_mult = base_tp1_mult.get(strategy, 1.5)
+        tp2_mult = base_tp2_mult.get(strategy, 3.0)
+        adjustments = []
+
+        adx = float(market_context.get("adx", 0) or 0)
+        if adx >= 35:
+            sl_mult *= 1.25
+            tp1_mult *= 1.15
+            tp2_mult *= 1.35
+            adjustments.append(f"ADX={adx:.1f} 强趋势放宽")
+        elif adx > 0 and adx < 20:
+            sl_mult *= 0.85
+            tp1_mult *= 0.9
+            tp2_mult *= 0.9
+            adjustments.append(f"ADX={adx:.1f} 弱趋势收紧")
+
+        rsi = float(market_context.get("rsi", 50) or 50)
+        if side == "BUY":
+            if rsi < 30:
+                sl_mult *= 0.9
+                adjustments.append(f"RSI={rsi:.1f} 超卖收紧SL")
+            elif rsi > 70:
+                tp1_mult *= 0.9
+                tp2_mult *= 0.85
+                adjustments.append(f"RSI={rsi:.1f} 偏热收紧TP")
+        else:
+            if rsi > 70:
+                sl_mult *= 0.9
+                adjustments.append(f"RSI={rsi:.1f} 超买收紧SL")
+            elif rsi < 30:
+                tp1_mult *= 0.9
+                tp2_mult *= 0.85
+                adjustments.append(f"RSI={rsi:.1f} 偏冷收紧TP")
+
+        h4_trend = market_context.get("h4_trend", "")
+        if (side == "BUY" and h4_trend == "强多头") or (side == "SELL" and h4_trend == "强空头"):
+            tp2_mult *= 1.2
+            adjustments.append(f"H4={h4_trend} 顺势扩展TP2")
+        elif h4_trend in ("强多头", "强空头"):
+            sl_mult *= 0.9
+            tp1_mult *= 0.9
+            tp2_mult *= 0.85
+            adjustments.append(f"H4={h4_trend} 逆势收紧")
+
+        nearest_sr_distance = float(market_context.get("nearest_sr_distance", 0) or 0)
+        if nearest_sr_distance > 0:
+            sr_atr_ratio = nearest_sr_distance / atr if atr > 0 else 0
+            if sr_atr_ratio < 0.8:
+                tp1_mult *= 0.9
+                tp2_mult *= 0.85
+                adjustments.append(f"结构位近({sr_atr_ratio:.2f} ATR) 收紧TP")
+            elif sr_atr_ratio > 2.5:
+                tp2_mult *= 1.1
+                adjustments.append(f"结构位远({sr_atr_ratio:.2f} ATR) 扩展TP2")
+
+        stop_distance = atr * sl_mult
+        tp1_distance = atr * tp1_mult
+        tp2_distance = atr * tp2_mult
+
+        if side == "BUY":
+            stop_loss = price - stop_distance
+            tp1 = price + tp1_distance
+            tp2 = price + tp2_distance
+        else:
+            stop_loss = price + stop_distance
+            tp1 = price - tp1_distance
+            tp2 = price - tp2_distance
+
+        reason = "动态调整: " + "; ".join(adjustments) if adjustments else "默认ATR倍数"
+        return round(stop_loss, 2), round(tp1, 2), round(tp2, 2), reason
+
     def _check_pullback(self, h1, m15, price, atr, h4=None) -> tuple:
         """趋势回调策略"""
         last = h1.iloc[-1]
@@ -181,13 +280,35 @@ class StrategyEngine:
             if last["macd_hist"] > 0: score += 1; details.append("MACD柱>0")
             if rsi < 50: score += 1; details.append(f"RSI={rsi:.1f}<50")
             if adx > 25: score += 1; details.append(f"ADX={adx:.1f}>25")
-
-            sl = price - atr * 1.5
+            h4_trend = "未知"
+            if h4 is not None and len(h4) > 0:
+                h4_last = h4.iloc[-1]
+                h4_ema20 = h4_last.get("ema20", 0)
+                h4_ema50 = h4_last.get("ema50", 0)
+                h4_adx = h4_last.get("adx", 0)
+                h4_price = h4_last.get("close", 0)
+                if h4_adx > 25:
+                    if h4_ema20 > h4_ema50 and h4_price > h4_ema20:
+                        h4_trend = "强多头"
+                    elif h4_ema20 < h4_ema50 and h4_price < h4_ema20:
+                        h4_trend = "强空头"
+                    else:
+                        h4_trend = "趋势不明"
+                else:
+                    h4_trend = "震荡"
+            sl, tp1, tp2, reason = self._calculate_dynamic_sl_tp(price, atr, "BUY", {
+                "adx": adx,
+                "rsi": rsi,
+                "h4_trend": h4_trend,
+                "strategy": "pullback",
+                "nearest_sr_distance": dist,
+            })
             return {
                 "side": "BUY", "entry": price,
-                "stop_loss": round(sl, 2),
-                "tp1": round(price + atr * 1.5, 2),
-                "tp2": round(price + atr * 3.0, 2),
+                "stop_loss": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "sl_adjustment": reason,
                 "score": min(score, 10), "strategy": "pullback",
             }, {"level": "signal", "strategy": name, "msg": f"🟢 BUY 评分={score} | EMA20回调 dist={dist:.2f} | {' | '.join(details)}"}
 
@@ -203,13 +324,35 @@ class StrategyEngine:
             if last["macd_hist"] < 0: score += 1; details.append("MACD柱<0")
             if rsi > 50: score += 1; details.append(f"RSI={rsi:.1f}>50")
             if adx > 25: score += 1; details.append(f"ADX={adx:.1f}>25")
-
-            sl = price + atr * 1.5
+            h4_trend = "未知"
+            if h4 is not None and len(h4) > 0:
+                h4_last = h4.iloc[-1]
+                h4_ema20 = h4_last.get("ema20", 0)
+                h4_ema50 = h4_last.get("ema50", 0)
+                h4_adx = h4_last.get("adx", 0)
+                h4_price = h4_last.get("close", 0)
+                if h4_adx > 25:
+                    if h4_ema20 > h4_ema50 and h4_price > h4_ema20:
+                        h4_trend = "强多头"
+                    elif h4_ema20 < h4_ema50 and h4_price < h4_ema20:
+                        h4_trend = "强空头"
+                    else:
+                        h4_trend = "趋势不明"
+                else:
+                    h4_trend = "震荡"
+            sl, tp1, tp2, reason = self._calculate_dynamic_sl_tp(price, atr, "SELL", {
+                "adx": adx,
+                "rsi": rsi,
+                "h4_trend": h4_trend,
+                "strategy": "pullback",
+                "nearest_sr_distance": dist,
+            })
             return {
                 "side": "SELL", "entry": price,
-                "stop_loss": round(sl, 2),
-                "tp1": round(price - atr * 1.5, 2),
-                "tp2": round(price - atr * 3.0, 2),
+                "stop_loss": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "sl_adjustment": reason,
                 "score": min(score, 10), "strategy": "pullback",
             }, {"level": "signal", "strategy": name, "msg": f"🔴 SELL 评分={score} | EMA20回调 dist={dist:.2f} | {' | '.join(details)}"}
 
@@ -242,12 +385,36 @@ class StrategyEngine:
             if last["macd_hist"] > 0: score += 1; details.append("MACD柱>0")
             if last.get("adx", 0) > 20: score += 1; details.append(f"ADX={last.get('adx', 0):.1f}")
             if last["rsi"] > 50: score += 1; details.append(f"RSI={last['rsi']:.1f}")
+            h4_trend = "未知"
+            if h4 is not None and len(h4) > 0:
+                h4_last = h4.iloc[-1]
+                h4_ema20 = h4_last.get("ema20", 0)
+                h4_ema50 = h4_last.get("ema50", 0)
+                h4_adx = h4_last.get("adx", 0)
+                h4_price = h4_last.get("close", 0)
+                if h4_adx > 25:
+                    if h4_ema20 > h4_ema50 and h4_price > h4_ema20:
+                        h4_trend = "强多头"
+                    elif h4_ema20 < h4_ema50 and h4_price < h4_ema20:
+                        h4_trend = "强空头"
+                    else:
+                        h4_trend = "趋势不明"
+                else:
+                    h4_trend = "震荡"
+            sl, tp1, tp2, reason = self._calculate_dynamic_sl_tp(price, atr, "BUY", {
+                "adx": last.get("adx", 0),
+                "rsi": last["rsi"],
+                "h4_trend": h4_trend,
+                "strategy": "breakout_retest",
+                "nearest_sr_distance": dist_res,
+            })
 
             return {
                 "side": "BUY", "entry": price,
-                "stop_loss": round(resistance - atr * 1.0, 2),
-                "tp1": round(price + atr * 2.0, 2),
-                "tp2": round(price + atr * 4.0, 2),
+                "stop_loss": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "sl_adjustment": reason,
                 "score": min(score, 10), "strategy": "breakout_retest",
             }, {"level": "signal", "strategy": name, "msg": f"🟢 BUY 评分={score} | 阻力位={resistance:.2f} 突破后回踩 dist={dist_res:.2f} | {' | '.join(details)}"}
 
@@ -260,12 +427,36 @@ class StrategyEngine:
             if last["macd_hist"] < 0: score += 1; details.append("MACD柱<0")
             if last.get("adx", 0) > 20: score += 1; details.append(f"ADX={last.get('adx', 0):.1f}")
             if last["rsi"] < 50: score += 1; details.append(f"RSI={last['rsi']:.1f}")
+            h4_trend = "未知"
+            if h4 is not None and len(h4) > 0:
+                h4_last = h4.iloc[-1]
+                h4_ema20 = h4_last.get("ema20", 0)
+                h4_ema50 = h4_last.get("ema50", 0)
+                h4_adx = h4_last.get("adx", 0)
+                h4_price = h4_last.get("close", 0)
+                if h4_adx > 25:
+                    if h4_ema20 > h4_ema50 and h4_price > h4_ema20:
+                        h4_trend = "强多头"
+                    elif h4_ema20 < h4_ema50 and h4_price < h4_ema20:
+                        h4_trend = "强空头"
+                    else:
+                        h4_trend = "趋势不明"
+                else:
+                    h4_trend = "震荡"
+            sl, tp1, tp2, reason = self._calculate_dynamic_sl_tp(price, atr, "SELL", {
+                "adx": last.get("adx", 0),
+                "rsi": last["rsi"],
+                "h4_trend": h4_trend,
+                "strategy": "breakout_retest",
+                "nearest_sr_distance": dist_sup,
+            })
 
             return {
                 "side": "SELL", "entry": price,
-                "stop_loss": round(support + atr * 1.0, 2),
-                "tp1": round(price - atr * 2.0, 2),
-                "tp2": round(price - atr * 4.0, 2),
+                "stop_loss": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "sl_adjustment": reason,
                 "score": min(score, 10), "strategy": "breakout_retest",
             }, {"level": "signal", "strategy": name, "msg": f"🔴 SELL 评分={score} | 支撑位={support:.2f} 突破后回踩 dist={dist_sup:.2f} | {' | '.join(details)}"}
 
@@ -308,14 +499,36 @@ class StrategyEngine:
             details = []
             if last["macd_hist"] > h1.iloc[-2]["macd_hist"]: score += 1; details.append("MACD改善")
             if last.get("stoch_k", 50) < 20: score += 1; details.append(f"StochK={last.get('stoch_k', 0):.0f}")
-
-            sl_mult = 0.5
+            h4_trend = "未知"
+            if h4 is not None and len(h4) > 0:
+                h4_last = h4.iloc[-1]
+                h4_ema20 = h4_last.get("ema20", 0)
+                h4_ema50 = h4_last.get("ema50", 0)
+                h4_adx = h4_last.get("adx", 0)
+                h4_price = h4_last.get("close", 0)
+                if h4_adx > 25:
+                    if h4_ema20 > h4_ema50 and h4_price > h4_ema20:
+                        h4_trend = "强多头"
+                    elif h4_ema20 < h4_ema50 and h4_price < h4_ema20:
+                        h4_trend = "强空头"
+                    else:
+                        h4_trend = "趋势不明"
+                else:
+                    h4_trend = "震荡"
+            sl, tp1, tp2, reason = self._calculate_dynamic_sl_tp(price, atr, "BUY", {
+                "adx": last.get("adx", 0),
+                "rsi": last["rsi"],
+                "h4_trend": h4_trend,
+                "strategy": "divergence",
+                "nearest_sr_distance": abs(price - recent_low),
+            })
             return {
                 "side": "BUY", "entry": price,
-                "stop_loss": round(recent_low - atr * 0.5, 2),
-                "tp1": round(price + atr * 2.0, 2),
-                "tp2": round(price + atr * 4.0, 2),
-                "score": min(score, 10), "strategy": "divergence", "atr_mult": sl_mult,
+                "stop_loss": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "sl_adjustment": reason,
+                "score": min(score, 10), "strategy": "divergence", "atr_mult": 0.5,
             }, {"level": "signal", "strategy": name, "msg": f"🟢 BUY 评分={score} | 看涨背离: 价格新低{recent_low:.2f}<{prev_low:.2f} RSI抬高{recent_rsi_low:.1f}>{prev_rsi_low:.1f} | {' | '.join(details)}"}
 
         # 看跌背离
@@ -325,14 +538,36 @@ class StrategyEngine:
             details = []
             if last["macd_hist"] < h1.iloc[-2]["macd_hist"]: score += 1; details.append("MACD恶化")
             if last.get("stoch_k", 50) > 80: score += 1; details.append(f"StochK={last.get('stoch_k', 0):.0f}")
-
-            sl_mult = 0.5
+            h4_trend = "未知"
+            if h4 is not None and len(h4) > 0:
+                h4_last = h4.iloc[-1]
+                h4_ema20 = h4_last.get("ema20", 0)
+                h4_ema50 = h4_last.get("ema50", 0)
+                h4_adx = h4_last.get("adx", 0)
+                h4_price = h4_last.get("close", 0)
+                if h4_adx > 25:
+                    if h4_ema20 > h4_ema50 and h4_price > h4_ema20:
+                        h4_trend = "强多头"
+                    elif h4_ema20 < h4_ema50 and h4_price < h4_ema20:
+                        h4_trend = "强空头"
+                    else:
+                        h4_trend = "趋势不明"
+                else:
+                    h4_trend = "震荡"
+            sl, tp1, tp2, reason = self._calculate_dynamic_sl_tp(price, atr, "SELL", {
+                "adx": last.get("adx", 0),
+                "rsi": last["rsi"],
+                "h4_trend": h4_trend,
+                "strategy": "divergence",
+                "nearest_sr_distance": abs(recent_high - price),
+            })
             return {
                 "side": "SELL", "entry": price,
-                "stop_loss": round(recent_high + atr * 0.5, 2),
-                "tp1": round(price - atr * 2.0, 2),
-                "tp2": round(price - atr * 4.0, 2),
-                "score": min(score, 10), "strategy": "divergence", "atr_mult": sl_mult,
+                "stop_loss": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "sl_adjustment": reason,
+                "score": min(score, 10), "strategy": "divergence", "atr_mult": 0.5,
             }, {"level": "signal", "strategy": name, "msg": f"🔴 SELL 评分={score} | 看跌背离: 价格新高{recent_high:.2f}>{prev_high:.2f} RSI降低{recent_rsi_high:.1f}<{prev_rsi_high:.1f} | {' | '.join(details)}"}
 
         msg = f"RSI={last['rsi']:.1f}"
@@ -366,12 +601,20 @@ class StrategyEngine:
             if adx > 30: score += 1; details.append(f"ADX={adx:.1f}>30")
             if last["rsi"] > 55 and last["rsi"] < 80: score += 1; details.append(f"RSI={last['rsi']:.1f}")
             if last["macd_hist"] > 0: score += 1; details.append("MACD柱>0")
+            sl, tp1, tp2, reason = self._calculate_dynamic_sl_tp(price, atr, "BUY", {
+                "adx": adx,
+                "rsi": last["rsi"],
+                "h4_trend": "",
+                "strategy": "breakout_pyramid",
+                "nearest_sr_distance": abs(price - bb_upper),
+            })
 
             return {
                 "side": "BUY", "entry": price,
-                "stop_loss": round(last["ema20"] - atr * 0.5, 2),
-                "tp1": round(price + atr * 2.0, 2),
-                "tp2": round(price + atr * 5.0, 2),
+                "stop_loss": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "sl_adjustment": reason,
                 "score": min(score, 10), "strategy": "breakout_pyramid",
             }, {"level": "signal", "strategy": name, "msg": f"🟢 BUY 评分={score} | 突破布林上轨={bb_upper:.2f} | {' | '.join(details)}"}
 
@@ -382,12 +625,20 @@ class StrategyEngine:
             if adx > 30: score += 1; details.append(f"ADX={adx:.1f}>30")
             if last["rsi"] < 45 and last["rsi"] > 20: score += 1; details.append(f"RSI={last['rsi']:.1f}")
             if last["macd_hist"] < 0: score += 1; details.append("MACD柱<0")
+            sl, tp1, tp2, reason = self._calculate_dynamic_sl_tp(price, atr, "SELL", {
+                "adx": adx,
+                "rsi": last["rsi"],
+                "h4_trend": "",
+                "strategy": "breakout_pyramid",
+                "nearest_sr_distance": abs(price - bb_lower),
+            })
 
             return {
                 "side": "SELL", "entry": price,
-                "stop_loss": round(last["ema20"] + atr * 0.5, 2),
-                "tp1": round(price - atr * 2.0, 2),
-                "tp2": round(price - atr * 5.0, 2),
+                "stop_loss": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "sl_adjustment": reason,
                 "score": min(score, 10), "strategy": "breakout_pyramid",
             }, {"level": "signal", "strategy": name, "msg": f"🔴 SELL 评分={score} | 突破布林下轨={bb_lower:.2f} | {' | '.join(details)}"}
 
@@ -399,5 +650,4 @@ class StrategyEngine:
         else:
             msg += " | 在通道内 ⏭"
         return None, {"level": "info", "strategy": name, "msg": msg}
-
 

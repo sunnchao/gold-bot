@@ -940,10 +940,23 @@ def api_analysis_payload(account_id):
 @app.route('/api/ai_result/<account_id>', methods=['POST'])
 @require_token
 def api_ai_result(account_id):
+    """兼容旧版 AI 结果端点，默认 symbol=XAUUSD。"""
+    return _handle_ai_result(account_id, "XAUUSD")
+
+
+@app.route('/api/v2/ai_result/<account_id>/<symbol>', methods=['POST'])
+@require_token
+def api_v2_ai_result(account_id, symbol):
     """
-    POST /api/ai_result/<account_id>
-    用途： Aurex AI Agent 回传分析结果（combined_bias, confidence, exit_suggestion 等）
-          GB Server 据此调整持仓或推送 WebSocket 更新
+    POST /api/v2/ai_result/<account_id>/<symbol>
+    用途：接收按 symbol 维度的 AI 分析结果及动态 SL/TP 建议。
+    """
+    return _handle_ai_result(account_id, symbol)
+
+
+def _handle_ai_result(account_id, symbol):
+    """
+    统一处理 AI 结果回传，兼容旧版 combined_bias 与新版 bias/suggested_sl。
     """
     token = getattr(request, '_gb_token', '')
     allowed = token_mgr.get_allowed_accounts(token)
@@ -952,38 +965,75 @@ def api_ai_result(account_id):
 
     data = request.get_json(silent=True) or {}
 
-    # 解析 Aurex 输出字段
-    combined_bias = data.get("combined_bias", "neutral")
+    combined_bias = data.get("combined_bias", data.get("bias", "neutral"))
     confidence = float(data.get("confidence", 0))
     reasoning = data.get("reasoning", "")
     exit_suggestion = data.get("exit_suggestion", "hold")
     risk_alert = bool(data.get("risk_alert", False))
     alert_reason = data.get("alert_reason", "")
-
-    # 持仓差异化建议（可选）
     position_action = data.get("position_action", {})
     risk_metrics = data.get("risk_metrics", {})
-
-    # P1: 分策略置信度（Aurex 可选返回）
     strategy_confidence = data.get("strategy_confidence", {})
-    # 示例格式: {"pullback": 0.8, "divergence": 0.6, "breakout_pyramid": 0.4}
+    suggested_sl = float(data.get("suggested_sl", 0) or 0)
+    suggested_tp = float(data.get("suggested_tp", 0) or 0)
+    now_str = datetime.now().strftime("%H:%M:%S")
+    now_ts = time.time()
 
     with store.lock:
         acc = store.get(account_id)
         acc["last_signal"] = {
+            "symbol": symbol,
             "bias": combined_bias,
             "confidence": confidence,
             "exit_suggestion": exit_suggestion,
             "risk_alert": risk_alert,
-            "time": datetime.now().strftime("%H:%M:%S"),
+            "suggested_sl": suggested_sl,
+            "suggested_tp": suggested_tp,
+            "time": now_str,
         }
-        acc["last_signal_time"] = time.time()
+        acc["last_signal_time"] = now_ts
 
-    # 推送 WebSocket 更新
+        if suggested_sl > 0:
+            normalized_symbol = symbol.upper()
+            for ticket_str, pos in acc.get("positions", {}).items():
+                pos_symbol = str(pos.get("symbol", "")).upper()
+                if pos_symbol != normalized_symbol:
+                    continue
+
+                ticket = int(ticket_str) if str(ticket_str).isdigit() else ticket_str
+                current_sl = float(pos.get("sl", 0) or 0)
+                current_tp = float(pos.get("tp", 0) or 0)
+                direction = str(pos.get("type", "")).upper()
+                should_modify = False
+                if direction == "BUY":
+                    should_modify = current_sl == 0 or suggested_sl > current_sl
+                elif direction == "SELL":
+                    should_modify = current_sl == 0 or suggested_sl < current_sl
+
+                if not should_modify:
+                    continue
+
+                cmd = {
+                    "id": f"ai_modify_{int(now_ts)}_{ticket}",
+                    "action": "MODIFY",
+                    "ticket": ticket,
+                    "new_sl": round(suggested_sl, 2),
+                    "new_tp": round(suggested_tp, 2) if suggested_tp > 0 else round(current_tp, 2),
+                    "reason": f"AI建议: {alert_reason or 'dynamic stop update'}",
+                    "confidence": confidence,
+                }
+                acc["pending_commands"].append(cmd)
+                logger.info(
+                    f"[{account_id}/{symbol}] AI止损调整 → MODIFY #{ticket}: "
+                    f"SL {current_sl:.2f} -> {suggested_sl:.2f}"
+                )
+
     socketio.emit('ai_result', {
         "account_id": account_id,
-        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        "symbol": symbol,
+        "timestamp": now_str,
         "combined_bias": combined_bias,
+        "bias": combined_bias,
         "confidence": confidence,
         "exit_suggestion": exit_suggestion,
         "risk_alert": risk_alert,
@@ -991,12 +1041,13 @@ def api_ai_result(account_id):
         "position_action": position_action,
         "risk_metrics": risk_metrics,
         "reasoning": reasoning,
-        "strategy_confidence": strategy_confidence,  # P1: 分策略置信度
+        "strategy_confidence": strategy_confidence,
+        "suggested_sl": suggested_sl,
+        "suggested_tp": suggested_tp,
     })
 
-    # 风险警报 → 写入 pending_commands 供 EA 执行
     if risk_alert and exit_suggestion in ("close_partial", "close_all"):
-        cmd_id = f"ai_close_{int(time.time())}"
+        cmd_id = f"ai_close_{int(now_ts)}"
         cmd = {
             "id": cmd_id,
             "action": "CLOSE_ALL" if exit_suggestion == "close_all" else "CLOSE_PARTIAL",
@@ -1008,8 +1059,8 @@ def api_ai_result(account_id):
         logger.warning(f"[{account_id}] AI风险警报 → 入队 {cmd['action']}: {alert_reason}")
 
     logger.info(
-        f"[{account_id}] 🤖 AI结果 | bias={combined_bias} conf={confidence}% "
-        f"exit={exit_suggestion} risk={risk_alert}"
+        f"[{account_id}/{symbol}] 🤖 AI结果 | bias={combined_bias} conf={confidence}% "
+        f"exit={exit_suggestion} risk={risk_alert} suggested_sl={suggested_sl:.2f} suggested_tp={suggested_tp:.2f}"
     )
     return jsonify({"status": "OK", "received": True})
 
