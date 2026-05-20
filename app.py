@@ -7,6 +7,7 @@ import os
 import time
 import logging
 import threading
+import requests
 from datetime import datetime
 from functools import wraps
 
@@ -35,6 +36,7 @@ app = Flask(__name__,
     static_folder='static',
 )
 app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', os.urandom(24).hex())
+AUREX_API_URL = os.getenv("AUREX_API_URL", "http://localhost:3100")
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 
@@ -154,6 +156,21 @@ def _track_strategy_accuracy(acc, closed_position):
         acc["strategy_accuracy"] = {}
     acc["strategy_accuracy"][strategy] = stats
     logger.info(f"[{acc.get('account_id')}] 策略胜率更新: {strategy} | wins={stats['wins']} losses={stats['losses']}")
+
+
+def _trigger_ai_analysis(account_id: str, symbol: str):
+    """后台触发 AI 分析，不阻塞当前请求。"""
+    try:
+        response = requests.post(
+            f"{AUREX_API_URL}/api/v2/trigger_analysis/{account_id}/{symbol}",
+            timeout=10,
+        )
+        if response.ok:
+            logger.info(f"[{account_id}/{symbol}] AI分析触发成功")
+        else:
+            logger.warning(f"[{account_id}/{symbol}] AI分析触发失败: {response.status_code}")
+    except Exception as exc:
+        logger.error(f"[{account_id}/{symbol}] AI分析触发异常: {exc}")
 
 
 @app.route('/register', methods=['POST'])
@@ -362,6 +379,8 @@ def api_order_result():
     result = data.get("result", "")
     ticket = data.get("ticket", 0)
     error = data.get("error", "")
+    action = data.get("action", "")
+    symbol = data.get("symbol", "")
     
     log_entry = {
         "time": datetime.now().strftime("%H:%M:%S"),
@@ -374,6 +393,14 @@ def api_order_result():
     
     with store.lock:
         acc = store.get(acc_id)
+        if not action or not symbol:
+            for entry in reversed(acc["history"]):
+                if entry.get("command_id") != cmd_id:
+                    continue
+                action = action or entry.get("action", "")
+                symbol = symbol or entry.get("symbol", "")
+                if action and symbol:
+                    break
         acc["history"].append(log_entry)
         if len(acc["history"]) > 100:
             acc["history"] = acc["history"][-100:]
@@ -382,6 +409,14 @@ def api_order_result():
     
     if result == "OK":
         logger.info(f"[{acc_id}] ✅ 指令 {cmd_id} 成功 | ticket={ticket}")
+        if action == "SIGNAL":
+            trigger_symbol = symbol or "XAUUSD"
+            logger.info(f"[{acc_id}] 开仓成功，触发AI分析: {trigger_symbol}")
+            threading.Thread(
+                target=_trigger_ai_analysis,
+                args=(acc_id, trigger_symbol),
+                daemon=True,
+            ).start()
     else:
         logger.error(f"[{acc_id}] ❌ 指令 {cmd_id} 失败: {error}")
     
