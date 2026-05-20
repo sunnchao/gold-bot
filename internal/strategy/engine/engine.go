@@ -124,8 +124,8 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	m30 := snapshot.Bars["M30"]
 	h4 := snapshot.Bars["H4"]
 	m15 := snapshot.Bars["M15"]
-	m5 := snapshot.Bars["M5"]
-	m1 := snapshot.Bars["M1"]
+	_ = snapshot.Bars["M5"]  // unused: momentum_scalp disabled
+	_ = snapshot.Bars["M1"]  // unused: momentum_scalp disabled
 
 	if len(h1) < 50 {
 		log.Printf("[STRATEGY] ⚠️ H1数据不足: %d/50", len(h1))
@@ -255,13 +255,14 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		logs = append(logs, detail)
 	}
 
-	if signal, detail := e.checkMomentumScalp(m15, m5, m1, price); signal != nil {
-		signals = append(signals, *signal)
-		logs = append(logs, detail)
-		log.Printf("[STRATEGY] %s", detail.Message)
-	} else {
-		logs = append(logs, detail)
-	}
+	// Momentum scalp temporarily disabled (SL/TP too tight, needs re-tuning)
+	// if signal, detail := e.checkMomentumScalp(m15, m5, m1, price); signal != nil {
+	// 	signals = append(signals, *signal)
+	// 	logs = append(logs, detail)
+	// 	log.Printf("[STRATEGY] %s", detail.Message)
+	// } else {
+	// 	logs = append(logs, detail)
+	// }
 
 	if len(signals) == 0 {
 		log.Printf("[STRATEGY] 📭 本轮无信号触发")

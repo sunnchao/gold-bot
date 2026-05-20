@@ -105,7 +105,7 @@ func DefaultStrategyConfig() StrategyConfig {
 
 		MinScore: 5,
 
-		MomentumScalpMinADX:           20.0,
+		MomentumScalpMinADX:           100.0, // temporarily disabled
 		MomentumScalpEMAPeriod1:       5,
 		MomentumScalpEMAPeriod2:       8,
 		MomentumScalpEMAPeriod3:       12,
