@@ -181,15 +181,19 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 		market.Symbol = "XAUUSD"
 	}
 
-	tradeable := runtime.MarketOpen && runtime.IsTradeAllowed
+	marketOpen := runtime.MarketOpen
+	isTradeAllowed := runtime.IsTradeAllowed
 	if runtime.LastTickAt.IsZero() {
-		tradeable = false
+		marketOpen = false
+		isTradeAllowed = false
 	} else {
 		tickAge := now.UTC().Sub(runtime.LastTickAt)
 		if tickAge > staleTickTradeableWindow {
-			tradeable = false
+			marketOpen = false
+			isTradeAllowed = false
 		}
 	}
+	tradeable := marketOpen && isTradeAllowed
 
 	shanghai := time.FixedZone("CST", 8*3600)
 	return AnalysisPayload{
@@ -211,8 +215,8 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 		Positions:  positions,
 		Indicators: indicators,
 		MarketStatus: MarketStatus{
-			MarketOpen:     runtime.MarketOpen,
-			IsTradeAllowed: runtime.IsTradeAllowed,
+			MarketOpen:     marketOpen,
+			IsTradeAllowed: isTradeAllowed,
 			MT4ServerTime:  runtime.MT4ServerTime,
 			Tradeable:      tradeable,
 		},

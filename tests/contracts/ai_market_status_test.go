@@ -12,7 +12,7 @@ func TestAnalysisPayloadMarksTradeableFalseWhenLastTickStale(t *testing.T) {
 	ts, db := newAdminServer(t)
 	seedAnalysisFixture(t, ts, "user-token")
 
-	staleTick := time.Now().UTC().Add(-11 * time.Minute).Format(time.RFC3339Nano)
+	staleTick := time.Now().UTC().Add(-15 * time.Minute).Format(time.RFC3339Nano)
 	if _, err := db.Exec(`UPDATE account_runtime SET last_tick_at = ? WHERE account_id = ?`, staleTick, "90011087"); err != nil {
 		t.Fatalf("UPDATE account_runtime last_tick_at returned error: %v", err)
 	}
@@ -36,5 +36,11 @@ func TestAnalysisPayloadMarksTradeableFalseWhenLastTickStale(t *testing.T) {
 
 	if got := body.MarketStatus["tradeable"]; got != false {
 		t.Fatalf("market_status.tradeable = %v, want false", got)
+	}
+	if got := body.MarketStatus["market_open"]; got != false {
+		t.Fatalf("market_status.market_open = %v, want false", got)
+	}
+	if got := body.MarketStatus["is_trade_allowed"]; got != false {
+		t.Fatalf("market_status.is_trade_allowed = %v, want false", got)
 	}
 }
