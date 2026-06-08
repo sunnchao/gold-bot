@@ -12,11 +12,16 @@ import (
 )
 
 type CommandRepository struct {
-	db *sql.DB
+	db        *sql.DB
+	decisions *DecisionRepository
 }
 
 func NewCommandRepository(db *sql.DB) *CommandRepository {
 	return &CommandRepository{db: db}
+}
+
+func NewCommandRepositoryWithDecisions(db *sql.DB, decisions *DecisionRepository) *CommandRepository {
+	return &CommandRepository{db: db, decisions: decisions}
 }
 
 func (r *CommandRepository) Enqueue(ctx context.Context, command domain.Command) error {
@@ -30,8 +35,20 @@ func (r *CommandRepository) Enqueue(ctx context.Context, command domain.Command)
 		return fmt.Errorf("marshal command payload %s: %w", command.CommandID, err)
 	}
 
-	return retrySQLiteBusy(func() error {
-		_, err = r.db.ExecContext(ctx, `
+	command.Status = status
+
+	if err := retrySQLiteBusy(func() error {
+		tx, err := r.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin enqueue command %s: %w", command.CommandID, err)
+		}
+		defer func() {
+			if tx != nil {
+				_ = tx.Rollback()
+			}
+		}()
+
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO commands (
 				command_id,
 				account_id,
@@ -57,10 +74,23 @@ func (r *CommandRepository) Enqueue(ctx context.Context, command domain.Command)
 		if err != nil {
 			return fmt.Errorf("enqueue command %s: %w", command.CommandID, err)
 		}
+
+		if err := r.recordCommandDecisionTx(ctx, tx, command, domain.DecisionStageCommandEnqueued, domain.DecisionStatusPending, normalizeTime(command.CreatedAt), nil); err != nil {
+			return err
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit enqueue command %s: %w", command.CommandID, err)
+		}
+		tx = nil
 		return nil
 	}, func() error {
 		return fmt.Errorf("enqueue command %s: sqlite busy after retries", command.CommandID)
-	})
+	}); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (r *CommandRepository) TakePending(ctx context.Context, accountID string, deliveredAt time.Time) ([]domain.Command, error) {
@@ -145,6 +175,9 @@ func (r *CommandRepository) takePendingOnce(ctx context.Context, accountID strin
 
 		command.Status = domain.CommandStatusDelivered
 		command.DeliveredAt = ts
+		if err := r.recordCommandDecisionTx(ctx, tx, command, domain.DecisionStageCommandDelivered, domain.DecisionStatusDelivered, command.DeliveredAt, nil); err != nil {
+			return nil, err
+		}
 		commands = append(commands, command)
 	}
 
@@ -230,11 +263,113 @@ func (r *CommandRepository) applyResultOnce(
 		return fmt.Errorf("save command result %s: %w", result.CommandID, err)
 	}
 
+	var command domain.Command
+	row := tx.QueryRowContext(ctx, `
+		SELECT
+			command_id,
+			account_id,
+			action,
+			payload_json,
+			status,
+			created_at,
+			delivered_at,
+			acked_at,
+			failed_at
+		FROM commands
+		WHERE command_id = `+ph(1)+pgText()+` AND account_id = `+ph(2)+pgText()+`
+	`, result.CommandID, result.AccountID)
+	command, err = scanCommand(row)
+	if err != nil {
+		return fmt.Errorf("load command %s for decision event: %w", result.CommandID, err)
+	}
+
+	if err := r.recordCommandDecisionTx(ctx, tx, command, domain.DecisionStageOrderResult, commandDecisionStatus(status), normalizeTime(result.CreatedAt), map[string]any{
+		"result":     result.Result,
+		"ticket":     result.Ticket,
+		"error_text": result.ErrorText,
+	}); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit apply result for command %s: %w", result.CommandID, err)
 	}
 	tx = nil
 	return nil
+}
+
+func (r *CommandRepository) recordCommandDecision(
+	ctx context.Context,
+	command domain.Command,
+	stage domain.DecisionStage,
+	status domain.DecisionStatus,
+	createdAt time.Time,
+	extra map[string]any,
+) error {
+	return r.recordCommandDecisionTx(ctx, r.db, command, stage, status, createdAt, extra)
+}
+
+func (r *CommandRepository) recordCommandDecisionTx(
+	ctx context.Context,
+	execer decisionEventExecutor,
+	command domain.Command,
+	stage domain.DecisionStage,
+	status domain.DecisionStatus,
+	createdAt time.Time,
+	extra map[string]any,
+) error {
+	if r.decisions == nil {
+		return nil
+	}
+	decisionID, ok := command.Payload["decision_id"].(string)
+	if !ok || decisionID == "" {
+		return nil
+	}
+	symbol, _ := command.Payload["symbol"].(string)
+	if symbol == "" {
+		symbol = "XAUUSD"
+	}
+
+	summary := map[string]any{
+		"command_id": command.CommandID,
+		"action":     string(command.Action),
+	}
+	for key, value := range extra {
+		summary[key] = value
+	}
+
+	return r.decisions.record(ctx, execer, domain.DecisionEvent{
+		DecisionID:       decisionID,
+		AccountID:        command.AccountID,
+		Symbol:           symbol,
+		Stage:            stage,
+		Status:           status,
+		ReasonCodes:      commandReasonCodes(command),
+		Summary:          summary,
+		RelatedCommandID: command.CommandID,
+		CreatedAt:        createdAt,
+	})
+}
+
+func commandReasonCodes(command domain.Command) []string {
+	codes := []string{"command." + string(command.Action)}
+	if source, ok := command.Payload["source"].(string); ok && source != "" {
+		codes = append(codes, "source."+source)
+	}
+	return codes
+}
+
+func commandDecisionStatus(status domain.CommandStatus) domain.DecisionStatus {
+	switch status {
+	case domain.CommandStatusAcked:
+		return domain.DecisionStatusAcked
+	case domain.CommandStatusFailed:
+		return domain.DecisionStatusFailed
+	case domain.CommandStatusDelivered:
+		return domain.DecisionStatusDelivered
+	default:
+		return domain.DecisionStatusPending
+	}
 }
 
 func (r *CommandRepository) Get(ctx context.Context, commandID string) (domain.Command, error) {

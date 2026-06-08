@@ -48,17 +48,23 @@ type PendingSignalStore interface {
 	ExpireStaleSignals(ctx context.Context) (int64, error)
 }
 
+type DecisionStore interface {
+	Record(ctx context.Context, event domain.DecisionEvent) error
+	List(ctx context.Context, filter domain.DecisionEventFilter) ([]domain.DecisionEvent, error)
+}
+
 type CutoverReporter interface {
 	BuildReport(ctx context.Context) (scheduler.CutoverReport, error)
 }
 
 type Dependencies struct {
-	Accounts AccountStore
-	Tokens   TokenStore
-	Commands CommandStore
-	Releases ea.ReleaseSource
-	Events   *realtime.Hub
-	Cutover  CutoverReporter
+	Accounts    AccountStore
+	Tokens      TokenStore
+	Commands    CommandStore
+	Decisions   DecisionStore
+	Releases    ea.ReleaseSource
+	Events      *realtime.Hub
+	Cutover     CutoverReporter
 	Arbitration PendingSignalStore // Add arbitration store
 }
 

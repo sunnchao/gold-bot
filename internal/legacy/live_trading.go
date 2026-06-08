@@ -170,17 +170,18 @@ func (e *LiveTradingExecutor) buildSignalCommand(accountID, symbol string, signa
 		Action:    domain.CommandActionSignal,
 		CreatedAt: createdAt,
 		Payload: map[string]any{
-			"symbol":       symbol,
-			"type":         signal.Side,
-			"entry":        signal.Entry,
-			"sl":           signal.StopLoss,
-			"tp1":          signal.TP1,
-			"tp2":          signal.TP2,
-			"score":        signal.Score,
-			"strategy":     signal.Strategy,
-			"atr":          signal.ATR,
-			"trigger_key":  decisionKey,
-			"source":       "live_strategy",
+			"decision_id":   commandID,
+			"symbol":        symbol,
+			"type":          signal.Side,
+			"entry":         signal.Entry,
+			"sl":            signal.StopLoss,
+			"tp1":           signal.TP1,
+			"tp2":           signal.TP2,
+			"score":         signal.Score,
+			"strategy":      signal.Strategy,
+			"atr":           signal.ATR,
+			"trigger_key":   decisionKey,
+			"source":        "live_strategy",
 			"analysis_mode": analysisMode,
 		},
 	}
@@ -309,7 +310,7 @@ func (e *LiveTradingExecutor) checkAIStopLossAdjust(ctx context.Context, account
 	}
 
 	// 生成 MODIFY 命令
-	command := e.buildModifyCommand(accountID, symbol, pos, aiSL, distance, atr)
+	command := e.buildModifyCommand(accountID, symbol, pos, aiSL, distance, atr, aiDecisionID(snapshot.AIResult))
 	if _, err := e.commands.Get(ctx, command.CommandID); err == nil {
 		log.Printf("[STRATEGY] 🔁 重复 MODIFY 命令跳过 | account=%s/%s command_id=%s",
 			accountID, symbol, command.CommandID)
@@ -330,7 +331,7 @@ func (e *LiveTradingExecutor) checkAIStopLossAdjust(ctx context.Context, account
 	return nil
 }
 
-func (e *LiveTradingExecutor) buildModifyCommand(accountID, symbol string, pos domain.Position, newSL, distance, atr float64) domain.Command {
+func (e *LiveTradingExecutor) buildModifyCommand(accountID, symbol string, pos domain.Position, newSL, distance, atr float64, decisionID string) domain.Command {
 	createdAt := time.Now().UTC()
 	if e.now != nil {
 		createdAt = e.now().UTC()
@@ -340,22 +341,34 @@ func (e *LiveTradingExecutor) buildModifyCommand(accountID, symbol string, pos d
 	sum := sha1.Sum([]byte(seed))
 	commandID := "mod_" + hex.EncodeToString(sum[:8])
 
+	payload := map[string]any{
+		"symbol":       symbol,
+		"ticket":       pos.Ticket,
+		"new_sl":       newSL,
+		"sl":           newSL,  // 兼容 EA 旧字段名
+		"tp":           pos.TP, // 保持原 TP
+		"old_sl":       pos.SL,
+		"distance":     distance,
+		"atr":          atr,
+		"source":       "ai_stop_loss",
+		"trigger_time": createdAt.Format(time.RFC3339),
+	}
+	if strings.TrimSpace(decisionID) != "" {
+		payload["decision_id"] = decisionID
+	}
+
 	return domain.Command{
 		CommandID: commandID,
 		AccountID: accountID,
 		Action:    domain.CommandActionModify,
 		CreatedAt: createdAt,
-		Payload: map[string]any{
-			"symbol":       symbol,
-			"ticket":       pos.Ticket,
-			"new_sl":       newSL,
-			"sl":           newSL, // 兼容 EA 旧字段名
-			"tp":           pos.TP, // 保持原 TP
-			"old_sl":       pos.SL,
-			"distance":     distance,
-			"atr":          atr,
-			"source":       "ai_stop_loss",
-			"trigger_time": createdAt.Format(time.RFC3339),
-		},
+		Payload:   payload,
 	}
+}
+
+func aiDecisionID(result *domain.AIResult) string {
+	if result == nil || result.TradePlan == nil {
+		return ""
+	}
+	return result.TradePlan.DecisionID
 }

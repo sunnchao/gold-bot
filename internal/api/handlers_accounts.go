@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"gold-bot/internal/domain"
 	"gold-bot/internal/integration/aurex"
 	"gold-bot/internal/scheduler"
 )
@@ -101,6 +103,11 @@ func (h accountsHandler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h accountsHandler) detail(w http.ResponseWriter, r *http.Request) {
+	if accountID, ok := accountDecisionPath(r.URL.Path); ok {
+		h.decisions(w, r, accountID)
+		return
+	}
+
 	accountID, ok := accountIDFromPath(r.URL.Path, "/api/v1/accounts/")
 	if !ok {
 		http.NotFound(w, r)
@@ -124,13 +131,62 @@ func (h accountsHandler) detail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload := aurex.BuildAnalysisPayload(account, runtime, state, h.now().UTC())
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"status":     "OK",
 		"account":    payload.Account,
 		"market":     payload.Market,
 		"positions":  payload.Positions,
 		"indicators": payload.Indicators,
 		"ai_result":  jsonRaw(state.AIResultJSON),
+	}
+	if h.deps.Decisions != nil {
+		events, err := h.deps.Decisions.List(r.Context(), domain.DecisionEventFilter{
+			AccountID: accountID,
+			Limit:     10,
+		})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
+			return
+		}
+		response["decision_events"] = events
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h accountsHandler) decisions(w http.ResponseWriter, r *http.Request, accountID string) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"status": "ERROR", "message": "method not allowed"})
+		return
+	}
+	if h.deps.Decisions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "ERROR", "message": "decision store unavailable"})
+		return
+	}
+
+	filter := domain.DecisionEventFilter{
+		AccountID: accountID,
+		Symbol:    strings.TrimSpace(r.URL.Query().Get("symbol")),
+		Status:    domain.DecisionStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
+	}
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		limit, err := strconv.Atoi(rawLimit)
+		if err != nil || limit < 1 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"status": "ERROR", "message": "limit must be a positive integer"})
+			return
+		}
+		filter.Limit = limit
+	}
+
+	events, err := h.deps.Decisions.List(r.Context(), filter)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":          "OK",
+		"account_id":      accountID,
+		"decision_events": events,
 	})
 }
 
@@ -163,6 +219,25 @@ func (h accountsHandler) collectAccounts(r *http.Request) ([]overviewAccount, er
 		})
 	}
 	return items, nil
+}
+
+func accountDecisionPath(path string) (string, bool) {
+	const prefix = "/api/v1/accounts/"
+	const suffix = "/decisions"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	remainder := strings.TrimPrefix(path, prefix)
+	remainder = strings.TrimSuffix(remainder, "/")
+	if !strings.HasSuffix(remainder, suffix) {
+		return "", false
+	}
+	accountID := strings.TrimSuffix(remainder, suffix)
+	accountID = strings.Trim(accountID, "/")
+	if accountID == "" || strings.Contains(accountID, "/") {
+		return "", false
+	}
+	return accountID, true
 }
 
 func itoa(value int) string {

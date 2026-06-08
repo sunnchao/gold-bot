@@ -16,6 +16,7 @@ import (
 	"gold-bot/internal/domain"
 	"gold-bot/internal/ea"
 	"gold-bot/internal/legacy"
+	"gold-bot/internal/realtime"
 	"gold-bot/internal/store"
 	sqlitestore "gold-bot/internal/store/sqlite"
 )
@@ -40,6 +41,7 @@ func TestAnalysisPayloadIncludesIndicatorsAndPositions(t *testing.T) {
 		Market          map[string]any            `json:"market"`
 		Positions       []map[string]any          `json:"positions"`
 		Indicators      map[string]map[string]any `json:"indicators"`
+		Bars            map[string][]domain.Bar   `json:"bars"`
 		MarketStatus    map[string]any            `json:"market_status"`
 		StrategyMapping map[string]string         `json:"strategy_mapping"`
 	}
@@ -67,6 +69,15 @@ func TestAnalysisPayloadIncludesIndicatorsAndPositions(t *testing.T) {
 	}
 	if got := body.Indicators["H1"]["bars_count"]; got != float64(65) {
 		t.Fatalf("indicators.H1.bars_count = %v, want 65", got)
+	}
+	if got := len(body.Bars["H1"]); got != 65 {
+		t.Fatalf("len(bars.H1) = %d, want 65", got)
+	}
+	if got := body.Bars["H1"][len(body.Bars["H1"])-1].Close; got == 0 {
+		t.Fatalf("bars.H1 latest close = %v, want non-zero close", got)
+	}
+	if got := body.Bars["H1"][len(body.Bars["H1"])-1].ATR; got == 0 {
+		t.Fatalf("bars.H1 latest ATR = %v, want enriched ATR", got)
 	}
 	if got := body.MarketStatus["tradeable"]; got != true {
 		t.Fatalf("market_status.tradeable = %v, want true", got)
@@ -289,7 +300,409 @@ func TestAIResultSkipsCloseShortWhenNoShortPositions(t *testing.T) {
 	}
 }
 
+func TestAIResultAcceptsTradePlanAndPublishesDecisionSummary(t *testing.T) {
+	ts, db, hub := newAdminServerWithEvents(t)
+	seedAnalysisFixture(t, ts, "user-token")
+
+	events := hub.Subscribe()
+	defer hub.Unsubscribe(events)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/ai_result/90011087/XAUUSD", bytes.NewBufferString(`{
+		"bias":"bullish",
+		"confidence":82,
+		"exit_suggestion":"hold",
+		"risk_alert":false,
+		"trade_plan":{
+			"schema_version":"trade_plan.v1",
+			"decision_id":"tpv1_abc123",
+			"account_id":"90011087",
+			"symbol":"XAUUSD",
+			"mode":"approve",
+			"side":"buy",
+			"confidence":82,
+			"entry_zone":{"min":3335.55,"max":3335.75},
+			"stop_loss":3328.0,
+			"take_profit":[3350.0],
+			"max_lots":0.02,
+			"expires_at":"2099-06-06T09:15:00Z",
+			"reason_codes":["mode.approve","side.buy"],
+			"conflicts":[],
+			"narrative":"多周期看多，等待 Go 风控确认"
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "user-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v2/ai_result status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response struct {
+		Status              string         `json:"status"`
+		TradePlanValidation map[string]any `json:"trade_plan_validation"`
+		Decision            map[string]any `json:"decision"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Unmarshal AI result response returned error: %v", err)
+	}
+	if response.Status != "OK" {
+		t.Fatalf("status = %q, want OK", response.Status)
+	}
+	if got := response.TradePlanValidation["valid"]; got != true {
+		t.Fatalf("trade_plan_validation.valid = %v, want true", got)
+	}
+	if got := response.Decision["decision_id"]; got != "tpv1_abc123" {
+		t.Fatalf("decision.decision_id = %v, want tpv1_abc123", got)
+	}
+	if got := response.Decision["mode"]; got != "approve" {
+		t.Fatalf("decision.mode = %v, want approve", got)
+	}
+	if got := response.Decision["symbol"]; got != "XAUUSD" {
+		t.Fatalf("decision.symbol = %v, want XAUUSD", got)
+	}
+	if got := response.Decision["confidence"]; got != float64(82) {
+		t.Fatalf("decision.confidence = %v, want 82", got)
+	}
+
+	event := readEvent(t, events)
+	if event.EventType != "ai_result" {
+		t.Fatalf("event_type = %q, want ai_result", event.EventType)
+	}
+	var eventPayload struct {
+		TradePlanSummary map[string]any `json:"trade_plan_summary"`
+	}
+	if err := json.Unmarshal(event.Payload, &eventPayload); err != nil {
+		t.Fatalf("Unmarshal SSE payload returned error: %v", err)
+	}
+	if got := eventPayload.TradePlanSummary["decision_id"]; got != "tpv1_abc123" {
+		t.Fatalf("event.trade_plan_summary.decision_id = %v, want tpv1_abc123", got)
+	}
+	if got := eventPayload.TradePlanSummary["mode"]; got != "approve" {
+		t.Fatalf("event.trade_plan_summary.mode = %v, want approve", got)
+	}
+
+	state := fetchState(t, db, "90011087", "XAUUSD")
+	if got := state["trade_plan"].(map[string]any)["decision_id"]; got != "tpv1_abc123" {
+		t.Fatalf("stored ai_result.trade_plan.decision_id = %v, want tpv1_abc123", got)
+	}
+}
+
+func TestAIResultApproveTradePlanReturnsAuditOnlyRiskGate(t *testing.T) {
+	ts, _ := newAdminServer(t)
+	seedAnalysisFixture(t, ts, "user-token")
+	postJSON(t, ts, "user-token", "/positions", `{
+		"account_id":"90011087",
+		"positions":[]
+	}`)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/ai_result/90011087/XAUUSD", bytes.NewBufferString(`{
+		"bias":"bullish",
+		"confidence":82,
+		"exit_suggestion":"hold",
+		"risk_alert":false,
+		"trade_plan":{
+			"schema_version":"trade_plan.v1",
+			"decision_id":"tpv1_audit_only",
+			"account_id":"90011087",
+			"symbol":"XAUUSD",
+			"mode":"approve",
+			"side":"buy",
+			"confidence":82,
+			"entry_zone":{"min":3335.55,"max":3335.75},
+			"stop_loss":3328.0,
+			"take_profit":[3350.0],
+			"max_lots":0.02,
+			"expires_at":"2099-06-06T09:15:00Z",
+			"reason_codes":["mode.approve","side.buy"],
+			"conflicts":[],
+			"narrative":"多周期看多，等待 Go 风控确认"
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "user-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v2/ai_result status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response struct {
+		RiskGate map[string]any `json:"risk_gate"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Unmarshal AI result response returned error: %v", err)
+	}
+	if got := response.RiskGate["status"]; got != "accepted" {
+		t.Fatalf("risk_gate.status = %v, want accepted", got)
+	}
+	if got := response.RiskGate["audit_only"]; got != true {
+		t.Fatalf("risk_gate.audit_only = %v, want true", got)
+	}
+	if got := response.RiskGate["decision_id"]; got != "tpv1_audit_only" {
+		t.Fatalf("risk_gate.decision_id = %v, want tpv1_audit_only", got)
+	}
+
+	pollRec := httptest.NewRecorder()
+	pollReq := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewBufferString(`{"account_id":"90011087"}`))
+	pollReq.Header.Set("Content-Type", "application/json")
+	pollReq.Header.Set("X-API-Token", "user-token")
+	ts.ServeHTTP(pollRec, pollReq)
+
+	var pollBody struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(pollRec.Body.Bytes(), &pollBody); err != nil {
+		t.Fatalf("Unmarshal poll response returned error: %v", err)
+	}
+	if pollBody.Count != 0 {
+		t.Fatalf("poll count = %d, want 0 for audit-only approve", pollBody.Count)
+	}
+}
+
+func TestAIResultRiskCommandIncludesTradePlanDecisionID(t *testing.T) {
+	ts, _ := newAdminServer(t)
+	seedAnalysisFixture(t, ts, "user-token")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/ai_result/90011087/XAUUSD", bytes.NewBufferString(`{
+		"bias":"bearish",
+		"confidence":87,
+		"reasoning":"risk regime changed",
+		"exit_suggestion":"close_all",
+		"risk_alert":true,
+		"alert_reason":"volatility spike",
+		"trade_plan":{
+			"schema_version":"trade_plan.v1",
+			"decision_id":"tpv1_close_all",
+			"account_id":"90011087",
+			"symbol":"XAUUSD",
+			"mode":"close",
+			"side":"buy",
+			"confidence":87,
+			"entry_zone":{"min":3335.55,"max":3335.75},
+			"stop_loss":3328.0,
+			"take_profit":[3350.0],
+			"max_lots":0.1,
+			"expires_at":"2099-06-06T09:15:00Z",
+			"reason_codes":["mode.close","risk.high"],
+			"conflicts":[],
+			"narrative":"AI requests full close after risk spike"
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "user-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v2/ai_result status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response struct {
+		RiskGate map[string]any `json:"risk_gate"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Unmarshal AI result response returned error: %v", err)
+	}
+	if got := response.RiskGate["status"]; got != "accepted" {
+		t.Fatalf("risk_gate.status = %v, want accepted", got)
+	}
+	if got := response.RiskGate["audit_only"]; got != false {
+		t.Fatalf("risk_gate.audit_only = %v, want false for close command", got)
+	}
+
+	pollRec := httptest.NewRecorder()
+	pollReq := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewBufferString(`{"account_id":"90011087"}`))
+	pollReq.Header.Set("Content-Type", "application/json")
+	pollReq.Header.Set("X-API-Token", "user-token")
+	ts.ServeHTTP(pollRec, pollReq)
+
+	var pollBody struct {
+		Count    int                      `json:"count"`
+		Commands []map[string]interface{} `json:"commands"`
+	}
+	if err := json.Unmarshal(pollRec.Body.Bytes(), &pollBody); err != nil {
+		t.Fatalf("Unmarshal poll response returned error: %v", err)
+	}
+	if pollBody.Count != 1 {
+		t.Fatalf("poll count = %d, want 1", pollBody.Count)
+	}
+	command := pollBody.Commands[0]
+	if got := command["action"]; got != "CLOSE_ALL" {
+		t.Fatalf("command.action = %v, want CLOSE_ALL", got)
+	}
+	if got := command["decision_id"]; got != "tpv1_close_all" {
+		t.Fatalf("command.decision_id = %v, want tpv1_close_all", got)
+	}
+	riskGate, ok := command["risk_gate"].(map[string]any)
+	if !ok {
+		t.Fatalf("command.risk_gate type = %T, want object", command["risk_gate"])
+	}
+	if got := riskGate["status"]; got != "accepted" {
+		t.Fatalf("command.risk_gate.status = %v, want accepted", got)
+	}
+}
+
+func TestAIResultRiskGateRejectsExecutableCommandBeforeEnqueue(t *testing.T) {
+	ts, _ := newAdminServer(t)
+	seedAnalysisFixture(t, ts, "user-token")
+	postJSON(t, ts, "user-token", "/tick", `{
+		"account_id":"90011087",
+		"symbol":"XAUUSD",
+		"bid":3335.55,
+		"ask":3335.75,
+		"spread":8.1,
+		"time":"08:01:00"
+	}`)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/ai_result/90011087/XAUUSD", bytes.NewBufferString(`{
+		"bias":"bearish",
+		"confidence":87,
+		"reasoning":"risk regime changed",
+		"exit_suggestion":"close_all",
+		"risk_alert":true,
+		"alert_reason":"volatility spike",
+		"trade_plan":{
+			"schema_version":"trade_plan.v1",
+			"decision_id":"tpv1_rejected_spread",
+			"account_id":"90011087",
+			"symbol":"XAUUSD",
+			"mode":"close",
+			"side":"buy",
+			"confidence":87,
+			"entry_zone":{"min":3335.55,"max":3335.75},
+			"stop_loss":3328.0,
+			"take_profit":[3350.0],
+			"max_lots":0.1,
+			"expires_at":"2099-06-06T09:15:00Z",
+			"reason_codes":["mode.close","risk.high"],
+			"conflicts":[],
+			"narrative":"AI requests full close after risk spike"
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "user-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v2/ai_result status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response struct {
+		RiskGate struct {
+			Status      string   `json:"status"`
+			ReasonCodes []string `json:"reason_codes"`
+		} `json:"risk_gate"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Unmarshal AI result response returned error: %v", err)
+	}
+	if response.RiskGate.Status != "rejected" {
+		t.Fatalf("risk_gate.status = %q, want rejected", response.RiskGate.Status)
+	}
+	if !containsString(response.RiskGate.ReasonCodes, "spread.too_wide") {
+		t.Fatalf("risk_gate.reason_codes = %v, want spread.too_wide", response.RiskGate.ReasonCodes)
+	}
+
+	pollRec := httptest.NewRecorder()
+	pollReq := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewBufferString(`{"account_id":"90011087"}`))
+	pollReq.Header.Set("Content-Type", "application/json")
+	pollReq.Header.Set("X-API-Token", "user-token")
+	ts.ServeHTTP(pollRec, pollReq)
+
+	var pollBody struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(pollRec.Body.Bytes(), &pollBody); err != nil {
+		t.Fatalf("Unmarshal poll response returned error: %v", err)
+	}
+	if pollBody.Count != 0 {
+		t.Fatalf("poll count = %d, want 0 after risk gate rejection", pollBody.Count)
+	}
+}
+
+func TestAIResultStoresMalformedTradePlanAndReturnsValidationResult(t *testing.T) {
+	ts, db := newAdminServer(t)
+	seedAnalysisFixture(t, ts, "user-token")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/ai_result/90011087/XAUUSD", bytes.NewBufferString(`{
+		"bias":"bullish",
+		"confidence":82,
+		"exit_suggestion":"hold",
+		"risk_alert":false,
+		"trade_plan":{
+			"schema_version":"trade_plan.v1",
+			"decision_id":"",
+			"account_id":"90011087",
+			"symbol":"XAUUSD",
+			"mode":"approve",
+			"side":"buy",
+			"confidence":82,
+			"entry_zone":{"min":0,"max":0},
+			"stop_loss":0,
+			"take_profit":[],
+			"max_lots":0,
+			"expires_at":"not-a-time",
+			"reason_codes":[],
+			"conflicts":[],
+			"narrative":"invalid"
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "user-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v2/ai_result status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response struct {
+		Status              string         `json:"status"`
+		TradePlanValidation map[string]any `json:"trade_plan_validation"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Unmarshal AI result response returned error: %v", err)
+	}
+	if response.Status != "OK" {
+		t.Fatalf("status = %q, want OK", response.Status)
+	}
+	if got := response.TradePlanValidation["valid"]; got != false {
+		t.Fatalf("trade_plan_validation.valid = %v, want false", got)
+	}
+	if got := response.TradePlanValidation["error"]; got == "" || got == nil {
+		t.Fatalf("trade_plan_validation.error = %v, want clear validation message", got)
+	}
+
+	state := fetchState(t, db, "90011087", "XAUUSD")
+	tradePlan := state["trade_plan"].(map[string]any)
+	if got := tradePlan["schema_version"]; got != "trade_plan.v1" {
+		t.Fatalf("stored raw trade_plan.schema_version = %v, want trade_plan.v1", got)
+	}
+	if got := tradePlan["decision_id"]; got != "" {
+		t.Fatalf("stored raw trade_plan.decision_id = %v, want empty raw value", got)
+	}
+}
+
 func newAdminServer(t *testing.T) (http.Handler, *sql.DB) {
+	ts, db, _ := newAdminServerInternal(t, nil)
+	return ts, db
+}
+
+func newAdminServerWithEvents(t *testing.T) (http.Handler, *sql.DB, *realtime.Hub) {
+	hub := realtime.NewHub()
+	return newAdminServerInternal(t, hub)
+}
+
+func newAdminServerInternal(t *testing.T, events *realtime.Hub) (http.Handler, *sql.DB, *realtime.Hub) {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "contracts-admin.sqlite")
@@ -329,8 +742,9 @@ func newAdminServer(t *testing.T) (http.Handler, *sql.DB) {
 		Tokens:   tokens,
 		Commands: commands,
 		Releases: ea.NewLocalReleaseSource("."),
+		Events:   events,
 	})
-	return mux, db
+	return mux, db, events
 }
 
 func seedAnalysisFixture(t *testing.T, ts http.Handler, token string) {
@@ -435,4 +849,40 @@ func postJSON(t *testing.T, ts http.Handler, token, path, body string) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST %s status = %d, want %d body=%s", path, rec.Code, http.StatusOK, rec.Body.String())
 	}
+}
+
+func readEvent(t *testing.T, events <-chan domain.Event) domain.Event {
+	t.Helper()
+
+	select {
+	case event := <-events:
+		return event
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for realtime event")
+		return domain.Event{}
+	}
+}
+
+func fetchState(t *testing.T, db *sql.DB, accountID, symbol string) map[string]any {
+	t.Helper()
+
+	repo := sqlitestore.NewAccountRepository(db)
+	state, err := repo.GetStateSymbol(context.Background(), accountID, symbol)
+	if err != nil {
+		t.Fatalf("GetStateSymbol returned error: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(state.AIResultJSON, &body); err != nil {
+		t.Fatalf("Unmarshal stored AIResultJSON returned error: %v", err)
+	}
+	return body
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

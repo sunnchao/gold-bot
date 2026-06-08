@@ -31,6 +31,19 @@ export type AccountsResponse = {
   accounts: OverviewAccount[]
 }
 
+export type DecisionEvent = {
+  id: number
+  decision_id: string
+  account_id: string
+  symbol: string
+  stage: string
+  status: string
+  reason_codes: string[]
+  summary: Record<string, unknown>
+  related_command_id: string
+  created_at: string
+}
+
 export type AccountDetail = {
   status: string
   account: {
@@ -105,6 +118,8 @@ export type AccountDetail = {
     | null
   >
   ai_result: Record<string, unknown>
+  market_filters?: unknown
+  decision_events?: DecisionEvent[]
 }
 
 export type CutoverReport = {

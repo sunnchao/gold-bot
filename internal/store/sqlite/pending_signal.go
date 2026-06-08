@@ -11,12 +11,17 @@ import (
 
 // PendingSignalRepository handles database operations for pending signals.
 type PendingSignalRepository struct {
-	db *sql.DB
+	db        *sql.DB
+	decisions *DecisionRepository
 }
 
 // NewPendingSignalRepository creates a new pending signal repository.
 func NewPendingSignalRepository(db *sql.DB) *PendingSignalRepository {
 	return &PendingSignalRepository{db: db}
+}
+
+func NewPendingSignalRepositoryWithDecisions(db *sql.DB, decisions *DecisionRepository) *PendingSignalRepository {
+	return &PendingSignalRepository{db: db, decisions: decisions}
 }
 
 // SavePendingSignal inserts or updates a pending signal.
@@ -28,7 +33,7 @@ func (r *PendingSignalRepository) SavePendingSignal(ctx context.Context, signal 
 			if err := r.db.QueryRowContext(ctx, query, args...).Scan(&signal.ID); err != nil {
 				return fmt.Errorf("insert pending signal: %w", err)
 			}
-			return nil
+			return r.recordCandidateDecision(ctx, signal)
 		}
 
 		result, err := r.db.ExecContext(ctx, query, args...)
@@ -41,7 +46,7 @@ func (r *PendingSignalRepository) SavePendingSignal(ctx context.Context, signal 
 			return fmt.Errorf("get last insert id: %w", err)
 		}
 		signal.ID = id
-		return nil
+		return r.recordCandidateDecision(ctx, signal)
 	}
 
 	// Update existing signal
@@ -77,6 +82,31 @@ func (r *PendingSignalRepository) SavePendingSignal(ctx context.Context, signal 
 		return fmt.Errorf("update pending signal %d: %w", signal.ID, err)
 	}
 	return nil
+}
+
+func (r *PendingSignalRepository) recordCandidateDecision(ctx context.Context, signal *domain.PendingSignal) error {
+	if r.decisions == nil {
+		return nil
+	}
+
+	return r.decisions.Record(ctx, domain.DecisionEvent{
+		DecisionID: fmt.Sprintf("candidate_%s_%s_%d", signal.AccountID, signal.Symbol, signal.ID),
+		AccountID:  signal.AccountID,
+		Symbol:     signal.Symbol,
+		Stage:      domain.DecisionStageCandidateSignal,
+		Status:     domain.DecisionStatusPending,
+		ReasonCodes: []string{
+			"candidate." + signal.Strategy,
+		},
+		Summary: map[string]any{
+			"signal_id":  signal.ID,
+			"side":       signal.Side,
+			"score":      signal.Score,
+			"strategy":   signal.Strategy,
+			"expires_at": formatTime(signal.ExpiresAt),
+		},
+		CreatedAt: signal.CreatedAt,
+	})
 }
 
 func buildPendingSignalInsert(signal *domain.PendingSignal) (string, []any) {
