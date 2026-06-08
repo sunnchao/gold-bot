@@ -173,13 +173,14 @@ type AnalysisSnapshot struct {
 
 // AIResult holds AI analysis result from gold-analysis-agent
 type AIResult struct {
-	Bias            string   `json:"bias"`              // bullish/bearish/neutral
-	Confidence      int      `json:"confidence"`        // 0-100
-	SuggestedSL     float64  `json:"suggested_sl"`      // AI 建议止损价格
-	SuggestedTP     float64  `json:"suggested_tp"`      // AI 建议止盈价格
-	MaxPositionSize float64  `json:"max_position_size"` // AI 建议最大仓位
-	SRLevels        *SRLevels `json:"sr_levels"`        // 支撑阻力位
-	Arbitration     *Arbitration `json:"arbitration"`   // AI 仲裁结果
+	Bias            string       `json:"bias"`              // bullish/bearish/neutral
+	Confidence      int          `json:"confidence"`        // 0-100
+	SuggestedSL     float64      `json:"suggested_sl"`      // AI 建议止损价格
+	SuggestedTP     float64      `json:"suggested_tp"`      // AI 建议止盈价格
+	MaxPositionSize float64      `json:"max_position_size"` // AI 建议最大仓位
+	SRLevels        *SRLevels    `json:"sr_levels"`         // 支撑阻力位
+	Arbitration     *Arbitration `json:"arbitration"`       // AI 仲裁结果
+	TradePlan       *TradePlan   `json:"trade_plan"`        // versioned AI decision contract
 }
 
 type SRLevels struct {

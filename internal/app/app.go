@@ -76,8 +76,9 @@ func New(cfg config.Config) (*App, error) {
 
 	accounts := sqlitestore.NewAccountRepository(db)
 	tokens := sqlitestore.NewTokenRepository(db)
-	commands := sqlitestore.NewCommandRepository(db)
-	arbitration := arbitrationStoreAdapter{repo: sqlitestore.NewPendingSignalRepository(db), db: db}
+	decisions := sqlitestore.NewDecisionRepository(db)
+	commands := sqlitestore.NewCommandRepositoryWithDecisions(db, decisions)
+	arbitration := arbitrationStoreAdapter{repo: sqlitestore.NewPendingSignalRepositoryWithDecisions(db, decisions), db: db}
 	if err := bootstrapTokens(context.Background(), tokens, cfg, now); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -101,6 +102,7 @@ func New(cfg config.Config) (*App, error) {
 		Accounts:    accounts,
 		Tokens:      tokens,
 		Commands:    commands,
+		Decisions:   decisions,
 		Releases:    ea.NewLocalReleaseSource("."),
 		Events:      events,
 		Cutover:     cutover,

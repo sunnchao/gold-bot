@@ -435,6 +435,9 @@ func TestBarsThenPollReturnsLiveSignalPayloadCompatibleWithEA(t *testing.T) {
 	if got := command["command_id"]; got != "live_sig_contract" {
 		t.Fatalf("command_id = %#v, want live_sig_contract", got)
 	}
+	if got := command["decision_id"]; got != "live_sig_contract" {
+		t.Fatalf("decision_id = %#v, want live_sig_contract", got)
+	}
 	if got := command["action"]; got != "SIGNAL" {
 		t.Fatalf("action = %#v, want SIGNAL", got)
 	}
@@ -552,12 +555,12 @@ func newLegacyServerWithLiveTrading(t *testing.T, liveTrading legacy.LiveTrading
 }
 
 type scriptedLiveTrading struct {
-	commands  *sqlitestore.CommandRepository
-	commandID string
-	payload   map[string]any
-	onBarsCalls int
+	commands      *sqlitestore.CommandRepository
+	commandID     string
+	payload       map[string]any
+	onBarsCalls   int
 	lastAccountID string
-	lastSymbol string
+	lastSymbol    string
 	lastTimeframe string
 }
 
@@ -572,6 +575,9 @@ func (s *scriptedLiveTrading) OnBars(ctx context.Context, accountID, symbol stri
 	payload := make(map[string]any, len(s.payload))
 	for k, v := range s.payload {
 		payload[k] = v
+	}
+	if _, ok := payload["decision_id"]; !ok {
+		payload["decision_id"] = s.commandID
 	}
 	return s.commands.Enqueue(ctx, domain.Command{
 		CommandID: s.commandID,

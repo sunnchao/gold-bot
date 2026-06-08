@@ -8,6 +8,7 @@ import (
 
 	"gold-bot/internal/domain"
 	"gold-bot/internal/strategy/indicator"
+	"gold-bot/internal/strategy/marketfilter"
 )
 
 type AnalysisPayload struct {
@@ -17,7 +18,9 @@ type AnalysisPayload struct {
 	Market          domain.TickSnapshot       `json:"market"`
 	Positions       []PositionSummary         `json:"positions"`
 	Indicators      map[string]*IndicatorPack `json:"indicators"`
+	Bars            map[string][]domain.Bar   `json:"bars"`
 	MarketStatus    MarketStatus              `json:"market_status"`
+	MarketFilters   marketfilter.Result       `json:"market_filters"`
 	StrategyMapping map[string]string         `json:"strategy_mapping"`
 }
 
@@ -99,6 +102,7 @@ var defaultStrategyMapping = map[string]string{
 }
 
 const staleTickTradeableWindow = 10 * time.Minute
+const analysisPayloadBarsLimit = 200
 
 func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime, state domain.AccountState, now time.Time) AnalysisPayload {
 	mapping := state.StrategyMapping
@@ -107,13 +111,15 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 	}
 
 	indicators := map[string]*IndicatorPack{}
+	payloadBars := map[string][]domain.Bar{}
 	for _, timeframe := range []string{"M15", "M30", "H1", "H4"} {
 		bars := state.Bars[timeframe]
+		enriched := indicator.EnrichBars(bars)
+		payloadBars[timeframe] = recentSafeBars(enriched, analysisPayloadBarsLimit)
 		if len(bars) < 20 {
 			indicators[timeframe] = nil
 			continue
 		}
-		enriched := indicator.EnrichBars(bars)
 		last := enriched[len(enriched)-1]
 		indicators[timeframe] = &IndicatorPack{
 			Close:      safeFloat(last.Close),
@@ -196,6 +202,14 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 	tradeable := marketOpen && isTradeAllowed
 
 	shanghai := time.FixedZone("CST", 8*3600)
+	filterState := state
+	filterState.Bars = payloadBars
+	filters := marketfilter.Evaluate(marketfilter.Input{
+		Now:     now,
+		Runtime: runtime,
+		State:   filterState,
+	})
+
 	return AnalysisPayload{
 		Status:    "OK",
 		Timestamp: now.In(shanghai).Format("2006-01-02T15:04:05+08:00"),
@@ -214,14 +228,70 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 		Market:     market,
 		Positions:  positions,
 		Indicators: indicators,
+		Bars:       payloadBars,
 		MarketStatus: MarketStatus{
 			MarketOpen:     marketOpen,
 			IsTradeAllowed: isTradeAllowed,
 			MT4ServerTime:  runtime.MT4ServerTime,
 			Tradeable:      tradeable,
 		},
+		MarketFilters:   filters,
 		StrategyMapping: mapping,
 	}
+}
+
+func recentSafeBars(bars []domain.Bar, limit int) []domain.Bar {
+	if len(bars) == 0 {
+		return []domain.Bar{}
+	}
+
+	recent := bars
+	if limit <= 0 || len(bars) <= limit {
+		return safeBars(recent)
+	}
+	recent = bars[len(bars)-limit:]
+	return safeBars(recent)
+}
+
+func safeBars(bars []domain.Bar) []domain.Bar {
+	out := make([]domain.Bar, len(bars))
+	for i, bar := range bars {
+		out[i] = safeBar(bar)
+	}
+	return out
+}
+
+func safeBar(bar domain.Bar) domain.Bar {
+	bar.Open = safeFloat(bar.Open)
+	bar.High = safeFloat(bar.High)
+	bar.Low = safeFloat(bar.Low)
+	bar.Close = safeFloat(bar.Close)
+	bar.EMA20 = safeFloat(bar.EMA20)
+	bar.EMA50 = safeFloat(bar.EMA50)
+	bar.EMA200 = safeFloat(bar.EMA200)
+	bar.ATR = safeFloat(bar.ATR)
+	bar.RSI = safeFloat(bar.RSI)
+	bar.MACD = safeFloat(bar.MACD)
+	bar.MACDSignal = safeFloat(bar.MACDSignal)
+	bar.MACDHist = safeFloat(bar.MACDHist)
+	bar.ADX = safeFloat(bar.ADX)
+	bar.BBUpper = safeFloat(bar.BBUpper)
+	bar.BBLower = safeFloat(bar.BBLower)
+	bar.BBMid = safeFloat(bar.BBMid)
+	bar.StochK = safeFloat(bar.StochK)
+	bar.StochD = safeFloat(bar.StochD)
+	bar.VolSMA = safeFloat(bar.VolSMA)
+	bar.Fib236 = safeFloat(bar.Fib236)
+	bar.Fib382 = safeFloat(bar.Fib382)
+	bar.Fib500 = safeFloat(bar.Fib500)
+	bar.Fib618 = safeFloat(bar.Fib618)
+	bar.Fib786 = safeFloat(bar.Fib786)
+	bar.PP = safeFloat(bar.PP)
+	bar.R1 = safeFloat(bar.R1)
+	bar.R2 = safeFloat(bar.R2)
+	bar.S1 = safeFloat(bar.S1)
+	bar.S2 = safeFloat(bar.S2)
+	return bar
 }
 
 func resolveStrategy(mapping map[string]string, magic int) string {

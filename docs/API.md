@@ -79,7 +79,9 @@
 | 方法 | 路径 | 权限 | 说明 |
 |------|------|------|------|
 | `GET` | `/api/analysis_payload/{account_id}` | token | 返回 AI 分析所需兼容 payload |
+| `GET` | `/api/v2/analysis_payload/{account_id}/{symbol}` | token | 返回指定 symbol 的 AI 分析 payload |
 | `POST` | `/api/ai_result/{account_id}` | token | 写入 AI 分析结果，可触发风控平仓命令 |
+| `POST` | `/api/v2/ai_result/{account_id}/{symbol}` | token | 写入指定 symbol 的 AI 结果，支持 `trade_plan.v1` |
 | `POST` | `/api/trigger_ai` | token | 已废弃，占位返回 deprecated |
 | `GET` | `/api/ea/version` | public | EA 版本元数据 |
 | `GET` | `/api/ea/download` | token | 下载 EA 文件 |
@@ -138,6 +140,20 @@
       "bars_count": 150
     }
   },
+  "bars": {
+    "H1": [
+      {
+        "time": "2026.04.13 08:00",
+        "open": 3331.2,
+        "high": 3336.1,
+        "low": 3330.8,
+        "close": 3335.75,
+        "atr": 2.64,
+        "rsi": 52.1,
+        "adx": 71.5
+      }
+    ]
+  },
   "market_status": {
     "market_open": true,
     "is_trade_allowed": true,
@@ -151,6 +167,112 @@
 
 - `bb_middle` 当前故意保持与 Python 现网行为兼容，返回 `0`
 - 所有 `NaN` / `Inf` 会在 JSON 输出前被清洗为 `0`
+- `bars` 返回 `M15` / `M30` / `H1` / `H4` 最近最多 200 根 K 线；字段与服务端 `Bar` 结构一致，供 AI 结构分析使用
+
+### `POST /api/v2/ai_result/{account_id}/{symbol}`
+
+请求会原样保存到 `account_state.ai_result_json`，用于审计和后续回放。旧字段仍保持兼容：
+
+- `bias`
+- `confidence`
+- `exit_suggestion`
+- `risk_alert`
+- `alert_reason`
+- `suggested_sl`
+- `max_position_size`
+
+当请求包含 `trade_plan` 时，服务端会解析并校验 `trade_plan.v1`。校验失败不会丢弃 raw payload，也不会阻止审计保存；响应会返回明确的 `trade_plan_validation`。
+
+请求示例：
+
+```json
+{
+  "bias": "bullish",
+  "confidence": 82,
+  "exit_suggestion": "hold",
+  "risk_alert": false,
+  "trade_plan": {
+    "schema_version": "trade_plan.v1",
+    "decision_id": "tpv1_abc123",
+    "account_id": "90011087",
+    "symbol": "XAUUSD",
+    "mode": "approve",
+    "side": "buy",
+    "confidence": 82,
+    "entry_zone": { "min": 3335.55, "max": 3335.75 },
+    "stop_loss": 3328,
+    "take_profit": [3350],
+    "max_lots": 0.02,
+    "expires_at": "2099-06-06T09:15:00Z",
+    "reason_codes": ["mode.approve", "side.buy"],
+    "conflicts": [],
+    "narrative": "多周期看多，等待 Go 风控确认"
+  }
+}
+```
+
+成功响应示例：
+
+```json
+{
+  "status": "OK",
+  "received": true,
+  "trade_plan_validation": { "valid": true },
+  "decision": {
+    "decision_id": "tpv1_abc123",
+    "mode": "approve",
+    "symbol": "XAUUSD",
+    "confidence": 82
+  },
+  "risk_gate": {
+    "decision_id": "tpv1_abc123",
+    "mode": "approve",
+    "symbol": "XAUUSD",
+    "status": "accepted",
+    "audit_only": true,
+    "reason_codes": ["lots.accepted"],
+    "requested_lots": 0.02,
+    "allowed_lots": 0.02
+  }
+}
+```
+
+当 `trade_plan` 校验通过时，服务端会先运行确定性风险门，再考虑任何 AI 影响的可执行命令。风险门检查包括：
+
+- `market_open`、`is_trade_allowed`、tick 新鲜度、当前 spread、`trade_plan.expires_at`
+- `approve` / `modify` 的 SL 缺失、SL 方向、SL 距离、最大手数、最小/最大 lot、lot step、净值风险和 free margin
+- XAUUSD / GBPJPY 使用静态 symbol metadata；后续可替换为 broker metadata
+
+`risk_gate.status` 取值：
+
+- `accepted`: 确定性检查通过
+- `clamped`: 请求手数被 Go 侧确定性上限压低；响应包含 `allowed_lots`
+- `rejected`: 命令被阻止；`reason_codes` 给出机器可读原因，例如 `spread.too_wide`、`tick.stale`、`sl.missing`、`lots.clamped`
+
+执行边界：
+
+- `approve` / `modify` 永远只返回 `risk_gate.audit_only=true`，不会下发开仓或改仓命令。
+- `close` / `reduce` 仍走旧的 `risk_alert + exit_suggestion` 平仓/减仓兼容路径，但有 `trade_plan` 时命令 payload 会附带 `decision_id`、`trade_plan_mode` 和 `risk_gate`。
+- 风险门 `rejected` 时，不会 enqueue EA command；raw AI payload 仍会保存用于审计。
+
+畸形 `trade_plan` 响应示例：
+
+```json
+{
+  "status": "OK",
+  "received": true,
+  "trade_plan_validation": {
+    "valid": false,
+    "error": "trade_plan.decision_id is required"
+  }
+}
+```
+
+注意：
+
+- `approve` 不是执行命令；它只是给 Go 侧确定性风控门的结构化输入。
+- 本阶段不会因为 `trade_plan.mode=approve` 或 `trade_plan.mode=modify` 自动下发开仓/改仓命令。
+- 旧的 `risk_alert + exit_suggestion` 平仓/减仓兼容逻辑保持不变。
 
 ## 3. Admin API v1
 
@@ -254,7 +376,7 @@
 返回格式：
 
 ```text
-data: {"event_id":"evt_ai_...","event_type":"ai_result","account_id":"90011087","source":"api.ai_result","timestamp":"2026-04-13T08:00:00Z","payload":{"bias":"bullish"}}
+data: {"event_id":"evt_ai_...","event_type":"ai_result","account_id":"90011087","source":"api.ai_result","timestamp":"2026-04-13T08:00:00Z","payload":{"bias":"bullish","trade_plan_summary":{"decision_id":"tpv1_abc123","mode":"approve","symbol":"XAUUSD","confidence":82},"risk_gate":{"status":"accepted","audit_only":true,"reason_codes":["lots.accepted"]}}}
 ```
 
 事件 envelope 字段：
@@ -266,4 +388,4 @@ data: {"event_id":"evt_ai_...","event_type":"ai_result","account_id":"90011087",
 | `account_id` | 关联账户，可为空 |
 | `source` | 事件来源 |
 | `timestamp` | UTC 时间 |
-| `payload` | 原始 JSON 负载 |
+| `payload` | 原始 JSON 负载；当 `trade_plan` 校验通过时额外包含 `trade_plan_summary` 和 `risk_gate` |

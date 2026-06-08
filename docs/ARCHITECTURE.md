@@ -77,9 +77,12 @@ GET  /api/analysis_payload/{account_id}
 
 POST /api/ai_result/{account_id}
     -> account_state.ai_result_json
-    -> optional risk-close command enqueue
+    -> optional trade_plan.v1 parse + deterministic risk gate
+    -> optional close/reduce command enqueue with decision_id
     -> publish SSE event `ai_result`
 ```
+
+AI 侧 `approve` / `modify` 只进入风险门审计，不会创建 EA 命令。Go 侧风险门会在任何 AI 影响的可执行命令前检查市场状态、tick 新鲜度、spread、计划过期、SL 合理性、手数上限、free margin 和静态 symbol metadata。风险门拒绝时仍保存 raw AI payload，但不会下发命令。
 
 ### 3. 控制台链路
 

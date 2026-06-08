@@ -235,6 +235,49 @@ func TestNewAppWiresPendingSignalAPI(t *testing.T) {
 	}
 }
 
+func TestNewAppWiresDecisionTimelineAPI(t *testing.T) {
+	cfg := testConfig(t)
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := app.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	tokens := sqlitestore.NewTokenRepository(app.db)
+	if err := tokens.PutToken(context.Background(), "admin-token", "admin", true, time.Now().UTC()); err != nil {
+		t.Fatalf("PutToken returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/90011087/decisions", nil)
+	req.Header.Set("X-API-Token", "admin-token")
+	rec := httptest.NewRecorder()
+
+	app.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/accounts/90011087/decisions status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Status         string                 `json:"status"`
+		DecisionEvents []domain.DecisionEvent `json:"decision_events"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response returned error: %v", err)
+	}
+	if body.Status != "OK" {
+		t.Fatalf("status = %q, want OK", body.Status)
+	}
+	if body.DecisionEvents == nil {
+		t.Fatal("decision_events is nil, want empty list")
+	}
+}
+
 func TestCloseClosesDatabase(t *testing.T) {
 	cfg := testConfig(t)
 

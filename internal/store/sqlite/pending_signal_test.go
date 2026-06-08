@@ -49,6 +49,51 @@ func TestPendingSignalRepositorySaveAndGetPendingSignals(t *testing.T) {
 	}
 }
 
+func TestPendingSignalRepositoryRecordsCandidateDecisionEvent(t *testing.T) {
+	repo, decisions := newTestPendingSignalRepositoryWithDecisions(t)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+
+	signal := &domain.PendingSignal{
+		AccountID:  "90011087",
+		Symbol:     "XAUUSD",
+		Side:       "buy",
+		Score:      87,
+		Strategy:   "momentum_scalp",
+		Indicators: `{"adx":31}`,
+		Status:     "pending",
+		CreatedAt:  now,
+		ExpiresAt:  now.Add(time.Minute),
+	}
+	if err := repo.SavePendingSignal(ctx, signal); err != nil {
+		t.Fatalf("SavePendingSignal returned error: %v", err)
+	}
+
+	events, err := decisions.List(ctx, domain.DecisionEventFilter{
+		AccountID: "90011087",
+		Symbol:    "XAUUSD",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("List decision events returned error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d, want 1: %+v", len(events), events)
+	}
+	if events[0].Stage != domain.DecisionStageCandidateSignal {
+		t.Fatalf("stage = %q, want %q", events[0].Stage, domain.DecisionStageCandidateSignal)
+	}
+	if events[0].DecisionID == "" {
+		t.Fatal("decision_id is empty")
+	}
+	if events[0].Status != domain.DecisionStatusPending {
+		t.Fatalf("status = %q, want %q", events[0].Status, domain.DecisionStatusPending)
+	}
+	if events[0].Summary["strategy"] != "momentum_scalp" {
+		t.Fatalf("summary.strategy = %#v, want momentum_scalp", events[0].Summary["strategy"])
+	}
+}
+
 func TestPendingSignalRepositoryUpdateArbitrationRemovesSignalFromPendingList(t *testing.T) {
 	repo := newTestPendingSignalRepository(t)
 	ctx := context.Background()
@@ -269,6 +314,12 @@ func TestPendingSignalRepositoryExpireStaleSignalsReturnsAffectedCount(t *testin
 
 func newTestPendingSignalRepository(t *testing.T) *PendingSignalRepository {
 	t.Helper()
+	repo, _ := newTestPendingSignalRepositoryWithDecisions(t)
+	return repo
+}
+
+func newTestPendingSignalRepositoryWithDecisions(t *testing.T) (*PendingSignalRepository, *DecisionRepository) {
+	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "pending-signals.sqlite")
 	db, err := store.OpenSQLite(dbPath)
@@ -285,5 +336,6 @@ func newTestPendingSignalRepository(t *testing.T) *PendingSignalRepository {
 		t.Fatalf("RunMigrations returned error: %v", err)
 	}
 
-	return NewPendingSignalRepository(db)
+	decisions := NewDecisionRepository(db)
+	return NewPendingSignalRepositoryWithDecisions(db, decisions), decisions
 }

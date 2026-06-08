@@ -109,6 +109,169 @@ func TestPollTakePendingMarksDelivered(t *testing.T) {
 	}
 }
 
+func TestCommandDecisionTimelineEnqueueRecordsCommandEnqueued(t *testing.T) {
+	repo, decisions := newTestCommandRepositoryWithDecisions(t)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+
+	if err := repo.Enqueue(ctx, domain.Command{
+		CommandID: "sig_decision_enqueue",
+		AccountID: "90011087",
+		Action:    domain.CommandActionSignal,
+		Status:    domain.CommandStatusPending,
+		Payload: map[string]any{
+			"decision_id": "tpv1_enqueue",
+			"symbol":      "XAUUSD",
+			"type":        "BUY",
+		},
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+
+	events, err := decisions.List(ctx, domain.DecisionEventFilter{
+		AccountID: "90011087",
+		Symbol:    "XAUUSD",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d, want 1: %+v", len(events), events)
+	}
+	assertCommandDecisionEvent(t, events[0], "tpv1_enqueue", domain.DecisionStageCommandEnqueued, domain.DecisionStatusPending, "sig_decision_enqueue", now)
+}
+
+func TestCommandDecisionTimelineTakePendingRecordsCommandDelivered(t *testing.T) {
+	repo, decisions := newTestCommandRepositoryWithDecisions(t)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	deliveredAt := now.Add(time.Minute)
+
+	if err := repo.Enqueue(ctx, domain.Command{
+		CommandID: "sig_decision_delivered",
+		AccountID: "90011087",
+		Action:    domain.CommandActionSignal,
+		Status:    domain.CommandStatusPending,
+		Payload: map[string]any{
+			"decision_id": "tpv1_delivered",
+			"symbol":      "XAUUSD",
+			"type":        "BUY",
+		},
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+
+	commands, err := repo.TakePending(ctx, "90011087", deliveredAt)
+	if err != nil {
+		t.Fatalf("TakePending returned error: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("len(commands) = %d, want 1", len(commands))
+	}
+
+	events, err := decisions.List(ctx, domain.DecisionEventFilter{
+		AccountID: "90011087",
+		Symbol:    "XAUUSD",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2: %+v", len(events), events)
+	}
+	assertCommandDecisionEvent(t, events[0], "tpv1_delivered", domain.DecisionStageCommandDelivered, domain.DecisionStatusDelivered, "sig_decision_delivered", deliveredAt)
+	assertCommandDecisionEvent(t, events[1], "tpv1_delivered", domain.DecisionStageCommandEnqueued, domain.DecisionStatusPending, "sig_decision_delivered", now)
+}
+
+func TestCommandDecisionTimelineApplyResultRecordsOrderResult(t *testing.T) {
+	repo, decisions := newTestCommandRepositoryWithDecisions(t)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+
+	for _, command := range []domain.Command{
+		{
+			CommandID: "sig_decision_ack",
+			AccountID: "90011087",
+			Action:    domain.CommandActionSignal,
+			Status:    domain.CommandStatusDelivered,
+			Payload: map[string]any{
+				"decision_id": "tpv1_ack",
+				"symbol":      "XAUUSD",
+			},
+			CreatedAt:   now,
+			DeliveredAt: now,
+		},
+		{
+			CommandID: "sig_decision_fail",
+			AccountID: "90011087",
+			Action:    domain.CommandActionSignal,
+			Status:    domain.CommandStatusDelivered,
+			Payload: map[string]any{
+				"decision_id": "tpv1_fail",
+				"symbol":      "XAUUSD",
+			},
+			CreatedAt:   now.Add(time.Second),
+			DeliveredAt: now.Add(time.Second),
+		},
+	} {
+		if err := repo.Enqueue(ctx, command); err != nil {
+			t.Fatalf("Enqueue(%s) returned error: %v", command.CommandID, err)
+		}
+	}
+
+	ackedAt := now.Add(time.Minute)
+	if err := repo.ApplyResult(ctx, domain.CommandResult{
+		CommandID: "sig_decision_ack",
+		AccountID: "90011087",
+		Result:    "OK",
+		Ticket:    123,
+		CreatedAt: ackedAt,
+	}); err != nil {
+		t.Fatalf("ApplyResult ack returned error: %v", err)
+	}
+
+	failedAt := now.Add(2 * time.Minute)
+	if err := repo.ApplyResult(ctx, domain.CommandResult{
+		CommandID: "sig_decision_fail",
+		AccountID: "90011087",
+		Result:    "REJECTED",
+		ErrorText: "risk_check_failed",
+		CreatedAt: failedAt,
+	}); err != nil {
+		t.Fatalf("ApplyResult fail returned error: %v", err)
+	}
+
+	ackEvents, err := decisions.List(ctx, domain.DecisionEventFilter{
+		AccountID: "90011087",
+		Status:    domain.DecisionStatusAcked,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("List acked returned error: %v", err)
+	}
+	if len(ackEvents) != 1 {
+		t.Fatalf("len(ackEvents) = %d, want 1: %+v", len(ackEvents), ackEvents)
+	}
+	assertCommandDecisionEvent(t, ackEvents[0], "tpv1_ack", domain.DecisionStageOrderResult, domain.DecisionStatusAcked, "sig_decision_ack", ackedAt)
+
+	failedEvents, err := decisions.List(ctx, domain.DecisionEventFilter{
+		AccountID: "90011087",
+		Status:    domain.DecisionStatusFailed,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("List failed returned error: %v", err)
+	}
+	if len(failedEvents) != 1 {
+		t.Fatalf("len(failedEvents) = %d, want 1: %+v", len(failedEvents), failedEvents)
+	}
+	assertCommandDecisionEvent(t, failedEvents[0], "tpv1_fail", domain.DecisionStageOrderResult, domain.DecisionStatusFailed, "sig_decision_fail", failedAt)
+}
+
 func TestOrderResultApplyResultTransitionsDeliveredCommandAndPersistsAudit(t *testing.T) {
 	repo, history := newTestCommandRepositories(t)
 	ctx := context.Background()
@@ -472,6 +635,28 @@ func newTestCommandRepositoriesWithPath(t *testing.T) (*CommandRepository, *Hist
 	return NewCommandRepository(db), NewHistoryRepository(db), dbPath
 }
 
+func newTestCommandRepositoryWithDecisions(t *testing.T) (*CommandRepository, *DecisionRepository) {
+	t.Helper()
+
+	dbPath := filepath.Join(t.TempDir(), "command_decisions.sqlite")
+	db, err := store.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	if err := store.RunMigrations(db); err != nil {
+		t.Fatalf("RunMigrations returned error: %v", err)
+	}
+
+	decisions := NewDecisionRepository(db)
+	return NewCommandRepositoryWithDecisions(db, decisions), decisions
+}
+
 func newTestPostgresCommandRepository(t *testing.T, dsn string) (*CommandRepository, *sql.DB) {
 	t.Helper()
 
@@ -499,6 +684,34 @@ func newTestPostgresCommandRepository(t *testing.T, dsn string) (*CommandReposit
 	}
 
 	return NewCommandRepository(db), db
+}
+
+func assertCommandDecisionEvent(
+	t *testing.T,
+	got domain.DecisionEvent,
+	decisionID string,
+	stage domain.DecisionStage,
+	status domain.DecisionStatus,
+	commandID string,
+	createdAt time.Time,
+) {
+	t.Helper()
+
+	if got.DecisionID != decisionID {
+		t.Fatalf("decision_id = %q, want %q", got.DecisionID, decisionID)
+	}
+	if got.Stage != stage {
+		t.Fatalf("stage = %q, want %q", got.Stage, stage)
+	}
+	if got.Status != status {
+		t.Fatalf("status = %q, want %q", got.Status, status)
+	}
+	if got.RelatedCommandID != commandID {
+		t.Fatalf("related_command_id = %q, want %q", got.RelatedCommandID, commandID)
+	}
+	if !got.CreatedAt.Equal(createdAt) {
+		t.Fatalf("created_at = %v, want %v", got.CreatedAt, createdAt)
+	}
 }
 
 func countCommandResults(t *testing.T, db *sql.DB, commandID string) int {

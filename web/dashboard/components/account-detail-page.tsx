@@ -1,9 +1,9 @@
 'use client'
 
 import { startTransition, useEffect, useState } from 'react'
-import { getAccountDetail, type AccountDetail } from '../lib/api'
+import { getAccountDetail, type AccountDetail, type DecisionEvent } from '../lib/api'
 import { DashboardShell } from './dashboard-shell'
-import { EmptyState, JsonPreview, Panel, ToneBadge, formatMoney, formatNumber } from './ui'
+import { EmptyState, JsonPreview, Panel, ToneBadge, formatMoney, formatNumber, formatTimestamp } from './ui'
 
 export function AccountDetailPage({
   accountId,
@@ -112,6 +112,8 @@ export function AccountDetailPage({
             </Panel>
           </div>
 
+          <DecisionCockpit data={data} />
+
           <Panel title="当前持仓" subtitle="实时持仓列表及仓位管理上下文。">
             {data.positions.length > 0 ? (
               <div className="overflow-x-auto">
@@ -123,22 +125,31 @@ export function AccountDetailPage({
                       <th className="pb-3">方向</th>
                       <th className="pb-3">手数</th>
                       <th className="pb-3">盈亏</th>
+                      <th className="pb-3">SL距离</th>
+                      <th className="pb-3">R倍数</th>
                       <th className="pb-3">持仓时长</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
-                    {data.positions.map((position) => (
-                      <tr key={position.ticket}>
-                        <td className="py-4 pr-4 text-stone-100">{position.ticket}</td>
-                        <td className="py-4 pr-4 text-stone-300">{position.strategy}</td>
-                        <td className="py-4 pr-4">
-                          <ToneBadge tone={position.direction === 'BUY' ? 'green' : 'red'}>{position.direction === 'BUY' ? '买入' : '卖出'}</ToneBadge>
-                        </td>
-                        <td className="py-4 pr-4 text-stone-300">{position.lots}</td>
-                        <td className="py-4 pr-4 text-stone-300">{formatMoney(position.profit, data.account.currency)}</td>
-                        <td className="py-4 text-stone-300">{position.hold_hours.toFixed(2)}h</td>
-                      </tr>
-                    ))}
+                    {data.positions.map((position) => {
+                      const metrics = positionMetrics(position)
+                      return (
+                        <tr key={position.ticket}>
+                          <td className="py-4 pr-4 text-stone-100">{position.ticket}</td>
+                          <td className="py-4 pr-4 text-stone-300">{position.strategy || '未标记'}</td>
+                          <td className="py-4 pr-4">
+                            <ToneBadge tone={position.direction === 'BUY' ? 'green' : 'red'}>
+                              {position.direction === 'BUY' ? '买入' : '卖出'}
+                            </ToneBadge>
+                          </td>
+                          <td className="py-4 pr-4 text-stone-300">{position.lots}</td>
+                          <td className="py-4 pr-4 text-stone-300">{formatMoney(position.profit, data.account.currency)}</td>
+                          <td className="py-4 pr-4 text-stone-300">{metrics.slDistance}</td>
+                          <td className="py-4 pr-4 text-stone-300">{metrics.rMultiple}</td>
+                          <td className="py-4 text-stone-300">{position.hold_hours.toFixed(2)}h</td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -198,6 +209,109 @@ export function AccountDetailPage({
   )
 }
 
+function DecisionCockpit({ data }: { data: AccountDetail }) {
+  const tradePlan = asRecord(data.ai_result.trade_plan)
+  const events = data.decision_events ?? []
+  const riskEvent = events.find((event) => event.stage === 'risk_gate')
+  const latestEvent = events[0]
+  const decisionID = textValue(tradePlan?.decision_id) || latestEvent?.decision_id || '暂无'
+  const mode = textValue(tradePlan?.mode) || textValue(latestEvent?.summary.mode) || 'observe'
+  const side = textValue(tradePlan?.side) || textValue(latestEvent?.summary.side) || 'none'
+  const confidence = numberValue(tradePlan?.confidence) ?? numberValue(latestEvent?.summary.confidence)
+  const reasonCodes = stringArray(tradePlan?.reason_codes)
+  const conflicts = stringArray(tradePlan?.conflicts)
+  const narrative = textValue(tradePlan?.narrative)
+  const marketFilters = collectMarketFilterCodes(data, tradePlan)
+  const riskCodes = riskEvent?.reason_codes ?? []
+
+  return (
+    <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
+      <Panel title="决策摘要" subtitle="结构化 trade_plan.v1 和最新风险审查。">
+        <div className="space-y-4">
+          <div className="rounded-2xl bg-black/20 px-4 py-4">
+            <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Decision ID</p>
+            <p className="mt-2 break-all text-lg font-semibold text-stone-100">{decisionID}</p>
+          </div>
+          <div className="metric-grid">
+            <Metric label="模式 / 方向" value={`${mode} / ${side}`} />
+            <Metric label="置信度" value={confidence == null ? '无' : `${confidence}%`} />
+            <Metric label="过期时间" value={textValue(tradePlan?.expires_at) || '无'} />
+          </div>
+          <CodeChips title="Reason Codes" values={reasonCodes} empty="无决策理由码" />
+          <CodeChips title="Conflicts" values={conflicts} empty="无冲突" tone="orange" />
+          <MarketFilterChips items={marketFilters} />
+          {narrative ? <p className="rounded-2xl bg-black/20 px-4 py-3 text-sm leading-6 text-stone-300">{narrative}</p> : null}
+        </div>
+      </Panel>
+
+      <Panel title="风险门" subtitle="确定性审查优先于自然语言叙述。">
+        {riskEvent ? (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <ToneBadge tone={toneForStatus(riskEvent.status)}>{riskEvent.status}</ToneBadge>
+              <span className="text-sm text-stone-400">{formatTimestamp(riskEvent.created_at)}</span>
+            </div>
+            <div className="metric-grid">
+              <Metric label="请求手数" value={summaryNumber(riskEvent, 'requested_lots')} />
+              <Metric label="允许手数" value={summaryNumber(riskEvent, 'allowed_lots')} />
+              <Metric label="审计模式" value={summaryBoolean(riskEvent, 'audit_only')} />
+            </div>
+            <CodeChips title="Risk Codes" values={riskCodes} empty="无风险门代码" tone={riskEvent.status === 'rejected' ? 'red' : 'amber'} />
+          </div>
+        ) : (
+          <EmptyState title="暂无风险门" detail="收到 trade_plan 并完成 Go 侧风险审查后会显示结果。" />
+        )}
+      </Panel>
+
+      <Panel title="最近决策事件" subtitle="按时间倒序展示 AI、风险门、命令和 EA 回执阶段。" className="xl:col-span-2">
+        {events.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="text-xs uppercase tracking-[0.2em] text-stone-500">
+                <tr>
+                  <th className="pb-3">阶段</th>
+                  <th className="pb-3">状态</th>
+                  <th className="pb-3">决策</th>
+                  <th className="pb-3">命令</th>
+                  <th className="pb-3">理由码</th>
+                  <th className="pb-3">时间</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {events.slice(0, 8).map((event) => (
+                  <tr key={`${event.id}-${event.stage}`}>
+                    <td className="py-4 pr-4 text-stone-100">{event.stage}</td>
+                    <td className="py-4 pr-4">
+                      <ToneBadge tone={toneForStatus(event.status)}>{event.status}</ToneBadge>
+                    </td>
+                    <td className="py-4 pr-4 text-stone-300">{event.decision_id}</td>
+                    <td className="py-4 pr-4 text-stone-300">{event.related_command_id || '无'}</td>
+                    <td className="py-4 pr-4">
+                      <div className="flex flex-wrap gap-2">
+                        {(event.reason_codes.length > 0 ? event.reason_codes : ['none']).map((code) => (
+                          <ToneBadge key={code} tone="neutral">{code}</ToneBadge>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-4 text-stone-300">{formatTimestamp(event.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState title="暂无决策事件" detail="AI 结果、风险门、命令下发或 EA 回执到达后会显示在这里。" />
+        )}
+      </Panel>
+    </div>
+  )
+}
+
+type MarketFilterCode = {
+  severity: string
+  code: string
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -205,4 +319,283 @@ function Metric({ label, value }: { label: string; value: string }) {
       <p className="mt-2 text-lg font-semibold text-stone-100">{value}</p>
     </div>
   )
+}
+
+function MarketFilterChips({ items }: { items: MarketFilterCode[] }) {
+  if (items.length === 0) {
+    return null
+  }
+
+  const groups = groupMarketFilterCodes(items)
+
+  return (
+    <div className="rounded-2xl bg-black/20 px-4 py-3">
+      <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Market Filters</p>
+      <div className="mt-3 space-y-2">
+        {groups.map(({ severity, codes }) => (
+          <div key={severity} className="flex flex-wrap items-center gap-2">
+            <ToneBadge tone={toneForMarketFilterSeverity(severity)}>{severity}</ToneBadge>
+            {codes.map((code) => (
+              <ToneBadge key={code} tone="neutral">
+                {code}
+              </ToneBadge>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function CodeChips({
+  title,
+  values,
+  empty,
+  tone = 'neutral'
+}: {
+  title: string
+  values: string[]
+  empty: string
+  tone?: string
+}) {
+  const items = values.length > 0 ? values : [empty]
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-[0.18em] text-stone-500">{title}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {items.map((value) => (
+          <ToneBadge key={value} tone={values.length > 0 ? tone : 'neutral'}>
+            {value}
+          </ToneBadge>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function collectMarketFilterCodes(data: AccountDetail, tradePlan: Record<string, unknown> | null): MarketFilterCode[] {
+  const accountDetail = asRecord(data)
+  const aiResult = asRecord(data.ai_result)
+  const aiMetadata = asRecord(aiResult?.metadata)
+  const tradePlanMetadata = asRecord(tradePlan?.metadata)
+  const sources = [
+    marketFilterValue(accountDetail),
+    marketFilterValue(aiResult),
+    marketFilterValue(aiMetadata),
+    marketFilterValue(tradePlan),
+    marketFilterValue(tradePlanMetadata)
+  ]
+
+  return dedupeMarketFilters(sources.flatMap((source) => parseMarketFilterValue(source, 'warning')))
+}
+
+function marketFilterValue(record: Record<string, unknown> | null) {
+  return valueForKeys(record, ['market_filters', 'marketFilters', 'market_filter', 'marketFilter'])
+}
+
+function parseMarketFilterValue(value: unknown, fallbackSeverity: string, depth = 0): MarketFilterCode[] {
+  if (depth > 4 || value == null) {
+    return []
+  }
+
+  const singleCode = textValue(value)
+  if (singleCode) {
+    return [{ severity: fallbackSeverity, code: singleCode }]
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => parseMarketFilterValue(item, fallbackSeverity, depth + 1))
+  }
+
+  const record = asRecord(value)
+  if (!record) {
+    return []
+  }
+
+  const severity = severityFromMarketFilterRecord(record, fallbackSeverity)
+  const directCodes = valuesForKeys(record, ['reason_codes', 'reasonCodes', 'reason_code', 'reasonCode', 'codes', 'code'])
+    .flatMap((codeValue) => codesFromValue(codeValue))
+    .map((code) => ({ severity, code }))
+
+  const blockingCodes = valuesForKeys(record, ['blocking', 'blockers', 'blocked', 'blocks'])
+    .flatMap((codeValue) => parseMarketFilterValue(codeValue, 'blocking', depth + 1))
+  const warningCodes = valuesForKeys(record, ['warnings', 'warning', 'warns'])
+    .flatMap((codeValue) => parseMarketFilterValue(codeValue, 'warning', depth + 1))
+  const nestedCodes = valuesForKeys(record, ['filters', 'items', 'results', 'checks', 'entries'])
+    .flatMap((codeValue) => parseMarketFilterValue(codeValue, severity, depth + 1))
+
+  return [...directCodes, ...blockingCodes, ...warningCodes, ...nestedCodes]
+}
+
+function codesFromValue(value: unknown): string[] {
+  const singleCode = textValue(value)
+  if (singleCode) {
+    return [singleCode]
+  }
+  return stringArray(value)
+}
+
+function severityFromMarketFilterRecord(record: Record<string, unknown>, fallbackSeverity: string) {
+  const directSeverity = normalizeMarketFilterSeverity(
+    valueForKeys(record, ['severity', 'level', 'status', 'type', 'category']),
+    fallbackSeverity
+  )
+
+  if (directSeverity !== fallbackSeverity) {
+    return directSeverity
+  }
+  if (record.blocking === true || record.blocked === true) {
+    return 'blocking'
+  }
+  if (record.warning === true || record.warn === true) {
+    return 'warning'
+  }
+  return directSeverity
+}
+
+function normalizeMarketFilterSeverity(value: unknown, fallbackSeverity: string) {
+  const severity = textValue(value).trim().toLowerCase()
+  if (!severity) {
+    return fallbackSeverity
+  }
+
+  if (
+    ['blocking', 'blocked', 'blocker', 'block', 'deny', 'denied', 'reject', 'rejected', 'critical', 'fatal', 'error'].includes(severity)
+  ) {
+    return 'blocking'
+  }
+  if (['warning', 'warnings', 'warn', 'caution', 'soft', 'clamped'].includes(severity)) {
+    return 'warning'
+  }
+  if (['info', 'informational', 'notice', 'pass', 'passed', 'allowed'].includes(severity)) {
+    return 'info'
+  }
+  return severity
+}
+
+function valueForKeys(record: Record<string, unknown> | null, keys: string[]) {
+  if (!record) {
+    return undefined
+  }
+  return keys.map((key) => record[key]).find((value) => value != null)
+}
+
+function valuesForKeys(record: Record<string, unknown>, keys: string[]) {
+  return keys.map((key) => record[key]).filter((value) => value != null)
+}
+
+function dedupeMarketFilters(items: MarketFilterCode[]) {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    if (!item.code) {
+      return false
+    }
+    const key = `${item.severity}:${item.code}`
+    if (seen.has(key)) {
+      return false
+    }
+    seen.add(key)
+    return true
+  })
+}
+
+function groupMarketFilterCodes(items: MarketFilterCode[]) {
+  const order = ['blocking', 'warning', 'info']
+  const groups = new Map<string, string[]>()
+  items.forEach((item) => {
+    groups.set(item.severity, [...(groups.get(item.severity) ?? []), item.code])
+  })
+
+  return [...groups.entries()]
+    .sort(([left], [right]) => {
+      const leftIndex = order.indexOf(left)
+      const rightIndex = order.indexOf(right)
+      if (leftIndex === -1 && rightIndex === -1) {
+        return 0
+      }
+      if (leftIndex === -1) {
+        return 1
+      }
+      if (rightIndex === -1) {
+        return -1
+      }
+      return leftIndex - rightIndex
+    })
+    .map(([severity, codes]) => ({ severity, codes }))
+}
+
+function toneForMarketFilterSeverity(severity: string) {
+  switch (severity) {
+    case 'blocking':
+      return 'red'
+    case 'warning':
+      return 'amber'
+    case 'info':
+      return 'blue'
+    default:
+      return 'neutral'
+  }
+}
+
+function positionMetrics(position: AccountDetail['positions'][number]) {
+  const slDistance = position.sl > 0 ? Math.abs(position.entry_price - position.sl) : 0
+  const direction = position.direction.toUpperCase()
+  const profitDistance = direction === 'SELL'
+    ? position.entry_price - position.current_price
+    : position.current_price - position.entry_price
+  const rMultiple = slDistance > 0 ? profitDistance / slDistance : null
+
+  return {
+    slDistance: slDistance > 0 ? formatNumber(slDistance) : '无',
+    rMultiple: rMultiple == null ? '无' : `${rMultiple.toFixed(2)}R`
+  }
+}
+
+function toneForStatus(status: string) {
+  switch (status) {
+    case 'accepted':
+    case 'acked':
+    case 'delivered':
+      return 'green'
+    case 'clamped':
+    case 'pending':
+      return 'amber'
+    case 'rejected':
+    case 'failed':
+      return 'red'
+    default:
+      return 'neutral'
+  }
+}
+
+function summaryNumber(event: DecisionEvent, key: string) {
+  const value = numberValue(event.summary[key])
+  return value == null ? '无' : formatNumber(value)
+}
+
+function summaryBoolean(event: DecisionEvent, key: string) {
+  const value = event.summary[key]
+  if (typeof value !== 'boolean') {
+    return '无'
+  }
+  return value ? '是' : '否'
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null
+  }
+  return value as Record<string, unknown>
+}
+
+function textValue(value: unknown) {
+  return typeof value === 'string' ? value : ''
+}
+
+function numberValue(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }

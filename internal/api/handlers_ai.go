@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 
 	"gold-bot/internal/domain"
 	"gold-bot/internal/integration/aurex"
+	"gold-bot/internal/strategy/riskgate"
 )
 
 type aiHandler struct {
@@ -115,8 +117,18 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 		return
 	}
 	now := h.now().UTC()
+	tradePlan, tradePlanValidation := parseTradePlanPayload(payload, accountID, symbol)
+	riskGateResult, err := h.evaluateRiskGate(r.Context(), accountID, symbol, tradePlan, now)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
+		return
+	}
 	if err := h.deps.Accounts.SaveAIResult(r.Context(), accountID, symbol, raw, now); err != nil {
 		log.Printf("[AI] ❌ account=%s/%s | SaveAIResult 失败: %v", accountID, symbol, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
+		return
+	}
+	if err := h.recordAIDecisionTimeline(r.Context(), accountID, symbol, tradePlan, riskGateResult, now); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
 		return
 	}
@@ -135,17 +147,21 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 	}
 
 	if h.deps.Events != nil {
+		eventPayload := raw
+		if tradePlan != nil {
+			eventPayload = aiResultEventPayload(payload, tradePlan.Summary(), riskGateResult)
+		}
 		h.deps.Events.Publish(domain.Event{
 			EventID:   fmt.Sprintf("evt_ai_%d", now.UnixNano()),
 			EventType: "ai_result",
 			AccountID: accountID,
 			Source:    "api.ai_result",
 			Timestamp: now,
-			Payload:   raw,
+			Payload:   eventPayload,
 		})
 	}
 
-	if shouldQueueRiskCommand(payload) {
+	if shouldQueueRiskCommand(payload) && riskGateAllowsCommand(tradePlan, riskGateResult) {
 		exitSuggestion := strings.ToLower(asString(payload["exit_suggestion"]))
 		if exitSuggestion == "close_short" {
 			state, err := h.deps.Accounts.GetStateSymbol(r.Context(), accountID, symbol)
@@ -155,7 +171,7 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 				return
 			}
 
-			commands := buildCloseShortCommands(accountID, symbol, payload, state.Positions, now)
+			commands := buildCloseShortCommands(accountID, symbol, payload, state.Positions, now, tradePlan, riskGateResult)
 			if len(commands) == 0 {
 				log.Printf("[AI] ⚠️ account=%s/%s | 风险警报要求平空，但当前无可执行 SELL 持仓，跳过下发", accountID, symbol)
 			} else {
@@ -184,6 +200,7 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 				"confidence": payload["confidence"],
 				"source":     "ai_risk_alert",
 			}
+			attachTradePlanCommandMetadata(commandPayload, tradePlan, riskGateResult)
 
 			// P3-14: Auto-execution with specific lot reduction for close_partial
 			if exitSuggestion == "close_partial" {
@@ -210,10 +227,142 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"status": "OK", "received": true})
+	response := map[string]any{"status": "OK", "received": true}
+	if tradePlanValidation != nil {
+		response["trade_plan_validation"] = tradePlanValidation
+	}
+	if tradePlan != nil {
+		response["decision"] = tradePlan.Summary()
+		response["risk_gate"] = riskGateResult
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
-func buildCloseShortCommands(accountID, symbol string, payload map[string]any, positions []domain.Position, now time.Time) []domain.Command {
+func (h aiHandler) evaluateRiskGate(ctx context.Context, accountID, symbol string, tradePlan *domain.TradePlan, now time.Time) (riskgate.Result, error) {
+	if tradePlan == nil {
+		return riskgate.Result{}, nil
+	}
+
+	account, err := h.deps.Accounts.GetAccount(ctx, accountID)
+	if err != nil {
+		return riskgate.Result{}, err
+	}
+	runtime, err := h.deps.Accounts.GetRuntime(ctx, accountID)
+	if err != nil {
+		return riskgate.Result{}, err
+	}
+	state, err := h.deps.Accounts.GetStateSymbol(ctx, accountID, symbol)
+	if err != nil {
+		return riskgate.Result{}, err
+	}
+
+	return riskgate.Evaluate(riskgate.Input{
+		Now:     now,
+		Account: account,
+		Runtime: runtime,
+		State:   state,
+		Plan:    tradePlan,
+	}), nil
+}
+
+func (h aiHandler) recordAIDecisionTimeline(ctx context.Context, accountID, symbol string, tradePlan *domain.TradePlan, gate riskgate.Result, now time.Time) error {
+	if h.deps.Decisions == nil || tradePlan == nil {
+		return nil
+	}
+
+	if err := h.deps.Decisions.Record(ctx, domain.DecisionEvent{
+		DecisionID:  tradePlan.DecisionID,
+		AccountID:   accountID,
+		Symbol:      symbol,
+		Stage:       domain.DecisionStageAIResult,
+		Status:      domain.DecisionStatusAccepted,
+		ReasonCodes: tradePlan.ReasonCodes,
+		Summary:     tradePlanDecisionSummary(tradePlan),
+		CreatedAt:   now,
+	}); err != nil {
+		return err
+	}
+
+	return h.deps.Decisions.Record(ctx, domain.DecisionEvent{
+		DecisionID:  tradePlan.DecisionID,
+		AccountID:   accountID,
+		Symbol:      symbol,
+		Stage:       domain.DecisionStageRiskGate,
+		Status:      riskGateDecisionStatus(gate.Status),
+		ReasonCodes: gate.ReasonCodes,
+		Summary:     riskGateDecisionSummary(gate),
+		CreatedAt:   now,
+	})
+}
+
+func parseTradePlanPayload(payload map[string]any, accountID, symbol string) (*domain.TradePlan, map[string]any) {
+	value, ok := payload["trade_plan"]
+	if !ok {
+		return nil, nil
+	}
+
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, map[string]any{"valid": false, "error": fmt.Sprintf("marshal trade_plan: %v", err)}
+	}
+	plan, err := domain.ParseTradePlan(raw, accountID, symbol)
+	if err != nil {
+		return nil, map[string]any{"valid": false, "error": err.Error()}
+	}
+	return plan, map[string]any{"valid": true}
+}
+
+func tradePlanDecisionSummary(plan *domain.TradePlan) map[string]any {
+	return map[string]any{
+		"decision_id": plan.DecisionID,
+		"mode":        plan.Mode,
+		"symbol":      plan.Symbol,
+		"confidence":  plan.Confidence,
+	}
+}
+
+func riskGateDecisionSummary(gate riskgate.Result) map[string]any {
+	return map[string]any{
+		"decision_id":     gate.DecisionID,
+		"mode":            gate.Mode,
+		"symbol":          gate.Symbol,
+		"status":          string(gate.Status),
+		"audit_only":      gate.AuditOnly,
+		"requested_lots":  gate.RequestedLots,
+		"allowed_lots":    gate.AllowedLots,
+		"max_risk_lots":   gate.MaxRiskLots,
+		"max_margin_lots": gate.MaxMarginLots,
+	}
+}
+
+func riskGateDecisionStatus(status riskgate.Status) domain.DecisionStatus {
+	switch status {
+	case riskgate.StatusAccepted:
+		return domain.DecisionStatusAccepted
+	case riskgate.StatusRejected:
+		return domain.DecisionStatusRejected
+	case riskgate.StatusClamped:
+		return domain.DecisionStatusClamped
+	default:
+		return domain.DecisionStatusPending
+	}
+}
+
+func aiResultEventPayload(payload map[string]any, summary domain.TradePlanSummary, gate riskgate.Result) json.RawMessage {
+	eventPayload := make(map[string]any, len(payload)+2)
+	for key, value := range payload {
+		eventPayload[key] = value
+	}
+	eventPayload["trade_plan_summary"] = summary
+	eventPayload["risk_gate"] = gate
+	data, err := json.Marshal(eventPayload)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return data
+}
+
+func buildCloseShortCommands(accountID, symbol string, payload map[string]any, positions []domain.Position, now time.Time, tradePlan *domain.TradePlan, gate riskgate.Result) []domain.Command {
 	reason := fmt.Sprintf("AI风险警报(平空): %s", asString(payload["alert_reason"]))
 	commands := make([]domain.Command, 0, len(positions))
 	for _, position := range positions {
@@ -228,24 +377,43 @@ func buildCloseShortCommands(accountID, symbol string, payload map[string]any, p
 		}
 
 		commandID := fmt.Sprintf("ai_close_%d_%d", now.UnixNano(), position.Ticket)
+		commandPayload := map[string]any{
+			"command_id": commandID,
+			"action":     string(domain.CommandActionClose),
+			"ticket":     position.Ticket,
+			"symbol":     symbol,
+			"reason":     reason,
+			"confidence": payload["confidence"],
+			"source":     "ai_risk_alert",
+		}
+		attachTradePlanCommandMetadata(commandPayload, tradePlan, gate)
+
 		commands = append(commands, domain.Command{
 			CommandID: commandID,
 			AccountID: accountID,
 			Action:    domain.CommandActionClose,
 			Status:    domain.CommandStatusPending,
 			CreatedAt: now,
-			Payload: map[string]any{
-				"command_id": commandID,
-				"action":     string(domain.CommandActionClose),
-				"ticket":     position.Ticket,
-				"symbol":     symbol,
-				"reason":     reason,
-				"confidence": payload["confidence"],
-				"source":     "ai_risk_alert",
-			},
+			Payload:   commandPayload,
 		})
 	}
 	return commands
+}
+
+func riskGateAllowsCommand(tradePlan *domain.TradePlan, gate riskgate.Result) bool {
+	if tradePlan == nil {
+		return true
+	}
+	return gate.Status == riskgate.StatusAccepted || gate.Status == riskgate.StatusClamped
+}
+
+func attachTradePlanCommandMetadata(payload map[string]any, tradePlan *domain.TradePlan, gate riskgate.Result) {
+	if tradePlan == nil {
+		return
+	}
+	payload["decision_id"] = tradePlan.DecisionID
+	payload["trade_plan_mode"] = tradePlan.Mode
+	payload["risk_gate"] = gate
 }
 
 func (h aiHandler) triggerAI(w http.ResponseWriter, _ *http.Request) {

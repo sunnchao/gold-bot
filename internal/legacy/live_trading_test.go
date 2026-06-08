@@ -162,14 +162,14 @@ func TestLiveTradingExecutorOnBarsEnqueuesSignalCommand(t *testing.T) {
 
 	analyzer := &fakeLiveSignalAnalyzer{
 		signal: &domain.Signal{
-			Side:      "BUY",
-			Entry:     3335.7,
-			StopLoss:  3331.2,
-			TP1:       3339.8,
-			TP2:       3344.1,
-			Score:     8,
-			Strategy:  "pullback",
-			ATR:       1.5,
+			Side:     "BUY",
+			Entry:    3335.7,
+			StopLoss: 3331.2,
+			TP1:      3339.8,
+			TP2:      3344.1,
+			Score:    8,
+			Strategy: "pullback",
+			ATR:      1.5,
 		},
 	}
 	executor := &LiveTradingExecutor{
@@ -245,14 +245,14 @@ func TestBarsThenPollReturnsExecutorSignalPayloadCompatibleWithEA(t *testing.T) 
 
 	analyzer := &fakeLiveSignalAnalyzer{
 		signal: &domain.Signal{
-			Side:      "BUY",
-			Entry:     3335.7,
-			StopLoss:  3331.2,
-			TP1:       3339.8,
-			TP2:       3344.1,
-			Score:     8,
-			Strategy:  "pullback",
-			ATR:       1.5,
+			Side:     "BUY",
+			Entry:    3335.7,
+			StopLoss: 3331.2,
+			TP1:      3339.8,
+			TP2:      3344.1,
+			Score:    8,
+			Strategy: "pullback",
+			ATR:      1.5,
 		},
 	}
 	executor := &LiveTradingExecutor{
@@ -329,6 +329,9 @@ func TestBarsThenPollReturnsExecutorSignalPayloadCompatibleWithEA(t *testing.T) 
 	if got := command["command_id"]; got != expectedCommandID {
 		t.Fatalf("command_id = %#v, want %s", got, expectedCommandID)
 	}
+	if got := command["decision_id"]; got != expectedCommandID {
+		t.Fatalf("decision_id = %#v, want %s", got, expectedCommandID)
+	}
 	if got := command["action"]; got != "SIGNAL" {
 		t.Fatalf("action = %#v, want SIGNAL", got)
 	}
@@ -387,14 +390,14 @@ func TestLiveTradingExecutorOnPositionsEnqueuesSignalCommand(t *testing.T) {
 
 	analyzer := &fakeLiveSignalAnalyzer{
 		signal: &domain.Signal{
-			Side:      "BUY",
-			Entry:     3335.7,
-			StopLoss:  3331.2,
-			TP1:       3339.8,
-			TP2:       3344.1,
-			Score:     8,
-			Strategy:  "pullback",
-			ATR:       1.5,
+			Side:     "BUY",
+			Entry:    3335.7,
+			StopLoss: 3331.2,
+			TP1:      3339.8,
+			TP2:      3344.1,
+			Score:    8,
+			Strategy: "pullback",
+			ATR:      1.5,
 		},
 	}
 	executor := &LiveTradingExecutor{
@@ -443,13 +446,13 @@ func TestLiveTradingExecutorDeduplicatesSameDecisionWindow(t *testing.T) {
 		analyzerFactory: func(symbol string) liveSignalAnalyzer {
 			return &fakeLiveSignalAnalyzer{
 				signal: &domain.Signal{
-					Side:      "BUY",
-					Entry:     3335.7,
-					StopLoss:  3331.2,
-					TP1:       3339.8,
-					TP2:       3344.1,
-					Score:     8,
-					Strategy:  "pullback",
+					Side:     "BUY",
+					Entry:    3335.7,
+					StopLoss: 3331.2,
+					TP1:      3339.8,
+					TP2:      3344.1,
+					Score:    8,
+					Strategy: "pullback",
 					ATR:      1.5,
 				},
 			}
@@ -469,6 +472,58 @@ func TestLiveTradingExecutorDeduplicatesSameDecisionWindow(t *testing.T) {
 	}
 }
 
+func TestLiveTradingExecutorAIStopLossModifyCommandUsesTradePlanDecisionID(t *testing.T) {
+	_, db, _, _, commands := newLegacyLiveServer(t, nil)
+	ctx := context.Background()
+	now := time.Date(2026, time.April, 18, 10, 2, 0, 0, time.UTC)
+	executor := &LiveTradingExecutor{
+		commands: commands,
+		now:      func() time.Time { return now },
+	}
+
+	snapshot := &domain.AnalysisSnapshot{
+		AccountID: "90011087",
+		Symbol:    "XAUUSD",
+		AIResult: &domain.AIResult{
+			SuggestedSL: 3332.8,
+			TradePlan: &domain.TradePlan{
+				DecisionID: "tpv1_modify_sl",
+			},
+		},
+		Positions: []domain.Position{
+			{
+				Ticket: 123456,
+				Symbol: "XAUUSD",
+				Type:   "BUY",
+				SL:     3331.0,
+				TP:     3344.0,
+			},
+		},
+	}
+
+	if err := executor.checkAIStopLossAdjust(ctx, "90011087", "XAUUSD", snapshot, 1.5); err != nil {
+		t.Fatalf("checkAIStopLossAdjust returned error: %v", err)
+	}
+
+	if got := commandCount(t, db); got != 1 {
+		t.Fatalf("commands count = %d, want 1", got)
+	}
+	commandID := firstCommandID(t, db)
+	command, err := commands.Get(ctx, commandID)
+	if err != nil {
+		t.Fatalf("Get(command) returned error: %v", err)
+	}
+	if command.Action != domain.CommandActionModify {
+		t.Fatalf("command action = %q, want %q", command.Action, domain.CommandActionModify)
+	}
+	if got := command.Payload["decision_id"]; got != "tpv1_modify_sl" {
+		t.Fatalf("decision_id = %#v, want tpv1_modify_sl", got)
+	}
+	if got := command.Payload["source"]; got != "ai_stop_loss" {
+		t.Fatalf("source = %#v, want ai_stop_loss", got)
+	}
+}
+
 func TestLiveTradingExecutorSkipsWhenTradingDisabled(t *testing.T) {
 	_, db, accounts, _, commands := newLegacyLiveServer(t, nil)
 	ctx := context.Background()
@@ -485,19 +540,19 @@ func TestLiveTradingExecutorSkipsWhenTradingDisabled(t *testing.T) {
 
 	analyzer := &fakeLiveSignalAnalyzer{
 		signal: &domain.Signal{
-			Side:      "BUY",
-			Entry:     3335.7,
-			StopLoss:  3331.2,
-			TP1:       3339.8,
-			TP2:       3344.1,
-			Score:     8,
-			Strategy:  "pullback",
+			Side:     "BUY",
+			Entry:    3335.7,
+			StopLoss: 3331.2,
+			TP1:      3339.8,
+			TP2:      3344.1,
+			Score:    8,
+			Strategy: "pullback",
 			ATR:      1.5,
 		},
 	}
 	executor := &LiveTradingExecutor{
-		accounts: accounts,
-		commands: commands,
+		accounts:        accounts,
+		commands:        commands,
 		analyzerFactory: func(symbol string) liveSignalAnalyzer { return analyzer },
 		now:             func() time.Time { return now },
 	}
