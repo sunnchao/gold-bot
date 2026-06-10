@@ -209,16 +209,20 @@ type StrategyScore struct {
 }
 
 type Signal struct {
-	Side          string          `json:"side"`
-	Entry         float64         `json:"entry"`
-	StopLoss      float64         `json:"stop_loss"`
-	TP1           float64         `json:"tp1"`
-	TP2           float64         `json:"tp2"`
-	Score         int             `json:"score"`
-	Strategy      string          `json:"strategy"`
-	ATR           float64         `json:"atr,omitempty"`
-	ATRMult       float64         `json:"atr_mult,omitempty"`
-	AllStrategies []StrategyScore `json:"all_strategies,omitempty"`
+	Side                string          `json:"side"`
+	Entry               float64         `json:"entry"`
+	StopLoss            float64         `json:"stop_loss"`
+	TP1                 float64         `json:"tp1"`
+	TP2                 float64         `json:"tp2"`
+	Score               int             `json:"score"`
+	Strategy            string          `json:"strategy"`
+	ATR                 float64         `json:"atr,omitempty"`
+	ATRMult             float64         `json:"atr_mult,omitempty"`
+	ScaleInParentTicket int64           `json:"scale_in_parent_ticket,omitempty"`
+	WeightedAvgEntry    float64         `json:"weighted_avg_entry,omitempty"`
+	UnifiedSL           float64         `json:"unified_sl,omitempty"`
+	ScaleInCount        int             `json:"scale_in_count,omitempty"`
+	AllStrategies       []StrategyScore `json:"all_strategies,omitempty"`
 }
 
 type PositionAction string
@@ -246,6 +250,7 @@ type PositionState struct {
 	LastModifyTime   time.Time `json:"last_modify_time"`
 	BEMoved          bool      `json:"be_moved"`
 	BETriggerATR     float64   `json:"be_trigger_atr"`
+	BestSL           float64   `json:"best_sl"` // 追踪历史最优止损，SL 只能单向向盈利方向移动
 }
 
 type PositionSnapshot struct {

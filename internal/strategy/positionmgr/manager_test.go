@@ -2,6 +2,7 @@ package positionmgr_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -366,5 +367,268 @@ func bullishMomentumM5Bars() []domain.Bar {
 		{Close: 100.3},
 		{Close: 100.35},
 		{Close: 100.4},
+	}
+}
+
+func TestBreakevenSkippedWhenBestSLAlreadyBetterBUY(t *testing.T) {
+	now := time.Date(2026, 4, 13, 8, 0, 0, 0, time.UTC)
+	manager := positionmgr.New(positionmgr.WithNow(func() time.Time { return now }))
+	// BUY 仓位，BestSL 已经在 3342.0（盈利方向），OpenPrice 是 3340.0
+	// 保本止损不应该把 SL 拉回到 3340.0
+	manager.SeedState(domain.PositionState{
+		Ticket:       701,
+		OpenTime:     now.Add(-2 * time.Hour),
+		BETriggerATR: 1.5,
+		BestSL:       3342.0, // 已经在盈利区域
+	})
+
+	got := manager.Analyze(domain.PositionSnapshot{
+		CurrentPrice: 3344.0,
+		CurrentATR:   2.0,
+		AvgATR:       2.0,
+		H1Bars:       samplePositionBars(),
+		Positions: []domain.Position{
+			{
+				Ticket:    701,
+				Type:      "BUY",
+				OpenPrice: 3340.0,
+				SL:        3342.0, // 当前 SL 已经在盈利区
+				Lots:      0.5,
+			},
+		},
+	})
+
+	// 不应该产生 MODIFY（保本）指令，因为 BestSL=3342 > OpenPrice=3340
+	for _, cmd := range got {
+		if cmd.Action == domain.PositionActionModify && cmd.NewSL == 3340.0 {
+			t.Fatalf("breakeven MODIFY should be skipped: BestSL=%.2f already better than OpenPrice=%.2f",
+				3342.0, 3340.0)
+		}
+	}
+	t.Logf("commands generated: %d (no backward SL move)", len(got))
+}
+
+func TestBreakevenSkippedWhenBestSLAlreadyBetterSELL(t *testing.T) {
+	now := time.Date(2026, 4, 13, 8, 0, 0, 0, time.UTC)
+	manager := positionmgr.New(positionmgr.WithNow(func() time.Time { return now }))
+	// SELL 仓位，BestSL 已经在 3338.0（盈利方向），OpenPrice 是 3340.0
+	// 保本止损不应该把 SL 拉回到 3340.0
+	manager.SeedState(domain.PositionState{
+		Ticket:       702,
+		OpenTime:     now.Add(-2 * time.Hour),
+		BETriggerATR: 1.5,
+		BestSL:       3338.0, // 已经在盈利区域（SELL 低更好）
+	})
+
+	got := manager.Analyze(domain.PositionSnapshot{
+		CurrentPrice: 3336.0,
+		CurrentATR:   2.0,
+		AvgATR:       2.0,
+		H1Bars:       samplePositionBars(),
+		Positions: []domain.Position{
+			{
+				Ticket:    702,
+				Type:      "SELL",
+				OpenPrice: 3340.0,
+				SL:        3338.0, // 当前 SL 已经在盈利区
+				Lots:      0.5,
+			},
+		},
+	})
+
+	// 不应该产生 MODIFY（保本）指令，因为 BestSL=3338 < OpenPrice=3340
+	for _, cmd := range got {
+		if cmd.Action == domain.PositionActionModify && cmd.NewSL == 3340.0 {
+			t.Fatalf("breakeven MODIFY should be skipped: BestSL=%.2f already better than OpenPrice=%.2f",
+				3338.0, 3340.0)
+		}
+	}
+	t.Logf("commands generated: %d (no backward SL move)", len(got))
+}
+
+func TestBreakevenAllowedWhenNoPriorBestSL(t *testing.T) {
+	now := time.Date(2026, 4, 13, 8, 0, 0, 0, time.UTC)
+	manager := positionmgr.New(positionmgr.WithNow(func() time.Time { return now }))
+	// BUY 仓位，BestSL=0（没有历史），应该允许保本
+	manager.SeedState(domain.PositionState{
+		Ticket:       703,
+		OpenTime:     now.Add(-2 * time.Hour),
+		BETriggerATR: 1.5,
+		BestSL:       0, // 没有历史 SL
+	})
+
+	got := manager.Analyze(domain.PositionSnapshot{
+		CurrentPrice: 3343.2,
+		CurrentATR:   2.0,
+		AvgATR:       2.0,
+		H1Bars:       samplePositionBars(),
+		Positions: []domain.Position{
+			{
+				Ticket:    703,
+				Type:      "BUY",
+				OpenPrice: 3340.0,
+				SL:        0, // 没有 SL
+				Lots:      0.5,
+			},
+		},
+	})
+
+	foundBreakeven := false
+	for _, cmd := range got {
+		if cmd.Action == domain.PositionActionModify && cmd.NewSL == 3340.0 {
+			foundBreakeven = true
+		}
+	}
+	if !foundBreakeven {
+		t.Fatal("breakeven should be allowed when no prior BestSL")
+	}
+}
+
+func TestGroupTP1Coordination(t *testing.T) {
+	// 场景：两个 BUY 仓位，一个到了 TP1（高盈利），一个没到
+	// 预期：两个都触发 TP1 平仓（协调）
+	now := time.Date(2026, 4, 13, 8, 0, 0, 0, time.UTC)
+	manager := positionmgr.New(positionmgr.WithNow(func() time.Time { return now }))
+
+	// 仓位A：已保本，未 TP1
+	manager.SeedState(domain.PositionState{
+		Ticket:       801,
+		OpenTime:     now.Add(-3 * time.Hour),
+		BETriggerATR: 1.5,
+		BEMoved:      true, // 已保本
+		BestSL:       3330.0,
+	})
+	// 仓位B：已保本，未 TP1
+	manager.SeedState(domain.PositionState{
+		Ticket:       802,
+		OpenTime:     now.Add(-2 * time.Hour),
+		BETriggerATR: 1.5,
+		BEMoved:      true,
+		BestSL:       3335.0,
+	})
+
+	// 仓位A 在 3330 入场，当前价 3345 → 盈利 15/2 = 7.5 ATR → 远超 TP1
+	// 仓位B 在 3335 入场，当前价 3345 → 盈利 10/2 = 5 ATR → 也超 TP1
+	// 用 samplePositionBars 让 tp1Multi = 1.5（默认值）
+	got := manager.Analyze(domain.PositionSnapshot{
+		CurrentPrice: 3345.0,
+		CurrentATR:   2.0,
+		AvgATR:       2.0,
+		H1Bars:       samplePositionBars(),
+		Positions: []domain.Position{
+			{Ticket: 801, Type: "BUY", OpenPrice: 3330.0, Lots: 0.5, SL: 3330.0},
+			{Ticket: 802, Type: "BUY", OpenPrice: 3335.0, Lots: 0.3, SL: 3335.0},
+		},
+	})
+
+	tp1Count := 0
+	for _, cmd := range got {
+		if cmd.Action == domain.PositionActionClose && (cmd.Reason == "TP1_7.5ATR" || cmd.Reason == "TP1_5.0ATR" || strings.Contains(cmd.Reason, "group_tp1") || strings.Contains(cmd.Reason, "TP1")) {
+			tp1Count++
+		}
+	}
+	// 两个仓位都应该有 TP1 CLOSE 命令
+	if tp1Count < 2 {
+		t.Fatalf("expected 2 TP1 CLOSE commands (group coordination), got %d: %v", tp1Count, got)
+	}
+}
+
+func TestGroupTP1OnlyOneTriggers(t *testing.T) {
+	// 场景：两个 BUY 仓位，只有 A 到了 TP1，B 没到
+	// 预期：A 触发 TP1 后，协调 pass 让 B 也 TP1
+	now := time.Date(2026, 4, 13, 8, 0, 0, 0, time.UTC)
+	manager := positionmgr.New(positionmgr.WithNow(func() time.Time { return now }))
+
+	// 仓位A：已保本
+	manager.SeedState(domain.PositionState{
+		Ticket:       901,
+		OpenTime:     now.Add(-3 * time.Hour),
+		BETriggerATR: 1.5,
+		BEMoved:      true,
+		BestSL:       3330.0,
+	})
+	// 仓位B：已保本
+	manager.SeedState(domain.PositionState{
+		Ticket:       902,
+		OpenTime:     now.Add(-2 * time.Hour),
+		BETriggerATR: 1.5,
+		BEMoved:      true,
+		BestSL:       3342.0,
+	})
+
+	// 仓位A: entry=3330, price=3343 → profit=13/2=6.5 ATR → 超过 TP1 (1.5 ATR)
+	// 仓位B: entry=3342, price=3343 → profit=1/2=0.5 ATR → 不到 TP1
+	got := manager.Analyze(domain.PositionSnapshot{
+		CurrentPrice: 3343.0,
+		CurrentATR:   2.0,
+		AvgATR:       2.0,
+		H1Bars:       samplePositionBars(),
+		Positions: []domain.Position{
+			{Ticket: 901, Type: "BUY", OpenPrice: 3330.0, Lots: 0.5, SL: 3330.0},
+			{Ticket: 902, Type: "BUY", OpenPrice: 3342.0, Lots: 0.3, SL: 3342.0},
+		},
+	})
+
+	// 统计两个仓位的 TP1 命令
+	tp1Tickets := make(map[int64]bool)
+	for _, cmd := range got {
+		if cmd.Action == domain.PositionActionClose && (strings.Contains(cmd.Reason, "TP1") || strings.Contains(cmd.Reason, "group_tp1")) {
+			tp1Tickets[cmd.Ticket] = true
+		}
+	}
+	if !tp1Tickets[901] {
+		t.Fatal("position 901 should have TP1 (direct trigger)")
+	}
+	if !tp1Tickets[902] {
+		t.Fatal("position 902 should have TP1 (group coordination)")
+	}
+}
+
+func TestGroupBECoordination(t *testing.T) {
+	// 场景：两个 BUY 仓位，一个刚触发 BE
+	// 预期：两个仓位的 SL 统一到最优（较高的 OpenPrice）
+	now := time.Date(2026, 4, 13, 8, 0, 0, 0, time.UTC)
+	manager := positionmgr.New(positionmgr.WithNow(func() time.Time { return now }))
+
+	// 仓位A：未保本
+	manager.SeedState(domain.PositionState{
+		Ticket:       1001,
+		OpenTime:     now.Add(-2 * time.Hour),
+		BETriggerATR: 1.5,
+		BestSL:       0,
+	})
+	// 仓位B：未保本
+	manager.SeedState(domain.PositionState{
+		Ticket:       1002,
+		OpenTime:     now.Add(-2 * time.Hour),
+		BETriggerATR: 1.5,
+		BestSL:       0,
+	})
+
+	// price=3343.2, ATR=2 → profitA = 13.2/2 = 6.6 ATR, profitB = 3.2/2 = 1.6 ATR
+	// 两个都 > BETriggerATR(1.5)，都会触发 BE
+	got := manager.Analyze(domain.PositionSnapshot{
+		CurrentPrice: 3343.2,
+		CurrentATR:   2.0,
+		AvgATR:       2.0,
+		H1Bars:       samplePositionBars(),
+		Positions: []domain.Position{
+			{Ticket: 1001, Type: "BUY", OpenPrice: 3330.0, Lots: 0.5},
+			{Ticket: 1002, Type: "BUY", OpenPrice: 3340.0, Lots: 0.3},
+		},
+	})
+
+	// 两个仓位都应有 MODIFY 命令，SL 应统一到 3340（较高的 OpenPrice）
+	beSLs := make(map[int64]float64)
+	for _, cmd := range got {
+		if cmd.Action == domain.PositionActionModify && (strings.Contains(cmd.Reason, "breakeven") || strings.Contains(cmd.Reason, "group_be")) {
+			beSLs[cmd.Ticket] = cmd.NewSL
+		}
+	}
+	if beSLs[1001] != 3340.0 {
+		t.Fatalf("position 1001 SL should be 3340.0 (unified), got %.2f", beSLs[1001])
+	}
+	if beSLs[1002] != 3340.0 {
+		t.Fatalf("position 1002 SL should be 3340.0 (unified), got %.2f", beSLs[1002])
 	}
 }

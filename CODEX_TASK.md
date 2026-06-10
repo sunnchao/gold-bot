@@ -1,219 +1,250 @@
-修改 gold-bot 实现动态自适应止损止盈（SL/TP）
+# Task: Implement Scale-In (浮亏加仓) Strategy for Gold-Bot
 
-## 任务目标
+## Overview
 
-### 方案1: 策略引擎动态化 (strategy/engine.py)
+Add a `scale_in` strategy that allows adding to existing losing positions at key technical levels,
+with proper risk controls. This is Phase 1: server-side engine + domain + config changes.
 
-当前问题：所有策略的 SL/TP 都是 ATR 固定倍数硬编码，需要改为动态计算。
+## Architecture Context
 
-在 StrategyEngine 类中新增方法 calculate_dynamic_sl_tp:
+- Strategy engine: `internal/strategy/engine/engine.go` — each strategy is a `check*()` method called from `Analyze()`
+- Strategy config: `internal/strategy/engine/config.go` — `StrategyConfig` struct with defaults
+- Domain models: `internal/domain/strategy.go` — `Signal`, `Position`, `AnalysisSnapshot`, etc.
+- Risk gate: `internal/strategy/riskgate/gate.go` — `Evaluate()` with `AllowAdd` flag
+- Pending signals: `internal/store/sqlite/pending_signal.go`
+- Position commands: `internal/domain/` — `PositionCommand` with MODIFY/CLOSE actions
 
-```python
-def _calculate_dynamic_sl_tp(self, price: float, atr: float, side: str, 
-                             market_context: dict) -> tuple:
-    """
-    动态计算止损止盈，综合考虑市场状态
-    
-    market_context 应包含:
-    - adx: ADX值 (趋势强度)
-    - rsi: RSI值
-    - h4_trend: H4趋势 ("强多头"/"强空头"/"震荡"/"趋势不明")
-    - strategy: 策略类型 ("pullback"/"breakout_retest"/"divergence"/"breakout_pyramid")
-    - nearest_sr_distance: 最近支撑/阻力距离 (可选)
-    
-    返回: (stop_loss, tp1, tp2, adjustment_reason)
-    """
-    
-    # 1. 基础 ATR 倍数 (策略默认值)
-    base_sl_mult = {
-        "pullback": 1.5,
-        "breakout_retest": 1.0,
-        "divergence": 0.5,
-        "breakout_pyramid": 0.5,
+## Current Anti-Duplicate Logic (engine.go ~line 377-403)
+
+```go
+// Same-direction: block if within 1 ATR
+if posSide == best.Side {
+    if dist < atr {
+        return nil, logs  // BLOCKS ALL same-direction signals
     }
-    base_tp1_mult = 1.5
-    base_tp2_mult = 3.0
-    
-    strategy = market_context.get("strategy", "pullback")
-    sl_mult = base_sl_mult.get(strategy, 1.5)
-    tp1_mult = base_tp1_mult
-    tp2_mult = base_tp2_mult
-    
-    adjustments = []
-    
-    # 2. 波动性调整 (ADX)
-    adx = market_context.get("adx", 0)
-    if adx > 35:  # 强趋势，波动大
-        sl_mult *= 1.3  # 放宽止损 30%
-        tp1_mult *= 1.2
-        tp2_mult *= 1.5
-        adjustments.append(f"ADX={adx:.1f}>35 放宽止损30%")
-    elif adx < 20:  # 弱趋势/震荡
-        sl_mult *= 0.8  # 收紧止损 20%
-        tp1_mult *= 0.8
-        adjustments.append(f"ADX={adx:.1f}<20 收紧止损20%")
-    
-    # 3. RSI 调整
-    rsi = market_context.get("rsi", 50)
-    if side == "BUY" and rsi < 30:  # 超卖区买入
-        sl_mult *= 0.9  # 稍收紧，风险较低
-        adjustments.append(f"RSI={rsi:.1f}<30 超卖区收紧止损")
-    elif side == "SELL" and rsi > 70:  # 超买区卖出
-        sl_mult *= 0.9
-        adjustments.append(f"RSI={rsi:.1f}>70 超买区收紧止损")
-    
-    # 4. H4 趋势一致性调整
-    h4_trend = market_context.get("h4_trend", "")
-    if h4_trend in ["强多头", "强空头"]:
-        # 顺势交易，TP 可以更远
-        tp2_mult *= 1.3
-        adjustments.append(f"H4={h4_trend} 扩大TP2")
-    
-    # 5. 计算 SL/TP
-    if side == "BUY":
-        stop_loss = price - atr * sl_mult
-        tp1 = price + atr * tp1_mult
-        tp2 = price + atr * tp2_mult
-    else:  # SELL
-        stop_loss = price + atr * sl_mult
-        tp1 = price - atr * tp1_mult
-        tp2 = price - atr * tp2_mult
-    
-    reason = "动态调整: " + "; ".join(adjustments) if adjustments else "默认ATR倍数"
-    
-    return (round(stop_loss, 2), round(tp1, 2), round(tp2, 2), reason)
-```
-
-然后修改各策略方法，在返回信号前调用此方法:
-
-例如 _check_pullback 中，将:
-```python
-sl = price - atr * 1.5
-return {
-    "side": "BUY", "entry": price,
-    "stop_loss": round(sl, 2),
-    "tp1": round(price + atr * 1.5, 2),
-    "tp2": round(price + atr * 3.0, 2),
-    ...
 }
 ```
 
-改为:
-```python
-market_context = {
-    "adx": adx, "rsi": rsi, "h4_trend": h4_trend,
-    "strategy": "pullback"
-}
-sl, tp1, tp2, reason = self._calculate_dynamic_sl_tp(price, atr, "BUY", market_context)
-return {
-    "side": "BUY", "entry": price,
-    "stop_loss": sl, "tp1": tp1, "tp2": tp2,
-    "sl_adjustment": reason,  # 新增字段记录调整原因
-    ...
+This MUST be modified to allow `scale_in` strategy through.
+
+## Requirements
+
+### 1. Config (config.go)
+
+Add to `StrategyConfig`:
+
+```go
+// ScaleIn strategy — add to losing positions at key technical levels
+ScaleInEnabled           bool    `json:"scale_in_enabled" yaml:"scale_in_enabled"`
+ScaleInMinADX            float64 `json:"scale_in_min_adx" yaml:"scale_in_min_adx"`
+ScaleInMinDistATR        float64 `json:"scale_in_min_dist_atr" yaml:"scale_in_min_dist_atr"`       // min distance from last entry, in ATR
+ScaleInMinFloatLossATR   float64 `json:"scale_in_min_float_loss_atr" yaml:"scale_in_min_float_loss_atr"` // min floating loss to trigger (in ATR)
+ScaleInMaxAddCount       int     `json:"scale_in_max_add_count" yaml:"scale_in_max_add_count"`      // max number of scale-in adds per direction
+ScaleInLotDecay          float64 `json:"scale_in_lot_decay" yaml:"scale_in_lot_decay"`              // each add = prev_lots × decay (e.g. 0.6)
+ScaleInSLATR             float64 `json:"scale_in_sl_atr" yaml:"scale_in_sl_atr"`                    // SL from weighted avg entry
+ScaleInTP1ATR            float64 `json:"scale_in_tp1_atr" yaml:"scale_in_tp1_atr"`
+ScaleInTP2ATR            float64 `json:"scale_in_tp2_atr" yaml:"scale_in_tp2_atr"`
+ScaleInMinIntervalMin    int     `json:"scale_in_min_interval_min" yaml:"scale_in_min_interval_min"` // min minutes between scale-ins
+ScaleInMaxFloatLossPct   float64 `json:"scale_in_max_float_loss_pct" yaml:"scale_in_max_float_loss_pct"` // max total floating loss % of equity to allow scale-in
+```
+
+Defaults (in `DefaultStrategyConfig()`):
+```
+ScaleInEnabled:         true
+ScaleInMinADX:          25.0
+ScaleInMinDistATR:      1.5
+ScaleInMinFloatLossATR: 0.5
+ScaleInMaxAddCount:     2
+ScaleInLotDecay:        0.6
+ScaleInSLATR:           1.2
+ScaleInTP1ATR:          1.5
+ScaleInTP2ATR:          3.0
+ScaleInMinIntervalMin:  30
+ScaleInMaxFloatLossPct: 5.0
+```
+
+### 2. Domain (domain/strategy.go)
+
+Add to `Signal` struct:
+```go
+ScaleInParentTicket int64   `json:"scale_in_parent_ticket,omitempty"` // ticket of the position being scaled into
+WeightedAvgEntry    float64 `json:"weighted_avg_entry,omitempty"`     // calculated weighted avg after scale-in
+UnifiedSL           float64 `json:"unified_sl,omitempty"`             // new unified SL for all same-direction positions
+ScaleInCount        int     `json:"scale_in_count,omitempty"`         // how many scale-ins already done
+```
+
+### 3. Engine (engine.go)
+
+#### 3a. New method: `checkScaleIn()`
+
+Signature:
+```go
+func (e Engine) checkScaleIn(h1 []domain.Bar, price, atr float64, positions []domain.Position) (*domain.Signal, domain.AnalysisLog)
+```
+
+Logic:
+1. If `!cfg.ScaleInEnabled`, return nil
+2. Find all same-direction positions that are in floating loss:
+   - BUY positions where `price < pos.OpenPrice` (current price below entry = loss for buy)
+   - SELL positions where `price > pos.OpenPrice`
+3. Count existing scale-in positions (strategy="scale_in" in comment or track via a convention)
+4. If count >= `ScaleInMaxAddCount`, skip
+5. Check min distance from most recent entry: `abs(price - lastEntry) >= cfg.ScaleInMinDistATR * atr`
+6. Check min floating loss: `abs(price - avgEntry) >= cfg.ScaleInMinFloatLossATR * atr`
+7. Check H4 trend alignment (reuse the H4 filter from Analyze — pass h4FilterDir as param or check inside)
+8. Check ADX >= `ScaleInMinADX`
+9. Technical level check — at least ONE of:
+   - Price within 0.3 ATR of a Fibonacci level (382/500/618 from H1 last bar)
+   - Price within 0.3 ATR of Pivot S1/R1/PP
+   - RSI in oversold(<30 for BUY)/overbought(>70 for SELL) zone
+   - Price touching EMA50 or EMA200 (within 0.2 ATR)
+10. Calculate:
+    - `existingLots = sum of all same-direction position lots`
+    - `newLots = max(existingLots * cfg.ScaleInLotDecay, 0.01)` — round to lot step 0.01
+    - `weightedAvg = (sum of lot*price for all positions + newLots*price) / (sum of lots + newLots)`
+    - `unifiedSL` based on weightedAvg and ScaleInSLATR
+11. Score: start at 5, add points for:
+    - ADX > 30: +1
+    - RSI confirmation: +1
+    - Price at Fibonacci level: +1
+    - Price at Pivot level: +1
+    - MACD histogram confirming: +1
+12. Return Signal with `Strategy: "scale_in"`, `Side` = same direction as existing positions,
+    the calculated `Entry`, `StopLoss` = unifiedSL, `TP1/TP2` based on weighted avg + ATR multiples.
+    Set `ScaleInParentTicket` = ticket of the most recent same-direction position.
+    Set `WeightedAvgEntry`, `UnifiedSL`, `ScaleInCount`.
+
+#### 3b. Modify `Analyze()` to call `checkScaleIn()`
+
+After the existing strategy checks (around line 250), add:
+```go
+if signal, detail := e.checkScaleIn(h1, price, atr, snapshot.Positions); signal != nil {
+    signals = append(signals, *signal)
+    logs = append(logs, detail)
+    log.Printf("[STRATEGY] %s", detail.Message)
+} else {
+    logs = append(logs, detail)
 }
 ```
 
-同样修改 _check_breakout_retest, _check_divergence, _check_breakout_pyramid。
+#### 3c. Modify anti-duplicate logic (line ~377)
 
-### 方案2: AI结果端点接收 suggestedSL/suggestedTP (app.py)
-
-在 app.py 中新增端点 /api/v2/ai_result:
-
-```python
-@app.route('/api/v2/ai_result/<account_id>/<symbol>', methods=['POST'])
-@require_token
-def api_v2_ai_result(account_id, symbol):
-    """
-    POST /api/v2/ai_result/<account_id>/<symbol>
-    用途: 接收 gold-analysis-agent 发来的 AI 分析结果
-          包含 suggested_sl/suggested_tp 用于持仓调整
-    """
-    token = getattr(request, '_gb_token', '')
-    allowed = token_mgr.get_allowed_accounts(token)
-    if allowed is not None and account_id not in allowed:
-        return jsonify({"status": "ERROR", "message": "forbidden"}), 403
-    
-    data = request.get_json(silent=True) or {}
-    
-    # 解析所有字段
-    bias = data.get("bias", "neutral")
-    confidence = float(data.get("confidence", 0))
-    exit_suggestion = data.get("exit_suggestion", "hold")
-    risk_alert = bool(data.get("risk_alert", False))
-    alert_reason = data.get("alert_reason", "")
-    
-    # AI 动态 SL/TP 建议
-    suggested_sl = float(data.get("suggested_sl", 0))
-    suggested_tp = float(data.get("suggested_tp", 0))
-    
-    # 更新账户状态
-    with store.lock:
-        acc = store.get(account_id)
-        acc["last_signal"] = {
-            "bias": bias,
-            "confidence": confidence,
-            "exit_suggestion": exit_suggestion,
-            "risk_alert": risk_alert,
-            "suggested_sl": suggested_sl,
-            "suggested_tp": suggested_tp,
-            "time": datetime.now().strftime("%H:%M:%S"),
+Change the same-direction check to allow `scale_in` strategy:
+```go
+if posSide == best.Side {
+    if dist < atr {
+        // Allow scale_in strategy to bypass the 1-ATR same-direction block
+        if best.Strategy == "scale_in" {
+            log.Printf("[STRATEGY] ➕ 浮亏加仓豁免防重复: 策略=scale_in, 距离=%.2f < ATR=%.2f", dist, atr)
+            logs = append(logs, domain.AnalysisLog{
+                Level:    "info",
+                Strategy: "汇总",
+                Message:  fmt.Sprintf("浮亏加仓豁免防重复: 策略=scale_in, 距离=%.2f < ATR=%.2f", dist, atr),
+            })
+        } else {
+            log.Printf("[STRATEGY] 🔒 防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice)
+            logs = append(logs, domain.AnalysisLog{
+                Level:    "warn",
+                Strategy: "汇总",
+                Message:  fmt.Sprintf("防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice),
+            })
+            return nil, logs
         }
-        acc["last_signal_time"] = time.time()
-        
-        # 如果有 SL/TP 建议，生成 MODIFY 命令
-        if suggested_sl > 0:
-            # 找到对应 symbol 的持仓
-            for ticket_str, pos in acc.get("positions", {}).items():
-                pos_symbol = pos.get("symbol", "")
-                if pos_symbol == symbol or pos_symbol.upper().replace("m#", "") == symbol.upper():
-                    ticket = int(ticket_str) if str(ticket_str).isdigit() else ticket_str
-                    current_sl = float(pos.get("sl", 0))
-                    
-                    # 只在建议止损更优时才修改 (BUY: 建议SL > 当前SL; SELL: 建议SL < 当前SL)
-                    direction = str(pos.get("type", "")).upper()
-                    should_modify = False
-                    
-                    if direction == "BUY":
-                        if suggested_sl > current_sl:
-                            should_modify = True
-                    elif direction == "SELL":
-                        if suggested_sl < current_sl or current_sl == 0:
-                            should_modify = True
-                    
-                    if should_modify:
-                        cmd = {
-                            "id": f"ai_modify_{int(time.time())}_{ticket}",
-                            "action": "MODIFY",
-                            "ticket": ticket,
-                            "new_sl": round(suggested_sl, 2),
-                            "new_tp": round(suggested_tp, 2) if suggested_tp > 0 else 0,
-                            "reason": f"AI建议: {alert_reason}",
-                            "confidence": confidence,
-                        }
-                        acc["pending_commands"].append(cmd)
-                        logger.info(f"[{account_id}] AI止损调整 → MODIFY #{ticket}: SL={suggested_sl:.2f}")
-    
-    # WebSocket 推送
-    socketio.emit('ai_result', {
-        "account_id": account_id,
-        "symbol": symbol,
-        "bias": bias,
-        "confidence": confidence,
-        "suggested_sl": suggested_sl,
-        "suggested_tp": suggested_tp,
-        "risk_alert": risk_alert,
-        "alert_reason": alert_reason,
-    })
-    
-    logger.info(f"[{account_id}/{symbol}] 🤖 AI结果 | bias={bias} conf={confidence}% SL={suggested_sl:.2f}")
-    return jsonify({"status": "OK", "received": True})
+    }
+}
 ```
 
-## 文件位置
-- strategy/engine.py: 策略引擎
-- app.py: API 端点
+IMPORTANT: Move the scale_in check BEFORE the anti-duplicate block, so scale_in signals
+are generated first, then the anti-duplicate only blocks non-scale_in strategies.
+Actually the cleaner approach: the anti-duplicate loop runs AFTER signal selection (best = highest score).
+If `best.Strategy == "scale_in"`, skip the same-direction block for that position.
 
-## 注意事项
-- 保持向后兼容：固定倍数作为 fallback
-- 日志清晰：每次动态调整需记录原因
-- 现有接口和 WebSocket 事件不变
+### 4. Risk Gate (riskgate/gate.go)
+
+In `positionConflictRejects()`, when `positionSide == planSide`, also allow if the plan is a scale-in:
+The cleanest way: add `AllowScaleIn bool` to `Input` struct, or check if plan has a reason_code containing "scale_in".
+
+Actually, the simplest approach: when the strategy engine produces a `scale_in` signal, the upstream caller
+(whoever creates the TradePlan) should set `AllowAdd = true` in the riskgate Input.
+So no riskgate code change is needed — just the caller needs to detect `strategy == "scale_in"` and flip AllowAdd.
+
+### 5. Signal Flow Integration
+
+Wherever the signal is converted to a TradePlan or PendingSignal (check `app.go` and `scheduler/`),
+ensure:
+- `scale_in` signals have `AllowAdd=true` when passed to riskgate
+- The EA receives the signal with strategy info so it uses the correct Magic number
+
+### 6. Unified SL Modification
+
+After a scale-in order is executed, generate MODIFY commands for ALL same-direction positions
+to set them to the new unified SL.
+
+Add a helper function (could be in engine.go or a new file `internal/strategy/scalein/helpers.go`):
+
+```go
+// CalculateUnifiedSL calculates the weighted average entry and unified SL for all same-direction positions
+// including the new scale-in order.
+func CalculateUnifiedSL(positions []Position, newEntry, newLots, atr, slATR float64, side string) (weightedAvg, unifiedSL float64) {
+    totalLots := newLots
+    totalWeighted := newEntry * newLots
+    for _, pos := range positions {
+        if strings.ToUpper(pos.Type) != side {
+            continue
+        }
+        totalLots += pos.Lots
+        totalWeighted += pos.OpenPrice * pos.Lots
+    }
+    weightedAvg = totalWeighted / totalLots
+    if side == "BUY" {
+        unifiedSL = round2(weightedAvg - atr*slATR)
+    } else {
+        unifiedSL = round2(weightedAvg + atr*slATR)
+    }
+    return
+}
+```
+
+### 7. Tests
+
+Add tests in `internal/strategy/engine/engine_test.go`:
+1. Test `checkScaleIn` triggers when there's a losing BUY position + RSI oversold + Fibonacci level nearby
+2. Test `checkScaleIn` does NOT trigger when ADX too low
+3. Test `checkScaleIn` does NOT trigger when max add count reached
+4. Test `checkScaleIn` does NOT trigger when distance < minDistATR
+5. Test anti-duplicate allows scale_in but blocks other strategies
+6. Test `CalculateUnifiedSL` weighted average calculation
+7. Test lot decay calculation (0.10 * 0.6 = 0.06, 0.06 * 0.6 = 0.036 → 0.03)
+
+### 8. Logging
+
+All scale-in decisions MUST be logged with `[STRATEGY] ➕` prefix for easy grep.
+Log format:
+```
+[STRATEGY] ➕ 浮亏加仓 BUY | 原仓均价=3348.50 | 浮亏=1.2ATR | 加仓价=3340.20 | 新手数=0.06 | 加权均价=3345.80 | 统一SL=3339.20
+```
+
+## Important Constraints
+
+- Do NOT modify the EA (MQ4) code — that's Phase 2
+- Do NOT modify gold-analysis-agent — that's Phase 3
+- Keep all existing tests passing
+- Follow existing code style (Chinese comments for strategy names, English for technical comments)
+- The `round2()` helper already exists in engine.go — reuse it
+- All new config fields MUST have sensible defaults in `DefaultStrategyConfig()`
+- The `breakout_pyramid` strategy is a DIFFERENT concept (adding on breakout, not on loss) — don't merge them
+
+## Files to Modify
+
+1. `internal/strategy/engine/config.go` — add ScaleIn config fields + defaults
+2. `internal/domain/strategy.go` — add ScaleIn fields to Signal
+3. `internal/strategy/engine/engine.go` — add `checkScaleIn()`, modify `Analyze()`, modify anti-duplicate
+4. `internal/strategy/engine/engine_test.go` — add tests
+5. New file: `internal/strategy/scalein/helpers.go` — `CalculateUnifiedSL()` helper (optional, can be in engine.go)
+
+## Verification
+
+After implementation:
+1. `go build ./...` must pass
+2. `go test ./internal/strategy/...` must pass
+3. `go vet ./...` must pass

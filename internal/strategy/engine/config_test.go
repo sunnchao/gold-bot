@@ -5,8 +5,8 @@ import "testing"
 func TestDefaultStrategyConfigKeepsDefaultMomentumScalpThresholds(t *testing.T) {
 	cfg := DefaultStrategyConfig()
 
-	if cfg.MomentumScalpMinADX != 20 {
-		t.Fatalf("MomentumScalpMinADX = %v, want 20", cfg.MomentumScalpMinADX)
+	if cfg.MomentumScalpMinADX != 18 {
+		t.Fatalf("MomentumScalpMinADX = %v, want 18", cfg.MomentumScalpMinADX)
 	}
 	if cfg.MomentumScalpVolConfirm != 1.05 {
 		t.Fatalf("MomentumScalpVolConfirm = %v, want 1.05", cfg.MomentumScalpVolConfirm)
@@ -66,8 +66,8 @@ func TestNewForSymbolKeepsDefaultMomentumScalpThresholdsForGBPJPYAliases(t *test
 		t.Run(symbol, func(t *testing.T) {
 			cfg := NewForSymbol(symbol).Config
 
-			if cfg.MomentumScalpMinADX != 20 {
-				t.Fatalf("MomentumScalpMinADX = %v, want 20", cfg.MomentumScalpMinADX)
+			if cfg.MomentumScalpMinADX != 18 {
+				t.Fatalf("MomentumScalpMinADX = %v, want 18", cfg.MomentumScalpMinADX)
 			}
 			if cfg.MomentumScalpVolConfirm != 1.05 {
 				t.Fatalf("MomentumScalpVolConfirm = %v, want 1.05", cfg.MomentumScalpVolConfirm)

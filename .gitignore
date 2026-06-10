@@ -49,4 +49,4 @@ web/dashboard/dist/
 data/goldbot.db*
 
 docs
-.commandcode
+.commandcode*.db

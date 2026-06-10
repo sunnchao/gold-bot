@@ -27,7 +27,7 @@
     {
       "level": "signal",
       "strategy": "趋势回调",
-      "msg": "🟢 BUY 评分=6 | EMA20回调 dist=0.74 | ADX=71.5>30"
+      "msg": "🟢 BUY 评分=6 | EMA20回调 dist=0.74 | ADX=71.5\u003e30"
     },
     {
       "level": "info",
@@ -43,6 +43,11 @@
       "level": "info",
       "strategy": "突破加仓",
       "msg": "BB=[3330.80, 3341.03] Price=3335.75 | 在通道内 ⏭"
+    },
+    {
+      "level": "info",
+      "strategy": "浮亏加仓",
+      "msg": "➕ 无同向浮亏持仓 ⏭"
     },
     {
       "level": "info",

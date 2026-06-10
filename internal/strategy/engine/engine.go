@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"time"
 
 	"gold-bot/internal/domain"
 	"gold-bot/internal/strategy/indicator"
@@ -124,8 +125,8 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	m30 := snapshot.Bars["M30"]
 	h4 := snapshot.Bars["H4"]
 	m15 := snapshot.Bars["M15"]
-	_ = snapshot.Bars["M5"]  // unused: momentum_scalp disabled
-	_ = snapshot.Bars["M1"]  // unused: momentum_scalp disabled
+	m5 := snapshot.Bars["M5"]
+	m1 := snapshot.Bars["M1"]
 
 	if len(h1) < 50 {
 		log.Printf("[STRATEGY] ⚠️ H1数据不足: %d/50", len(h1))
@@ -255,14 +256,21 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		logs = append(logs, detail)
 	}
 
-	// Momentum scalp temporarily disabled (SL/TP too tight, needs re-tuning)
-	// if signal, detail := e.checkMomentumScalp(m15, m5, m1, price); signal != nil {
-	// 	signals = append(signals, *signal)
-	// 	logs = append(logs, detail)
-	// 	log.Printf("[STRATEGY] %s", detail.Message)
-	// } else {
-	// 	logs = append(logs, detail)
-	// }
+	if signal, detail := e.checkScaleIn(h1, price, atr, snapshot.Positions); signal != nil {
+		signals = append(signals, *signal)
+		logs = append(logs, detail)
+		log.Printf("[STRATEGY] %s", detail.Message)
+	} else {
+		logs = append(logs, detail)
+	}
+
+	if signal, detail := e.checkMomentumScalp(m15, m5, m1, price); signal != nil {
+		signals = append(signals, *signal)
+		logs = append(logs, detail)
+		log.Printf("[STRATEGY] %s", detail.Message)
+	} else {
+		logs = append(logs, detail)
+	}
 
 	if len(signals) == 0 {
 		log.Printf("[STRATEGY] 📭 本轮无信号触发")
@@ -380,13 +388,22 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		if posSide == best.Side {
 			// Same-direction: block if within 1 ATR
 			if dist < atr {
-				log.Printf("[STRATEGY] 🔒 防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice)
-				logs = append(logs, domain.AnalysisLog{
-					Level:    "warn",
-					Strategy: "汇总",
-					Message:  fmt.Sprintf("防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice),
-				})
-				return nil, logs
+				if best.Strategy == "scale_in" {
+					log.Printf("[STRATEGY] ➕ 浮亏加仓豁免防重复: 策略=scale_in, 距离=%.2f < ATR=%.2f", dist, atr)
+					logs = append(logs, domain.AnalysisLog{
+						Level:    "info",
+						Strategy: "汇总",
+						Message:  fmt.Sprintf("浮亏加仓豁免防重复: 策略=scale_in, 距离=%.2f < ATR=%.2f", dist, atr),
+					})
+				} else {
+					log.Printf("[STRATEGY] 🔒 防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice)
+					logs = append(logs, domain.AnalysisLog{
+						Level:    "warn",
+						Strategy: "汇总",
+						Message:  fmt.Sprintf("防重复: 已有同向持仓 @ %.2f,距离 < 1.0 ATR", position.OpenPrice),
+					})
+					return nil, logs
+				}
 			}
 		} else {
 			// Reverse-direction: block if within 2 ATR (prevent hedging)
@@ -1152,6 +1169,188 @@ func (e Engine) checkMomentumScalp(m15, m5, m1 []domain.Bar, price float64) (*do
 		Strategy: name,
 		Message:  fmt.Sprintf("%s %s 评分=%d | M15 ADX=%.1f | %s", sideIcon(side), side, score, lastM15.ADX, strings.Join(details, " | ")),
 	}
+}
+
+func (e Engine) checkScaleIn(h1 []domain.Bar, price, atr float64, positions []domain.Position) (*domain.Signal, domain.AnalysisLog) {
+	cfg := e.Config
+	name := "浮亏加仓"
+	if !cfg.ScaleInEnabled {
+		return nil, domain.AnalysisLog{
+			Level:    "info",
+			Strategy: name,
+			Message:  "➕ 浮亏加仓未启用 ⏭",
+		}
+	}
+	if len(h1) == 0 || atr <= 0 || price <= 0 {
+		return nil, domain.AnalysisLog{
+			Level:    "warn",
+			Strategy: name,
+			Message:  "➕ 数据不足，跳过浮亏加仓",
+		}
+	}
+
+	last := h1[len(h1)-1]
+	if last.ADX < cfg.ScaleInMinADX {
+		return nil, domain.AnalysisLog{
+			Level:    "info",
+			Strategy: name,
+			Message:  fmt.Sprintf("➕ ADX=%.1f < %.0f,趋势不够强 ⏭", last.ADX, cfg.ScaleInMinADX),
+		}
+	}
+
+	sameDirection := make([]domain.Position, 0, len(positions))
+	side := ""
+	for _, pos := range positions {
+		posSide := strings.ToUpper(strings.TrimSpace(pos.Type))
+		if posSide != "BUY" && posSide != "SELL" {
+			continue
+		}
+		inLoss := (posSide == "BUY" && price < pos.OpenPrice) || (posSide == "SELL" && price > pos.OpenPrice)
+		if !inLoss {
+			continue
+		}
+		if side == "" {
+			side = posSide
+		}
+		if posSide == side {
+			sameDirection = append(sameDirection, pos)
+		}
+	}
+	if len(sameDirection) == 0 || side == "" {
+		return nil, domain.AnalysisLog{
+			Level:    "info",
+			Strategy: name,
+			Message:  "➕ 无同向浮亏持仓 ⏭",
+		}
+	}
+
+	scaleInCount := 0
+	existingLots := 0.0
+	weightedEntry := 0.0
+	latest := sameDirection[0]
+	for _, pos := range sameDirection {
+		existingLots += pos.Lots
+		weightedEntry += pos.OpenPrice * pos.Lots
+		if strings.Contains(strings.ToLower(pos.Comment), "scale_in") {
+			scaleInCount++
+		}
+		if pos.OpenTime > latest.OpenTime {
+			latest = pos
+		}
+	}
+	if scaleInCount >= cfg.ScaleInMaxAddCount {
+		return nil, domain.AnalysisLog{
+			Level:    "info",
+			Strategy: name,
+			Message:  fmt.Sprintf("➕ 加仓次数已达上限: %d/%d ⏭", scaleInCount, cfg.ScaleInMaxAddCount),
+		}
+	}
+	if latest.OpenTime > 0 && cfg.ScaleInMinIntervalMin > 0 {
+		lastOpen := time.Unix(latest.OpenTime, 0)
+		if time.Since(lastOpen) < time.Duration(cfg.ScaleInMinIntervalMin)*time.Minute {
+			return nil, domain.AnalysisLog{
+				Level:    "info",
+				Strategy: name,
+				Message:  fmt.Sprintf("➕ 距离最近加仓/开仓不足 %d 分钟 ⏭", cfg.ScaleInMinIntervalMin),
+			}
+		}
+	}
+
+	lastEntryDist := math.Abs(price - latest.OpenPrice)
+	if lastEntryDist < cfg.ScaleInMinDistATR*atr {
+		return nil, domain.AnalysisLog{
+			Level:    "info",
+			Strategy: name,
+			Message:  fmt.Sprintf("➕ 距离最近入场不足: %.2f < %.2f ATR ⏭", lastEntryDist, cfg.ScaleInMinDistATR*atr),
+		}
+	}
+
+	avgEntry := weightedEntry / existingLots
+	floatLossDist := math.Abs(price - avgEntry)
+	if floatLossDist < cfg.ScaleInMinFloatLossATR*atr {
+		return nil, domain.AnalysisLog{
+			Level:    "info",
+			Strategy: name,
+			Message:  fmt.Sprintf("➕ 浮亏不足: %.2f < %.2f ATR ⏭", floatLossDist, cfg.ScaleInMinFloatLossATR*atr),
+		}
+	}
+
+	fibNear := nearAnyLevel(price, atr*0.3, last.Fib382, last.Fib500, last.Fib618)
+	pivotNear := nearAnyLevel(price, atr*0.3, last.PP, last.S1, last.R1)
+	emaNear := nearAnyLevel(price, atr*0.2, last.EMA50, last.EMA200)
+	rsiConfirm := (side == "BUY" && last.RSI > 0 && last.RSI < 30) || (side == "SELL" && last.RSI > 70)
+	if !fibNear && !pivotNear && !emaNear && !rsiConfirm {
+		return nil, domain.AnalysisLog{
+			Level:    "info",
+			Strategy: name,
+			Message:  "➕ 未到关键技术位 ⏭",
+		}
+	}
+
+	newLots := roundDownScaleInLot(existingLots * cfg.ScaleInLotDecay)
+	if newLots < 0.01 {
+		newLots = 0.01
+	}
+	weightedAvg, unifiedSL := CalculateUnifiedSL(sameDirection, price, newLots, atr, cfg.ScaleInSLATR, side)
+
+	score := 5
+	if last.ADX > 30 {
+		score++
+	}
+	if rsiConfirm {
+		score++
+	}
+	if fibNear {
+		score++
+	}
+	if pivotNear {
+		score++
+	}
+	if (side == "BUY" && last.MACDHist > 0) || (side == "SELL" && last.MACDHist < 0) {
+		score++
+	}
+	score = min(score, 10)
+
+	signal := &domain.Signal{
+		Side:                side,
+		Entry:               price,
+		StopLoss:            unifiedSL,
+		TP1:                 scaleInTakeProfit(weightedAvg, atr, cfg.ScaleInTP1ATR, side),
+		TP2:                 scaleInTakeProfit(weightedAvg, atr, cfg.ScaleInTP2ATR, side),
+		Score:               score,
+		Strategy:            "scale_in",
+		ATR:                 atr,
+		ScaleInParentTicket: latest.Ticket,
+		WeightedAvgEntry:    weightedAvg,
+		UnifiedSL:           unifiedSL,
+		ScaleInCount:        scaleInCount,
+	}
+	message := fmt.Sprintf("➕ 浮亏加仓 %s | 原仓均价=%.2f | 浮亏=%.1fATR | 加仓价=%.2f | 新手数=%.2f | 加权均价=%.2f | 统一SL=%.2f",
+		side, avgEntry, floatLossDist/atr, price, newLots, weightedAvg, unifiedSL)
+	return signal, domain.AnalysisLog{
+		Level:    "signal",
+		Strategy: name,
+		Message:  message,
+	}
+}
+
+func nearAnyLevel(price, threshold float64, levels ...float64) bool {
+	for _, level := range levels {
+		if level <= 0 {
+			continue
+		}
+		if math.Abs(price-level) <= threshold {
+			return true
+		}
+	}
+	return false
+}
+
+func scaleInTakeProfit(weightedAvg, atr, mult float64, side string) float64 {
+	if side == "BUY" {
+		return round2(weightedAvg + atr*mult)
+	}
+	return round2(weightedAvg - atr*mult)
 }
 
 func min(a, b int) int {

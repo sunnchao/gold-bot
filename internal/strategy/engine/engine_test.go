@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"gold-bot/internal/domain"
 )
@@ -10,8 +12,8 @@ import (
 func TestDefaultStrategyConfigIncludesMomentumScalpDefaults(t *testing.T) {
 	cfg := DefaultStrategyConfig()
 
-	if cfg.MomentumScalpMinADX != 20 {
-		t.Fatalf("MomentumScalpMinADX = %v, want 20", cfg.MomentumScalpMinADX)
+	if cfg.MomentumScalpMinADX != 18 {
+		t.Fatalf("MomentumScalpMinADX = %v, want 18", cfg.MomentumScalpMinADX)
 	}
 	if cfg.MomentumScalpEMAPeriod1 != 5 {
 		t.Fatalf("MomentumScalpEMAPeriod1 = %d, want 5", cfg.MomentumScalpEMAPeriod1)
@@ -102,7 +104,7 @@ func TestCheckMomentumScalpBlocksWhenM15ADXBelowThreshold(t *testing.T) {
 
 	signal, detail := e.checkMomentumScalp(
 		[]domain.Bar{
-			{EMA20: 96, EMA50: 94, ADX: 19.9}, // 新阈值是20，19.9应被阻止
+			{EMA20: 96, EMA50: 94, ADX: 17.9}, // 阈值是18，17.9应被阻止
 		},
 		momentumM5BarsForTests(),
 		momentumM1BarsForTests(),
@@ -310,8 +312,333 @@ func momentumM1BarsForTests() []domain.Bar {
 		}
 	}
 	// 新阈值: prev < 45 && curr >= 48
-	bars[12].RSI = 38   // < 45 ✓
-	bars[13].RSI = 49   // >= 48 ✓
+	bars[12].RSI = 38     // < 45 ✓
+	bars[13].RSI = 49     // >= 48 ✓
 	bars[13].Volume = 130 // > 80*1.05 ✓
+	return bars
+}
+
+func TestCheckScaleInBuildsBuySignal(t *testing.T) {
+	cfg := DefaultStrategyConfig()
+	e := New(WithConfig(cfg))
+
+	price := 98.0
+	atr := 2.0
+	now := time.Now().UTC()
+	positions := []domain.Position{
+		{
+			Ticket:    1001,
+			Type:      "BUY",
+			Lots:      0.10,
+			OpenPrice: 101.1,
+			OpenTime:  now.Add(-2 * time.Hour).Unix(),
+			Comment:   "pullback",
+		},
+	}
+	h1 := scaleInH1BarsForTests(domain.Bar{
+		Close:    price,
+		ATR:      atr,
+		ADX:      32,
+		RSI:      28,
+		MACDHist: 0.4,
+		EMA20:    100.5,
+		EMA50:    98.35,
+		EMA200:   110.0,
+		Fib382:   98.1,
+		Fib500:   99.0,
+		Fib618:   99.8,
+		PP:       101.8,
+		S1:       97.8,
+		R1:       103.2,
+	})
+
+	signal, detail := e.checkScaleIn(h1, price, atr, positions)
+	if signal == nil {
+		t.Fatalf("signal = nil, detail=%+v", detail)
+	}
+	if signal.Strategy != "scale_in" {
+		t.Fatalf("strategy = %q, want scale_in", signal.Strategy)
+	}
+	if signal.Side != "BUY" {
+		t.Fatalf("side = %q, want BUY", signal.Side)
+	}
+	if signal.ScaleInParentTicket != 1001 {
+		t.Fatalf("parent ticket = %d, want 1001", signal.ScaleInParentTicket)
+	}
+	if signal.ScaleInCount != 0 {
+		t.Fatalf("scale in count = %d, want 0", signal.ScaleInCount)
+	}
+	if signal.Entry != price {
+		t.Fatalf("entry = %v, want %v", signal.Entry, price)
+	}
+	if signal.WeightedAvgEntry != 99.94 {
+		t.Fatalf("weighted avg = %v, want 99.94", signal.WeightedAvgEntry)
+	}
+	if signal.UnifiedSL != 97.54 {
+		t.Fatalf("unified sl = %v, want 97.54", signal.UnifiedSL)
+	}
+	if signal.StopLoss != signal.UnifiedSL {
+		t.Fatalf("stop loss = %v, want unified sl %v", signal.StopLoss, signal.UnifiedSL)
+	}
+	if signal.TP1 != 102.94 {
+		t.Fatalf("tp1 = %v, want 102.94", signal.TP1)
+	}
+	if signal.TP2 != 105.94 {
+		t.Fatalf("tp2 = %v, want 105.94", signal.TP2)
+	}
+	if signal.Score != 10 {
+		t.Fatalf("score = %d, want 10", signal.Score)
+	}
+	if !strings.Contains(detail.Message, "浮亏加仓 BUY") {
+		t.Fatalf("detail = %q, want scale in log", detail.Message)
+	}
+}
+
+func TestCheckScaleInRejectsWhenADXTooLow(t *testing.T) {
+	cfg := DefaultStrategyConfig()
+	e := New(WithConfig(cfg))
+
+	signal, detail := e.checkScaleIn(scaleInH1BarsForTests(domain.Bar{
+		Close:  98.0,
+		ATR:    2.0,
+		ADX:    20.0,
+		RSI:    28,
+		EMA50:  98.3,
+		Fib382: 98.1,
+	}), 98.2, 2.0, []domain.Position{
+		{Ticket: 1001, Type: "BUY", Lots: 0.10, OpenPrice: 101.1},
+	})
+
+	if signal != nil {
+		t.Fatalf("signal = %+v, want nil", signal)
+	}
+	if !strings.Contains(detail.Message, "ADX") {
+		t.Fatalf("detail = %q, want ADX reason", detail.Message)
+	}
+}
+
+func TestCheckScaleInRejectsWhenMaxAddCountReached(t *testing.T) {
+	cfg := DefaultStrategyConfig()
+	e := New(WithConfig(cfg))
+
+	positions := []domain.Position{
+		{Ticket: 1001, Type: "BUY", Lots: 0.10, OpenPrice: 101.0, Comment: "pullback"},
+		{Ticket: 1002, Type: "BUY", Lots: 0.06, OpenPrice: 99.2, Comment: "scale_in"},
+		{Ticket: 1003, Type: "BUY", Lots: 0.03, OpenPrice: 98.7, Comment: "scale_in add"},
+	}
+	signal, detail := e.checkScaleIn(scaleInH1BarsForTests(domain.Bar{
+		Close:    98.0,
+		ATR:      2.0,
+		ADX:      32,
+		RSI:      28,
+		EMA50:    98.3,
+		Fib382:   98.1,
+		MACDHist: 0.4,
+	}), 98.0, 2.0, positions)
+
+	if signal != nil {
+		t.Fatalf("signal = %+v, want nil", signal)
+	}
+	if !strings.Contains(detail.Message, "加仓次数已达上限") {
+		t.Fatalf("detail = %q, want max count reason", detail.Message)
+	}
+}
+
+func TestCheckScaleInRejectsWhenDistanceTooShort(t *testing.T) {
+	cfg := DefaultStrategyConfig()
+	e := New(WithConfig(cfg))
+
+	positions := []domain.Position{
+		{Ticket: 1001, Type: "BUY", Lots: 0.10, OpenPrice: 101.1, OpenTime: time.Now().Add(-2 * time.Hour).Unix(), Comment: "pullback"},
+		{Ticket: 1002, Type: "BUY", Lots: 0.06, OpenPrice: 98.9, OpenTime: time.Now().Add(-1 * time.Hour).Unix(), Comment: "scale_in"},
+	}
+	signal, detail := e.checkScaleIn(scaleInH1BarsForTests(domain.Bar{
+		Close:    98.0,
+		ATR:      2.0,
+		ADX:      32,
+		RSI:      28,
+		EMA50:    98.3,
+		Fib382:   98.1,
+		MACDHist: 0.4,
+	}), 98.0, 2.0, positions)
+
+	if signal != nil {
+		t.Fatalf("signal = %+v, want nil", signal)
+	}
+	if !strings.Contains(detail.Message, "距离最近入场不足") {
+		t.Fatalf("detail = %q, want distance reason", detail.Message)
+	}
+}
+
+func TestAnalyzeAllowsScaleInPastSameDirectionDuplicateGate(t *testing.T) {
+	cfg := DefaultStrategyConfig()
+	cfg.PullbackMinADX = math.MaxFloat64
+	cfg.BreakoutPyramidMinADX = math.MaxFloat64
+	e := New(WithConfig(cfg), WithMinScore(1))
+
+	signal, logs := e.Analyze(domain.AnalysisSnapshot{
+		AccountID:    "acct-1",
+		CurrentPrice: 98.0,
+		Bars: map[string][]domain.Bar{
+			"H1":  scaleInH1BarsForTests(domain.Bar{Close: 98.0, ATR: 2.0, ADX: 32, RSI: 28, MACDHist: 0.4, EMA20: 100.5, EMA50: 98.35, EMA200: 110, Fib382: 98.1}),
+			"M30": scaleInH1BarsForTests(domain.Bar{Close: 98.0, ATR: 2.0}),
+			"H4":  scaleInH4BarsForTests("BUY"),
+			"M15": scaleInM15BarsForTests(),
+		},
+		Positions: []domain.Position{
+			{Ticket: 1001, Type: "BUY", Lots: 0.10, OpenPrice: 98.6, OpenTime: time.Now().Add(-3 * time.Hour).Unix(), Comment: "pullback"},
+			{Ticket: 1002, Type: "BUY", Lots: 0.10, OpenPrice: 101.1, OpenTime: time.Now().Add(-2 * time.Hour).Unix(), Comment: "pullback"},
+		},
+	})
+
+	if signal == nil {
+		t.Fatalf("signal = nil, logs=%+v", logs)
+	}
+	if signal.Strategy != "scale_in" {
+		t.Fatalf("strategy = %q, want scale_in", signal.Strategy)
+	}
+
+	foundExemption := false
+	for _, entry := range logs {
+		if strings.Contains(entry.Message, "浮亏加仓豁免防重复") {
+			foundExemption = true
+			break
+		}
+	}
+	if !foundExemption {
+		t.Fatal("expected anti-duplicate exemption log for scale_in")
+	}
+}
+
+func TestAnalyzeBlocksNonScaleInAtSameDirectionDuplicateGate(t *testing.T) {
+	cfg := DefaultStrategyConfig()
+	cfg.ScaleInEnabled = false
+	e := New(WithConfig(cfg), WithMinScore(1))
+
+	signal, logs := e.Analyze(domain.AnalysisSnapshot{
+		AccountID:    "acct-1",
+		CurrentPrice: 100.2,
+		Bars: map[string][]domain.Bar{
+			"H1":  pullbackH1BarsForTests(domain.Bar{Close: 100.2, ATR: 2.0, ADX: 35, RSI: 45, MACDHist: 0.3, EMA20: 100.0, EMA50: 98.0}),
+			"M30": nil,
+			"H4":  scaleInH4BarsForTests("BUY"),
+			"M15": scaleInM15BarsForTests(),
+		},
+		Positions: []domain.Position{
+			{Ticket: 1001, Type: "BUY", Lots: 0.10, OpenPrice: 100.0, Comment: "pullback"},
+		},
+	})
+
+	if signal != nil {
+		t.Fatalf("signal = %+v, want nil", signal)
+	}
+
+	foundBlocked := false
+	for _, entry := range logs {
+		if strings.Contains(entry.Message, "防重复: 已有同向持仓") {
+			foundBlocked = true
+			break
+		}
+	}
+	if !foundBlocked {
+		t.Fatal("expected duplicate-block log for non-scale_in strategy")
+	}
+}
+
+func TestCalculateUnifiedSL(t *testing.T) {
+	positions := []domain.Position{
+		{Type: "BUY", Lots: 0.10, OpenPrice: 101.0},
+		{Type: "BUY", Lots: 0.06, OpenPrice: 99.2},
+		{Type: "SELL", Lots: 0.05, OpenPrice: 103.0},
+	}
+
+	weightedAvg, unifiedSL := CalculateUnifiedSL(positions, 98.2, 0.03, 2.0, 1.2, "BUY")
+
+	if weightedAvg != 99.99 {
+		t.Fatalf("weighted avg = %v, want 99.99", weightedAvg)
+	}
+	if unifiedSL != 97.59 {
+		t.Fatalf("unified sl = %v, want 97.59", unifiedSL)
+	}
+}
+
+func TestScaleInLotDecayRoundsDown(t *testing.T) {
+	if got := roundDownScaleInLot(0.10 * 0.6); got != 0.06 {
+		t.Fatalf("first decay = %v, want 0.06", got)
+	}
+	if got := roundDownScaleInLot(0.06 * 0.6); got != 0.03 {
+		t.Fatalf("second decay = %v, want 0.03", got)
+	}
+}
+
+func scaleInH1BarsForTests(last domain.Bar) []domain.Bar {
+	bars := make([]domain.Bar, 50)
+	for i := range bars {
+		bars[i] = domain.Bar{
+			Time:     time.Unix(int64(i+1), 0).UTC().Format(time.RFC3339),
+			Close:    100.0,
+			EMA20:    101.0,
+			EMA50:    99.0,
+			EMA200:   110.0,
+			ATR:      2.0,
+			RSI:      45.0,
+			ADX:      28.0,
+			MACDHist: 0.1,
+		}
+	}
+	bars[len(bars)-1] = last
+	if bars[len(bars)-2].Time == "" {
+		bars[len(bars)-2].Time = time.Unix(49, 0).UTC().Format(time.RFC3339)
+	}
+	return bars
+}
+
+func scaleInH4BarsForTests(side string) []domain.Bar {
+	bars := make([]domain.Bar, 50)
+	for i := range bars {
+		bar := domain.Bar{
+			Time:  time.Unix(int64(i+1), 0).UTC().Format(time.RFC3339),
+			Close: 100,
+			ATR:   2,
+			ADX:   35,
+		}
+		if side == "SELL" {
+			bar.EMA20 = 98
+			bar.EMA50 = 100
+			bar.Close = 97.5
+		} else {
+			bar.EMA20 = 102
+			bar.EMA50 = 100
+			bar.Close = 102.5
+		}
+		bars[i] = bar
+	}
+	return bars
+}
+
+func scaleInM15BarsForTests() []domain.Bar {
+	return []domain.Bar{
+		{ATR: 2, RSI: 35, Fib382: 98.3},
+		{ATR: 2, RSI: 29, Fib382: 98.3},
+	}
+}
+
+func pullbackH1BarsForTests(last domain.Bar) []domain.Bar {
+	bars := make([]domain.Bar, 50)
+	for i := range bars {
+		bars[i] = domain.Bar{
+			Time:     time.Unix(int64(i+1), 0).UTC().Format(time.RFC3339),
+			Close:    100.0,
+			EMA20:    100.0,
+			EMA50:    98.0,
+			ATR:      2.0,
+			RSI:      45.0,
+			ADX:      35.0,
+			MACDHist: 0.2,
+		}
+	}
+	bars[len(bars)-2].Close = 100.1
+	bars[len(bars)-2].EMA20 = 100.0
+	bars[len(bars)-1] = last
 	return bars
 }

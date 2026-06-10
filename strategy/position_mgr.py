@@ -21,6 +21,7 @@ class PositionState:
         self.last_modify_time = 0
         self.be_moved = False           # 是否已移保本止损
         self.be_trigger_atr = 1.0       # 保本触发阈值（浮盈≥1 ATR）
+        self.best_sl = 0.0              # 追踪历史最优止损，SL 只能单向向盈利方向移动
 
 
 class PositionManager:
@@ -81,6 +82,11 @@ class PositionManager:
         
         tp1_multi, tp2_multi = self._adaptive_atr_multis(data_mgr)
         
+        # 保存 per-position 处理前的状态快照
+        pre_tp1 = {t: self.states[t].tp1_hit for t in self.states}
+        pre_tp2 = {t: self.states[t].tp2_hit for t in self.states}
+        pre_be  = {t: self.states[t].be_moved  for t in self.states}
+        
         for ticket_str, pos in positions.items():
             ticket = int(ticket_str) if isinstance(ticket_str, str) else ticket_str
             
@@ -102,6 +108,16 @@ class PositionManager:
             # 更新最大盈利
             if profit_atr > state.max_profit_atr:
                 state.max_profit_atr = profit_atr
+            
+            # 初始化 best_sl：用当前 SL，取更优值
+            current_sl = pos.get("sl", 0)
+            if state.best_sl == 0 and current_sl != 0:
+                state.best_sl = current_sl
+            elif current_sl != 0:
+                if side == "BUY" and current_sl > state.best_sl:
+                    state.best_sl = current_sl
+                elif side == "SELL" and current_sl < state.best_sl:
+                    state.best_sl = current_sl
             
             # === 按优先级检查出场条件 ===
             
@@ -152,6 +168,11 @@ class PositionManager:
             if cmd:
                 commands.append(cmd)
         
+        # ===== 协调 pass：同方向仓位统一出场 =====
+        commands.extend(self._coordinate_group_exits(
+            positions, price, atr, pre_tp1=pre_tp1, pre_tp2=pre_tp2, pre_be=pre_be
+        ))
+        
         # 清理已平仓状态
         active_tickets = set(int(t) if isinstance(t, str) else t for t in positions.keys())
         stale = [t for t in self.states if t not in active_tickets]
@@ -199,6 +220,15 @@ class PositionManager:
         
         return None
     
+    def _validate_new_sl(self, side: str, new_sl: float, best_sl: float) -> bool:
+        """校验新 SL 不能比已跟踪的最优 SL 更差"""
+        if best_sl == 0:
+            return True  # 没有历史 SL，允许任何移动
+        if side == "BUY":
+            return new_sl >= best_sl
+        # SELL
+        return new_sl <= best_sl
+    
     def _check_breakeven(self, ticket, state, pos, side, price, entry,
                          lots, atr, profit_atr, h1) -> Optional[dict]:
         """
@@ -211,13 +241,20 @@ class PositionManager:
         if profit_atr < state.be_trigger_atr:
             return None
         
+        new_sl = entry
+        # 校验：新 SL 不能比已跟踪的最优 SL 更差
+        if not self._validate_new_sl(side, new_sl, state.best_sl):
+            logger.info(f"#{ticket} 🛡️ 保本止损跳过: newSL={new_sl:.2f} 差于 bestSL={state.best_sl:.2f}")
+            return None
+        
         state.be_moved = True
+        state.best_sl = new_sl  # 更新最优 SL
         logger.info(f"#{ticket} 🔒 保本止损触发 | 浮盈{profit_atr:.1f}ATR，止损移至{entry:.2f}")
         
         return {
             "action": "MODIFY",
             "ticket": ticket,
-            "new_sl": entry,
+            "new_sl": new_sl,
             "reason": f"breakeven_{profit_atr:.1f}ATR",
         }
     
@@ -481,3 +518,88 @@ class PositionManager:
                 }
         
         return None
+    
+    def _coordinate_group_exits(self, positions: dict, price: float, atr: float,
+                                 pre_tp1: dict, pre_tp2: dict, pre_be: dict) -> list:
+        """协调同方向仓位统一出场"""
+        cmds = []
+        
+        # 按方向分组
+        groups: dict[str, list] = {}
+        for ticket_str, pos in positions.items():
+            ticket = int(ticket_str) if isinstance(ticket_str, str) else ticket_str
+            side = pos.get("type", "BUY")
+            entry = pos.get("open_price", 0)
+            lots = pos.get("lots", 0)
+            if entry <= 0 or lots <= 0:
+                continue
+            groups.setdefault(side, []).append((ticket, pos))
+        
+        for side, group in groups.items():
+            if len(group) <= 1:
+                continue  # 单仓位无需协调
+            
+            # TP1 协调
+            any_tp1 = any(
+                self.states[t].tp1_hit and not pre_tp1.get(t, False)
+                for t, _ in group if t in self.states
+            )
+            if any_tp1:
+                for ticket, pos in group:
+                    state = self.states.get(ticket)
+                    if state and not state.tp1_hit:
+                        lots = pos.get("lots", 0)
+                        close_lots = round(lots * 0.4, 2)
+                        if close_lots < 0.01:
+                            close_lots = lots
+                        state.tp1_hit = True
+                        logger.info(f"#{ticket} 🎯 组合TP1: CLOSE {close_lots}手 ({side})")
+                        cmds.append({
+                            "action": "CLOSE", "ticket": ticket,
+                            "lots": close_lots, "reason": f"group_tp1_{side}",
+                        })
+            
+            # TP2 协调
+            any_tp2 = any(
+                self.states[t].tp2_hit and not pre_tp2.get(t, False)
+                for t, _ in group if t in self.states
+            )
+            if any_tp2:
+                for ticket, pos in group:
+                    state = self.states.get(ticket)
+                    if state and not state.tp2_hit:
+                        lots = pos.get("lots", 0)
+                        close_lots = round(lots * 0.4, 2)
+                        if close_lots < 0.01:
+                            close_lots = lots
+                        state.tp2_hit = True
+                        logger.info(f"#{ticket} 🎯 组合TP2: CLOSE {close_lots}手 ({side})")
+                        cmds.append({
+                            "action": "CLOSE", "ticket": ticket,
+                            "lots": close_lots, "reason": f"group_tp2_{side}",
+                        })
+            
+            # BE 协调：SL 统一到最优
+            any_be = any(
+                self.states[t].be_moved and not pre_be.get(t, False)
+                for t, _ in group if t in self.states
+            )
+            if any_be:
+                best_sl = 0.0
+                for _, pos in group:
+                    entry = pos.get("open_price", 0)
+                    if side == "BUY" and entry > best_sl:
+                        best_sl = entry
+                    elif side == "SELL" and (best_sl == 0 or entry < best_sl):
+                        best_sl = entry
+                for ticket, pos in group:
+                    state = self.states.get(ticket)
+                    if state and self._validate_new_sl(side, best_sl, state.best_sl) and best_sl != state.best_sl:
+                        state.best_sl = best_sl
+                        logger.info(f"#{ticket} 🛡️ 组合BE: SL→{best_sl:.2f} ({side})")
+                        cmds.append({
+                            "action": "MODIFY", "ticket": ticket,
+                            "new_sl": best_sl, "reason": f"group_be_{side}",
+                        })
+        
+        return cmds

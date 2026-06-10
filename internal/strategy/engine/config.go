@@ -34,6 +34,19 @@ type StrategyConfig struct {
 	BreakoutPyramidSLATR         float64 `json:"breakout_pyramid_sl_atr" yaml:"breakout_pyramid_sl_atr"`
 	BreakoutPyramidMinSpacingATR float64 `json:"breakout_pyramid_min_spacing_atr" yaml:"breakout_pyramid_min_spacing_atr"`
 
+	// ScaleIn strategy
+	ScaleInEnabled         bool    `json:"scale_in_enabled" yaml:"scale_in_enabled"`
+	ScaleInMinADX          float64 `json:"scale_in_min_adx" yaml:"scale_in_min_adx"`
+	ScaleInMinDistATR      float64 `json:"scale_in_min_dist_atr" yaml:"scale_in_min_dist_atr"`
+	ScaleInMinFloatLossATR float64 `json:"scale_in_min_float_loss_atr" yaml:"scale_in_min_float_loss_atr"`
+	ScaleInMaxAddCount     int     `json:"scale_in_max_add_count" yaml:"scale_in_max_add_count"`
+	ScaleInLotDecay        float64 `json:"scale_in_lot_decay" yaml:"scale_in_lot_decay"`
+	ScaleInSLATR           float64 `json:"scale_in_sl_atr" yaml:"scale_in_sl_atr"`
+	ScaleInTP1ATR          float64 `json:"scale_in_tp1_atr" yaml:"scale_in_tp1_atr"`
+	ScaleInTP2ATR          float64 `json:"scale_in_tp2_atr" yaml:"scale_in_tp2_atr"`
+	ScaleInMinIntervalMin  int     `json:"scale_in_min_interval_min" yaml:"scale_in_min_interval_min"`
+	ScaleInMaxFloatLossPct float64 `json:"scale_in_max_float_loss_pct" yaml:"scale_in_max_float_loss_pct"`
+
 	// H4 trend filter
 	H4ADXThreshold       float64 `json:"h4_adx_threshold" yaml:"h4_adx_threshold"`
 	H4RequireConsecutive int     `json:"h4_require_consecutive" yaml:"h4_require_consecutive"`
@@ -96,6 +109,18 @@ func DefaultStrategyConfig() StrategyConfig {
 		BreakoutPyramidSLATR:         1.5,
 		BreakoutPyramidMinSpacingATR: 2.0,
 
+		ScaleInEnabled:         true,
+		ScaleInMinADX:          25.0,
+		ScaleInMinDistATR:      1.5,
+		ScaleInMinFloatLossATR: 0.5,
+		ScaleInMaxAddCount:     2,
+		ScaleInLotDecay:        0.6,
+		ScaleInSLATR:           1.2,
+		ScaleInTP1ATR:          1.5,
+		ScaleInTP2ATR:          3.0,
+		ScaleInMinIntervalMin:  30,
+		ScaleInMaxFloatLossPct: 5.0,
+
 		// H4 trend - higher threshold, require 3 bars
 		H4ADXThreshold:       30.0,
 		H4RequireConsecutive: 3,
@@ -105,7 +130,7 @@ func DefaultStrategyConfig() StrategyConfig {
 
 		MinScore: 5,
 
-		MomentumScalpMinADX:           100.0, // temporarily disabled
+		MomentumScalpMinADX:           18.0,
 		MomentumScalpEMAPeriod1:       5,
 		MomentumScalpEMAPeriod2:       8,
 		MomentumScalpEMAPeriod3:       12,

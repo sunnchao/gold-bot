@@ -1160,6 +1160,61 @@ void ExecuteSignal(string cmd, string cmd_id)
       }
        
       ReportResult(cmd_id, "OK", ticket, "");
+
+      // === 加仓后统一修改已有同方向仓位的 SL/TP ===
+      double unifiedSL = GetJsonDouble(cmd, "unified_sl");
+      if(unifiedSL > 0)
+      {
+         Print("📐 加仓统一SL: ", unifiedSL, " → 修改已有 ", type_str, " 仓位");
+         int synced = 0;
+         for(int j = OrdersTotal() - 1; j >= 0; j--)
+         {
+            if(!OrderSelect(j, SELECT_BY_POS, MODE_TRADES)) continue;
+            if(OrderSymbol() != Symbol_) continue;
+            if(OrderMagicNumber() != magicForOrder) continue;
+            if(OrderTicket() == ticket) continue; // 跳过刚开的新仓
+
+            int existingType = OrderType();
+            if((type_str == "BUY" && existingType != OP_BUY) ||
+               (type_str == "SELL" && existingType != OP_SELL))
+               continue;
+
+            double existSL = OrderStopLoss();
+            double existTP = OrderTakeProfit();
+            double newSL = unifiedSL;
+            double newTP = tp1; // 统一 TP1
+
+            // 确保 SL 距离符合 broker 最小要求
+            double minDist = MarketInfo(Symbol_, MODE_STOPLEVEL) * GetSymbolPoint(Symbol_);
+            if(minDist > 0)
+            {
+               if(type_str == "BUY" && MathAbs(OrderOpenPrice() - newSL) < minDist)
+                  newSL = OrderOpenPrice() - minDist;
+               if(type_str == "SELL" && MathAbs(newSL - OrderOpenPrice()) < minDist)
+                  newSL = OrderOpenPrice() + minDist;
+            }
+
+            // SL 只能向盈利方向移动（BUY: new >= old, SELL: new <= old）
+            bool slOK = false;
+            if(type_str == "BUY" && newSL >= existSL)  slOK = true;
+            if(type_str == "SELL" && newSL <= existSL)  slOK = true;
+
+            if(slOK && (newSL != existSL || newTP != existTP))
+            {
+               if(OrderModify(OrderTicket(), OrderOpenPrice(), newSL, newTP, 0, clrYellow))
+               {
+                  synced++;
+                  Print("  ✅ #", OrderTicket(), " SL: ", existSL, "→", newSL, " TP: ", existTP, "→", newTP);
+               }
+               else
+               {
+                  Print("  ⚠️ #", OrderTicket(), " 改单失败: ", GetLastError());
+               }
+            }
+         }
+         if(synced > 0)
+            Print("📐 加仓统一SL完成: 同步 ", synced, " 个仓位");
+      }
    }
    else
    {

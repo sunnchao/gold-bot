@@ -99,6 +99,18 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 	commands := make([]domain.PositionCommand, 0, len(snapshot.Positions))
 	active := make(map[int64]struct{}, len(snapshot.Positions))
 
+	// 保存 per-position 处理前的状态快照，用于协调 pass 判断"本轮新触发"
+	preTP1Hit := make(map[int64]bool, len(snapshot.Positions))
+	preTP2Hit := make(map[int64]bool, len(snapshot.Positions))
+	preBE := make(map[int64]bool, len(snapshot.Positions))
+	for _, pos := range snapshot.Positions {
+		if st, ok := m.states[pos.Ticket]; ok {
+			preTP1Hit[pos.Ticket] = st.TP1Hit
+			preTP2Hit[pos.Ticket] = st.TP2Hit
+			preBE[pos.Ticket] = st.BEMoved
+		}
+	}
+
 	for _, position := range snapshot.Positions {
 		active[position.Ticket] = struct{}{}
 		if position.OpenPrice <= 0 || position.Lots <= 0 {
@@ -111,6 +123,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 				Ticket:       position.Ticket,
 				OpenTime:     m.now(),
 				BETriggerATR: 1.5,
+				BestSL:       position.SL, // 初始化为当前 SL
 			}
 		}
 		if state.BETriggerATR == 0 {
@@ -118,6 +131,18 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 		}
 
 		side := strings.ToUpper(position.Type)
+
+		// 初始化 BestSL：如果还没跟踪过，用当前 SL；如果已有，取更优值
+		if state.BestSL == 0 && position.SL != 0 {
+			state.BestSL = position.SL
+		} else if position.SL != 0 {
+			if side == "BUY" && position.SL > state.BestSL {
+				state.BestSL = position.SL
+			} else if side == "SELL" && position.SL < state.BestSL {
+				state.BestSL = position.SL
+			}
+		}
+
 		profitPips := snapshot.CurrentPrice - position.OpenPrice
 		if side != "BUY" {
 			profitPips = position.OpenPrice - snapshot.CurrentPrice
@@ -149,7 +174,7 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 			continue
 		}
 
-		if command, ok := m.checkBreakeven(position, &state, profitATR); ok {
+		if command, ok := m.checkBreakeven(position, &state, side, profitATR); ok {
 			log.Printf("[POSMGR] 🛡️ #%d | 保本止损: SL→%.2f | reason=%s", position.Ticket, command.NewSL, command.Reason)
 			commands = append(commands, command)
 		}
@@ -193,6 +218,126 @@ func (m *Manager) Analyze(snapshot domain.PositionSnapshot) []domain.PositionCom
 
 		m.states[position.Ticket] = state
 		m.persistState(snapshot.AccountID, snapshot.Symbol, state)
+	}
+
+	// ===== 协调 pass：同方向仓位统一出场 =====
+	// 按方向分组
+	type sideGroup struct {
+		positions []domain.Position
+	}
+	groups := map[string]*sideGroup{}
+	for _, pos := range snapshot.Positions {
+		if pos.OpenPrice <= 0 || pos.Lots <= 0 {
+			continue
+		}
+		s := strings.ToUpper(pos.Type)
+		if groups[s] == nil {
+			groups[s] = &sideGroup{}
+		}
+		groups[s].positions = append(groups[s].positions, pos)
+	}
+
+	for side, grp := range groups {
+		if len(grp.positions) <= 1 {
+			continue // 单仓位无需协调
+		}
+
+		// TP1 协调：本轮任一仓位新触发 TP1 → 同方向所有仓位各平 40%
+		anyTP1 := false
+		for _, pos := range grp.positions {
+			st := m.states[pos.Ticket]
+			if st.TP1Hit && !preTP1Hit[pos.Ticket] {
+				anyTP1 = true
+				break
+			}
+		}
+		if anyTP1 {
+			for _, pos := range grp.positions {
+				st := m.states[pos.Ticket]
+				if !st.TP1Hit {
+					closeLots := roundLots(pos.Lots * 0.4)
+					if closeLots < 0.01 {
+						closeLots = pos.Lots
+					}
+					st.TP1Hit = true
+					log.Printf("[POSMGR] 🎯 #%d | 组合TP1: CLOSE %.2f手", pos.Ticket, closeLots)
+					commands = append(commands, domain.PositionCommand{
+						Action: domain.PositionActionClose,
+						Ticket: pos.Ticket,
+						Lots:   closeLots,
+						Reason: fmt.Sprintf("group_tp1_%s", side),
+					})
+					m.states[pos.Ticket] = st
+					m.persistState(snapshot.AccountID, snapshot.Symbol, st)
+				}
+			}
+		}
+
+		// TP2 协调：本轮任一仓位新触发 TP2 → 同方向所有仓位各平 40%
+		anyTP2 := false
+		for _, pos := range grp.positions {
+			st := m.states[pos.Ticket]
+			if st.TP2Hit && !preTP2Hit[pos.Ticket] {
+				anyTP2 = true
+				break
+			}
+		}
+		if anyTP2 {
+			for _, pos := range grp.positions {
+				st := m.states[pos.Ticket]
+				if !st.TP2Hit {
+					closeLots := roundLots(pos.Lots * 0.4)
+					if closeLots < 0.01 {
+						closeLots = pos.Lots
+					}
+					st.TP2Hit = true
+					log.Printf("[POSMGR] 🎯 #%d | 组合TP2: CLOSE %.2f手", pos.Ticket, closeLots)
+					commands = append(commands, domain.PositionCommand{
+						Action: domain.PositionActionClose,
+						Ticket: pos.Ticket,
+						Lots:   closeLots,
+						Reason: fmt.Sprintf("group_tp2_%s", side),
+					})
+					m.states[pos.Ticket] = st
+					m.persistState(snapshot.AccountID, snapshot.Symbol, st)
+				}
+			}
+		}
+
+		// BE 协调：本轮任一仓位新触发 BE → 同方向所有仓位 SL 统一到最优
+		anyBE := false
+		for _, pos := range grp.positions {
+			st := m.states[pos.Ticket]
+			if st.BEMoved && !preBE[pos.Ticket] {
+				anyBE = true
+				break
+			}
+		}
+		if anyBE {
+			bestSL := 0.0
+			for _, pos := range grp.positions {
+				if side == "BUY" && pos.OpenPrice > bestSL {
+					bestSL = pos.OpenPrice
+				} else if side == "SELL" && (bestSL == 0 || pos.OpenPrice < bestSL) {
+					bestSL = pos.OpenPrice
+				}
+			}
+			for _, pos := range grp.positions {
+				st := m.states[pos.Ticket]
+				if validateNewSL(side, bestSL, st.BestSL) && bestSL != st.BestSL {
+					st.BestSL = bestSL
+					log.Printf("[POSMGR] 🛡️ #%d | 组合BE: SL→%.2f", pos.Ticket, bestSL)
+					commands = append(commands, domain.PositionCommand{
+						Action: domain.PositionActionModify,
+						Ticket: pos.Ticket,
+						NewSL:  bestSL,
+						Reason: fmt.Sprintf("group_be_%s", side),
+					})
+					m.states[pos.Ticket] = st
+					m.persistState(snapshot.AccountID, snapshot.Symbol, st)
+				}
+			}
+		}
 	}
 
 	for ticket := range m.states {
@@ -350,16 +495,24 @@ func (m *Manager) checkTimeStop(position domain.Position, state domain.PositionS
 	}
 }
 
-func (m *Manager) checkBreakeven(position domain.Position, state *domain.PositionState, profitATR float64) (domain.PositionCommand, bool) {
+func (m *Manager) checkBreakeven(position domain.Position, state *domain.PositionState, side string, profitATR float64) (domain.PositionCommand, bool) {
 	if state.BEMoved || profitATR < state.BETriggerATR {
 		return domain.PositionCommand{}, false
 	}
 
+	newSL := position.OpenPrice
+	// 校验：新 SL 不能比已跟踪的最优 SL 更差
+	if !validateNewSL(side, newSL, state.BestSL) {
+		log.Printf("[POSMGR] 🛡️ #%d | 保本止损跳过: newSL=%.2f 差于 BestSL=%.2f", position.Ticket, newSL, state.BestSL)
+		return domain.PositionCommand{}, false
+	}
+
 	state.BEMoved = true
+	state.BestSL = newSL // 更新最优 SL
 	return domain.PositionCommand{
 		Action: domain.PositionActionModify,
 		Ticket: position.Ticket,
-		NewSL:  position.OpenPrice,
+		NewSL:  newSL,
 		Reason: fmt.Sprintf("breakeven_%.1fATR", profitATR),
 	}, true
 }
@@ -641,6 +794,20 @@ func nearestKeyLevel(price float64, side string, h1 []domain.Bar) float64 {
 		return levelAbove
 	}
 	return levelBelow
+}
+
+// validateNewSL checks that the proposed new SL is not worse than the best SL
+// ever set for this position. For BUY: newSL must be >= bestSL. For SELL: newSL must be <= bestSL.
+// Returns false if the move would be backward (into more loss territory).
+func validateNewSL(side string, newSL, bestSL float64) bool {
+	if bestSL == 0 {
+		return true // no prior SL tracked, allow any move
+	}
+	if side == "BUY" {
+		return newSL >= bestSL
+	}
+	// SELL
+	return newSL <= bestSL
 }
 
 func roundLots(value float64) float64 {

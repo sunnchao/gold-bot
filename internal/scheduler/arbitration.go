@@ -182,14 +182,18 @@ func (m *ArbitrationManager) GetPendingSignals(ctx context.Context, accountID, s
 // buildIndicatorsJSON creates a JSON string from signal indicators.
 func buildIndicatorsJSON(signal *domain.Signal) string {
 	data := map[string]interface{}{
-		"side":      signal.Side,
-		"entry":     signal.Entry,
-		"stop_loss": signal.StopLoss,
-		"tp1":       signal.TP1,
-		"tp2":       signal.TP2,
-		"score":     signal.Score,
-		"strategy":  signal.Strategy,
-		"atr":       signal.ATR,
+		"side":                   signal.Side,
+		"entry":                  signal.Entry,
+		"stop_loss":              signal.StopLoss,
+		"tp1":                    signal.TP1,
+		"tp2":                    signal.TP2,
+		"score":                  signal.Score,
+		"strategy":               signal.Strategy,
+		"atr":                    signal.ATR,
+		"scale_in_parent_ticket": signal.ScaleInParentTicket,
+		"weighted_avg_entry":     signal.WeightedAvgEntry,
+		"unified_sl":             signal.UnifiedSL,
+		"scale_in_count":         signal.ScaleInCount,
 	}
 
 	if len(signal.AllStrategies) > 0 {
