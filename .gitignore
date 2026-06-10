@@ -41,6 +41,8 @@ Thumbs.db
 data/gold_bolt.sqlite*
 *.test
 coverage.out
+*.db
+*.sqlite
 
 # Next.js dashboard
 web/dashboard/node_modules/
