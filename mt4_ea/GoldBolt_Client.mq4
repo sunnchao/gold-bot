@@ -521,7 +521,7 @@ bool RegisterAccount()
       "\"momentum_scalp\":\"momentum_scalp\""
       "}"
       "}",
-      AccountID, Symbol_, PullbackMagic, broker, server, name, type, currency, leverage,
+      AccountID, g_symbols[0], PullbackMagic, broker, server, name, type, currency, leverage,
       (EnableSpread ? "true" : "false")
    );
    
@@ -550,7 +550,7 @@ void SendHeartbeat()
    // ========== v2.8: MT4 服务器时间和交易状态 ==========
    string serverTime = TimeToStr(TimeCurrent(), TIME_DATE|TIME_MINUTES);
    bool isTradeAllowed = IsTradeAllowed();
-   bool marketOpen = (MarketInfo(Symbol_, MODE_TRADEALLOWED) != 0);
+   bool marketOpen = (MarketInfo(GetBrokerSymbol(g_symbols[0]), MODE_TRADEALLOWED) != 0);
 
    // 计算各策略的持仓数量
    int pullbackPos = 0, breakoutPos = 0, divergencePos = 0;
@@ -597,7 +597,7 @@ void SendHeartbeat()
       "\"momentum_scalp\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d}"
       "}"
       "}",
-      AccountID, Symbol_, PullbackMagic, AccountBalance(), AccountEquity(), 
+      AccountID, g_symbols[0], PullbackMagic, AccountBalance(), AccountEquity(), 
       AccountMargin(), AccountFreeMargin(), AccountCurrency(), serverTime,
       (marketOpen ? "true" : "false"),
       (isTradeAllowed ? "true" : "false"),
@@ -622,62 +622,32 @@ void SendTick()
    if(TimeCurrent() - lastSend < 1) return;
    lastSend = TimeCurrent();
    
-   double bid = MarketInfo(Symbol_, MODE_BID);
-   double ask = MarketInfo(Symbol_, MODE_ASK);
-   double spread = GetCurrentSpreadPoints(Symbol_);
-   if(spread < 0)
-      spread = 0.0;
-   
-   // 构建多品种价格数据
-   string symbols_json = "";
-   
-   // 添加原油价格 (如果启用价差交易且品种可用)
-   if(EnableSpread && spreadSymbolsReady)
+   // 发送每个品种的报价
+   for(int s = 0; s < g_symbolCount; s++)
    {
-      double leg1_bid = MarketInfo(SpreadSymbol1, MODE_BID);
-      double leg2_bid = MarketInfo(SpreadSymbol2, MODE_BID);
-      double leg1_ask = MarketInfo(SpreadSymbol1, MODE_ASK);
-      double leg2_ask = MarketInfo(SpreadSymbol2, MODE_ASK);
-      double leg1_point = GetSymbolPoint(SpreadSymbol1);
-      double leg2_point = GetSymbolPoint(SpreadSymbol2);
-
-      if(leg1_ask <= 0)
-         leg1_ask = leg1_bid + leg1_point * 10.0;
-      if(leg2_ask <= 0)
-         leg2_ask = leg2_bid + leg2_point * 10.0;
+      string baseSymbol = g_symbols[s];
+      string brokerSym = GetBrokerSymbol(baseSymbol);
+      double bid = MarketInfo(brokerSym, MODE_BID);
+      double ask = MarketInfo(brokerSym, MODE_ASK);
+      double spread = GetCurrentSpreadPoints(brokerSym);
+      if(spread < 0)
+         spread = 0.0;
       
-      if(leg1_bid > 0 && leg2_bid > 0)
-      {
-         double spread_val = leg1_bid - leg2_bid;
-         symbols_json = StringFormat(
-            ",\"symbols\":{"
-            "\"%s\":{\"price\":%.2f,\"bid\":%.2f,\"ask\":%.2f},"
-            "\"%s\":{\"price\":%.2f,\"bid\":%.2f,\"ask\":%.2f},"
-            "\"SPREAD\":%.2f"
-            "}",
-            SpreadSymbol1, leg1_bid, leg1_bid, leg1_ask,
-            SpreadSymbol2, leg2_bid, leg2_bid, leg2_ask,
-            spread_val
-         );
-         Print("🛢️ 原油价格：", SpreadSymbol1, "=", leg1_bid, " | ", SpreadSymbol2, "=", leg2_bid, 
-               " | 价差=", DoubleToString(spread_val, 2));
-      }
+      string json = StringFormat(
+         "{"
+         "\"account_id\":\"%s\","
+         "\"magic\":%d,"
+         "\"symbol\":\"%s\","
+         "\"bid\":%.5f,"
+         "\"ask\":%.5f,"
+         "\"spread\":%.3f,"
+         "\"time\":\"%s\""
+         "}",
+         AccountID, PullbackMagic, baseSymbol, bid, ask, spread, TimeToStr(TimeCurrent(), TIME_SECONDS)
+      );
+      
+      HttpPost("/tick", json);
    }
-   
-   string json = StringFormat(
-      "{"
-      "\"account_id\":\"%s\","
-      "\"magic\":%d,"
-      "\"symbol\":\"%s\","
-      "\"bid\":%.5f,"
-      "\"ask\":%.5f,"
-      "\"spread\":%.3f,"
-      "\"time\":\"%s\"%s"
-      "}",
-      AccountID, PullbackMagic, Symbol_, bid, ask, spread, TimeToStr(TimeCurrent(), TIME_SECONDS), symbols_json
-   );
-   
-   HttpPost("/tick", json);
 }
 
 //+------------------------------------------------------------------+
@@ -756,9 +726,9 @@ void SendPositions()
       {
          if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
          {
-            // 品种匹配（BaseSymbol 归一化比较）
-            if(BaseSymbol(OrderSymbol()) != baseSymbol &&
-               OrderSymbol() != GetBrokerSymbol(baseSymbol))
+            // 品种匹配：仅当前品种的持仓
+            string orderSym = OrderSymbol();
+            if(orderSym != baseSymbol && orderSym != GetBrokerSymbol(baseSymbol))
                continue;
             
             // 检查是否属于任一策略
@@ -798,46 +768,50 @@ void SendPositions()
 }
 
 // ============================================================
-// 轮询并执行服务端指令
+// 轮询并执行服务端指令（按品种分别轮询）
 // EA 只是执行器，不做任何策略判断
 // ============================================================
 void PollAndExecute()
 {
-   string json = StringFormat("{\"account_id\":\"%s\",\"symbol\":\"%s\",\"magic\":%d}", AccountID, Symbol_, PullbackMagic);
-   string response = HttpPost("/poll", json);
-   
-   if(StringLen(response) == 0) return;
-   
-   int count = GetJsonInt(response, "count");
-   if(count == 0) return;
-   
-   Print("📨 收到 ", count, " 条指令");
-   string commands_str = GetJsonArray(response, "commands");
-   
-   for(int i = 0; i < count; i++)
+   for(int s = 0; s < g_symbolCount; s++)
    {
-      string cmd = GetArrayElement(commands_str, i);
-      if(StringLen(cmd) == 0) continue;
+      string baseSymbol = g_symbols[s];
+      string json = StringFormat("{\"account_id\":\"%s\",\"symbol\":\"%s\",\"magic\":%d}", AccountID, baseSymbol, PullbackMagic);
+      string response = HttpPost("/poll", json);
       
-      string action = GetJsonString(cmd, "action");
-      string cmd_id = GetJsonString(cmd, "command_id");
+      if(StringLen(response) == 0) continue;
       
-      if(action == "SIGNAL")
-         ExecuteSignal(cmd, cmd_id);
-      else if(action == "MODIFY")
-         ExecuteModify(cmd, cmd_id);
-      else if(action == "CLOSE")
-         ExecuteClose(cmd, cmd_id);
-      else if(action == "CLOSE_PARTIAL")
-         ExecuteClosePartial(cmd, cmd_id);
-      else if(action == "CLOSE_ALL")
-         ExecuteCloseAll(cmd, cmd_id);
-      else if(action == "OPEN")
-         ExecuteOpen(cmd, cmd_id);
-      else if(action == "ADD")
-         ExecuteAdd(cmd, cmd_id);
-      else
-         Print("未知指令类型：", action);
+      int count = GetJsonInt(response, "count");
+      if(count == 0) continue;
+      
+      Print("📨 [", baseSymbol, "] 收到 ", count, " 条指令");
+      string commands_str = GetJsonArray(response, "commands");
+      
+      for(int i = 0; i < count; i++)
+      {
+         string cmd = GetArrayElement(commands_str, i);
+         if(StringLen(cmd) == 0) continue;
+         
+         string action = GetJsonString(cmd, "action");
+         string cmd_id = GetJsonString(cmd, "command_id");
+         
+         if(action == "SIGNAL")
+            ExecuteSignal(cmd, cmd_id);
+         else if(action == "MODIFY")
+            ExecuteModify(cmd, cmd_id);
+         else if(action == "CLOSE")
+            ExecuteClose(cmd, cmd_id);
+         else if(action == "CLOSE_PARTIAL")
+            ExecuteClosePartial(cmd, cmd_id);
+         else if(action == "CLOSE_ALL")
+            ExecuteCloseAll(cmd, cmd_id);
+         else if(action == "OPEN")
+            ExecuteOpen(cmd, cmd_id);
+         else if(action == "ADD")
+            ExecuteAdd(cmd, cmd_id);
+         else
+            Print("未知指令类型：", action);
+      }
    }
 }
 
@@ -1104,19 +1078,27 @@ void ExecuteCloseAll(string cmd, string cmd_id)
 // ============================================================
 void ExecuteSignal(string cmd, string cmd_id)
 {
-   string symbol   = GetJsonString(cmd, "symbol");
+   string signalSymbol = GetJsonString(cmd, "symbol");
    string type_str = GetJsonString(cmd, "type");
    double sl       = GetJsonDouble(cmd, "sl");
    double tp1      = GetJsonDouble(cmd, "tp1");
    int    score    = GetJsonInt(cmd, "score");
    string strategy = GetJsonString(cmd, "strategy");
    
-   Print("📡 信号：", type_str, " | SL=", sl, " TP=", tp1, 
-         " | ", strategy, " 评分:", score);
+   // 确定品种：使用信号自带的品种，否则用第一个配置品种
+   string baseSymbol = signalSymbol;
+   if(StringLen(baseSymbol) == 0)
+      baseSymbol = g_symbols[0];
+   
+   // 获取经纪商品种名称（用于 MT4 API 调用）
+   string brokerSymbol = GetBrokerSymbol(baseSymbol);
+   
+   Print("📡 信号：", type_str, " | 品种=", baseSymbol, " → ", brokerSymbol,
+         " | SL=", sl, " TP=", tp1, " | ", strategy, " 评分:", score);
 
-   if(StringLen(symbol) > 0 && !IsPrimarySymbol(symbol))
+   if(StringLen(signalSymbol) > 0 && !IsPrimarySymbol(signalSymbol))
    {
-      Print("❌ 信号品种不匹配：", symbol, " | 本实例=", Symbol_);
+      Print("❌ 信号品种不在配置列表：", signalSymbol, " | 已配置: ", Symbols);
       ReportResult(cmd_id, "ERROR", 0, "symbol_mismatch");
       return;
    }
@@ -1156,21 +1138,21 @@ void ExecuteSignal(string cmd, string cmd_id)
    if(type_str == "BUY")
    {
       op_type = OP_BUY;
-      price = MarketInfo(Symbol_, MODE_ASK);
+      price = MarketInfo(brokerSymbol, MODE_ASK);
    }
    else if(type_str == "SELL")
    {
       op_type = OP_SELL;
-      price = MarketInfo(Symbol_, MODE_BID);
+      price = MarketInfo(brokerSymbol, MODE_BID);
    }
     
    double sl_distance = MathAbs(price - sl);
    double lots = CalcLotsForStrategy(strategy, sl_distance);
-   lots = NormalizeVolume(Symbol_, lots);
+   lots = NormalizeVolume(brokerSymbol, lots);
     
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);
    
-   int ticket = OrderSend(Symbol_, op_type, lots, price, Slippage, 
+   int ticket = OrderSend(brokerSymbol, op_type, lots, price, Slippage, 
                            0, 0, comment, magicForOrder, 0,
                            type_str == "BUY" ? clrGreen : clrRed);
    
@@ -1194,7 +1176,7 @@ void ExecuteSignal(string cmd, string cmd_id)
       // 如果 TP/SL 未设置，尝试单独设置
       if(current_sl == 0 || current_tp == 0)
       {
-         double min_stop = MarketInfo(Symbol_, MODE_STOPLEVEL) * GetSymbolPoint(Symbol_);
+         double min_stop = MarketInfo(brokerSymbol, MODE_STOPLEVEL) * GetSymbolPoint(brokerSymbol);
          double final_sl = sl;
          double final_tp = tp1;
          
@@ -1253,7 +1235,7 @@ void ExecuteSignal(string cmd, string cmd_id)
          for(int j = OrdersTotal() - 1; j >= 0; j--)
          {
             if(!OrderSelect(j, SELECT_BY_POS, MODE_TRADES)) continue;
-            if(OrderSymbol() != Symbol_) continue;
+            if(OrderSymbol() != brokerSymbol) continue;
             if(OrderMagicNumber() != magicForOrder) continue;
             if(OrderTicket() == ticket) continue; // 跳过刚开的新仓
 
@@ -1268,7 +1250,7 @@ void ExecuteSignal(string cmd, string cmd_id)
             double newTP = tp1; // 统一 TP1
 
             // 确保 SL 距离符合 broker 最小要求
-            double minDist = MarketInfo(Symbol_, MODE_STOPLEVEL) * GetSymbolPoint(Symbol_);
+            double minDist = MarketInfo(brokerSymbol, MODE_STOPLEVEL) * GetSymbolPoint(brokerSymbol);
             if(minDist > 0)
             {
                if(type_str == "BUY" && MathAbs(OrderOpenPrice() - newSL) < minDist)
@@ -1412,7 +1394,7 @@ void ExecuteClose(string cmd, string cmd_id)
 // ============================================================
 bool CheckRisk(string type_str)
 {
-   double currentSpread = GetCurrentSpreadPoints(Symbol_);
+   double currentSpread = GetCurrentSpreadPoints(Symbol());
    if(currentSpread < 0)
    {
       Print("⚠️ 风控：无法获取有效报价/点差");
@@ -1486,19 +1468,19 @@ bool CheckRisk(string type_str)
 double CalcLotsWithConfig(bool useFixedLots, double fixedLots, double riskPercent, double sl_distance)
 {
    if(useFixedLots)
-      return NormalizeVolume(Symbol_, fixedLots);
+      return NormalizeVolume(Symbol(), fixedLots);
 
    double riskAmount = AccountEquity() * (riskPercent / 100.0);
-   double tickValue = MarketInfo(Symbol_, MODE_TICKVALUE);
-   double tickSize = MarketInfo(Symbol_, MODE_TICKSIZE);
+   double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
+   double tickSize = MarketInfo(Symbol(), MODE_TICKSIZE);
 
    if(tickValue <= 0 || tickSize <= 0 || sl_distance <= 0)
-      return NormalizeVolume(Symbol_, 0.01);
+      return NormalizeVolume(Symbol(), 0.01);
 
    double lots = riskAmount / (sl_distance / tickSize * tickValue);
    lots = NormalizeDouble(lots, 2);
 
-   return NormalizeVolume(Symbol_, MathMax(0.01, lots));
+   return NormalizeVolume(Symbol(), MathMax(0.01, lots));
 }
 
 double CalcLots(double sl_distance)
