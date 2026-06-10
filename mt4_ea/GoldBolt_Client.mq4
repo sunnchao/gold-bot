@@ -133,10 +133,10 @@ bool IsStrategyEnabled(string strategy)
 //| 多品种解析与查询                                                     |
 //+------------------------------------------------------------------+
 // 解析逗号分隔的品种字符串到数组
-void ParseSymbols(string input)
+void ParseSymbols(string symbolList)
 {
    g_symbolCount = 0;
-   string remaining = input;
+   string remaining = symbolList;
    
    while(StringLen(remaining) > 0)
    {
@@ -681,7 +681,7 @@ void SendBars(string baseSymbol, string tf_str, int tf_period)
       double h = iHigh(brokerSym, tf_period, i);
       double l = iLow(brokerSym, tf_period, i);
       double c = iClose(brokerSym, tf_period, i);
-      double v = iVolume(brokerSym, tf_period, i);
+      int    v = (int)iVolume(brokerSym, tf_period, i);
       
       if(bars != "") bars += ",";
       bars += StringFormat(
@@ -1133,7 +1133,7 @@ void ExecuteSignal(string cmd, string cmd_id)
    }
    
    // 计算手数
-   double price;
+   double price = 0.0;
    int op_type = OP_BUY;
    if(type_str == "BUY")
    {
