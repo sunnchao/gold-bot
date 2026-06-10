@@ -78,7 +78,8 @@ extern double   SpreadLots          = 0.05;     // 每腿交易手数
 extern int      PollInterval    = 5;        // 轮询间隔（秒）
 extern int      BarInterval     = 60;       // K 线发送间隔（秒）
 extern int      BarCount        = 50;  // K 线数量      // K 线数量
-extern string   Symbol_         = "XAUUSD"; // 主交易品种
+extern string   Symbols         = "XAUUSD"; // 交易品种（逗号分隔多个，如 XAUUSD,XAGUSD,USOIL）
+extern string   SymbolSuffix    = "";       // 经纪商品种后缀（如 .m, m#, _m），留空=无后缀
 extern int      Slippage        = 3;        // 滑点（点数）
 
 // ============ 全局变量 ============
@@ -87,6 +88,10 @@ datetime lastBarTime    = 0;
 double   dailyStartEquity = 0;
 int      httpTimeout    = 5000;
 bool     spreadSymbolsReady = false;  // 原油品种是否可用
+
+// ========== 多品种支持 ==========
+string   g_symbols[];          // 解析后的品种列表
+int      g_symbolCount = 0;    // 品种数量
 
 // ========== 连接状态跟踪（v2.8 新增） ==========
 bool     gbConnected      = false;        // 当前连接状态
@@ -125,9 +130,66 @@ bool IsStrategyEnabled(string strategy)
 }
 
 //+------------------------------------------------------------------+
+//| 多品种解析与查询                                                     |
+//+------------------------------------------------------------------+
+// 解析逗号分隔的品种字符串到数组
+void ParseSymbols(string input)
+{
+   g_symbolCount = 0;
+   string remaining = input;
+   
+   while(StringLen(remaining) > 0)
+   {
+      // 找逗号
+      int pos = StringFind(remaining, ",");
+      string token;
+      if(pos < 0)
+      {
+         token = remaining;
+         remaining = "";
+      }
+      else
+      {
+         token = StringSubstr(remaining, 0, pos);
+         remaining = StringSubstr(remaining, pos + 1);
+      }
+      
+      // 去空格
+      token = StringTrimLeft(token);
+      token = StringTrimRight(token);
+      
+      if(StringLen(token) > 0)
+      {
+         ArrayResize(g_symbols, g_symbolCount + 1);
+         g_symbols[g_symbolCount] = token;
+         g_symbolCount++;
+      }
+   }
+}
+
+// 获取经纪商品种名称（加后缀）
+string GetBrokerSymbol(string baseSymbol)
+{
+   if(StringLen(SymbolSuffix) == 0)
+      return baseSymbol;
+   return baseSymbol + SymbolSuffix;
+}
+
+// 在数组中查找品种
+bool FindSymbolInArray(string sym)
+{
+   for(int i = 0; i < g_symbolCount; i++)
+   {
+      if(g_symbols[i] == sym)
+         return true;
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
 bool IsPrimarySymbol(string sym)
 {
-   return (sym == Symbol_);
+   return FindSymbolInArray(sym);
 }
 
 //+------------------------------------------------------------------+
@@ -162,7 +224,8 @@ bool IsOurMagic(int magic)
 //+------------------------------------------------------------------+
 double GetSymbolPoint(string sym)
 {
-   double point = MarketInfo(sym, MODE_POINT);
+   string brokerSym = GetBrokerSymbol(sym);
+   double point = MarketInfo(brokerSym, MODE_POINT);
    if(point <= 0)
       point = Point;
 
@@ -248,6 +311,21 @@ int OnInit()
    Print("=== Gold Bolt Client v", EA_VERSION, " (Build ", EA_BUILD, ") ===");
    Print("服务器：", ServerURL);
    Print("账户 ID: ", AccountID);
+   
+   // 解析多品种
+   ParseSymbols(Symbols);
+   Print("交易品种(", g_symbolCount, "):");
+   for(int s = 0; s < g_symbolCount; s++)
+   {
+      string brokerSym = GetBrokerSymbol(g_symbols[s]);
+      bool avail = IsSymbolAvailable(brokerSym);
+      Print("   ", s+1, ". ", g_symbols[s], " → ", brokerSym, " ", (avail ? "✅" : "❌"));
+      if(!avail)
+      {
+         Print("❌ 品种不可用: ", brokerSym, " | 请检查是否已加入 Market Watch");
+         return INIT_FAILED;
+      }
+   }
    Print("策略Magic: 趋势回调=", PullbackMagic, " 突破回踩=", BreakoutMagic,
          " RSI背离=", DivergenceMagic, " 突破加仓=", PyramidMagic,
          " 反向回调=", CounterMagic, " 震荡区间=", RangeMagic,
@@ -261,17 +339,12 @@ int OnInit()
          " | ",
          (MomentumScalpUseFixedLots ? ("固定手数=" + DoubleToString(MomentumScalpFixedLots, 2)) : ("风险=" + DoubleToString(MomentumScalpRiskPercent, 1) + "%")));
 
-   if(!IsSymbolAvailable(Symbol_))
+   // 图表品种检查：允许挂载任意已配置品种的图表
+   string chartSym = Symbol();
+   if(!FindSymbolInArray(chartSym))
    {
-      Print("❌ 主交易品种不可用：", Symbol_);
-      return INIT_FAILED;
-   }
-
-   string chartSymbol = Symbol();
-   if(Symbol() != Symbol_)
-   {
-      Print("❌ 图表品种与 Symbol_ 不一致 | Chart=", chartSymbol, " | Symbol_=", Symbol_);
-      return INIT_FAILED;
+      Print("⚠️ 图表品种 ", chartSym, " 未在配置列表中 | 已配置: ", Symbols);
+      Print("   EA 仍可运行，但建议挂载已配置品种的图表以获取最佳报价");
    }
    
    // 原油对冲套利配置
@@ -608,33 +681,37 @@ void SendTick()
 }
 
 //+------------------------------------------------------------------+
-// 发送所有 K 线数据
+// 发送所有 K 线数据（多品种）
 //+------------------------------------------------------------------+
 void SendAllBars()
 {
-   SendBars("M1", PERIOD_M1);
-   SendBars("M5", PERIOD_M5);
-   SendBars("M15", PERIOD_M15);
-   SendBars("M30", PERIOD_M30);
-   SendBars("H1", PERIOD_H1);
-   SendBars("H4", PERIOD_H4);
-   SendBars("D1", PERIOD_D1);
+   string tf_names[] = {"M1","M5","M15","M30","H1","H4","D1"};
+   int    tf_periods[] = {PERIOD_M1,PERIOD_M5,PERIOD_M15,PERIOD_M30,PERIOD_H1,PERIOD_H4,PERIOD_D1};
+   
+   for(int s = 0; s < g_symbolCount; s++)
+   {
+      for(int t = 0; t < 7; t++)
+      {
+         SendBars(g_symbols[s], tf_names[t], tf_periods[t]);
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
-void SendBars(string tf_str, int tf_period)
+void SendBars(string baseSymbol, string tf_str, int tf_period)
 {
+   string brokerSym = GetBrokerSymbol(baseSymbol);
    string bars = "";
    for(int i = BarCount - 1; i >= 0; i--)
    {
-      datetime t = iTime(Symbol_, tf_period, i);
+      datetime t = iTime(brokerSym, tf_period, i);
       if(t == 0) continue;
       
-      double o = iOpen(Symbol_, tf_period, i);
-      double h = iHigh(Symbol_, tf_period, i);
-      double l = iLow(Symbol_, tf_period, i);
-      double c = iClose(Symbol_, tf_period, i);
-      double v = iVolume(Symbol_, tf_period, i);
+      double o = iOpen(brokerSym, tf_period, i);
+      double h = iHigh(brokerSym, tf_period, i);
+      double l = iLow(brokerSym, tf_period, i);
+      double c = iClose(brokerSym, tf_period, i);
+      double v = iVolume(brokerSym, tf_period, i);
       
       if(bars != "") bars += ",";
       bars += StringFormat(
@@ -645,8 +722,8 @@ void SendBars(string tf_str, int tf_period)
    
    // 使用字符串拼接代替StringFormat，避免MQL4长度限制
    string json = "{\"account_id\":\"" + AccountID + 
-                 "\",\"symbol\":\"" + Symbol_ + 
-                 "\",\"magic\":" + IntegerToString(PullbackMagic) + 
+                 "\",\"symbol\":\"" + baseSymbol + 
+                 "\",\"magic\":" + IntegerToString(PullbackMagic) +
                  ",\"timeframe\":\"" + tf_str + 
                  "\",\"bars\":[" + bars + "]}";
    
@@ -654,13 +731,10 @@ void SendBars(string tf_str, int tf_period)
 }
 
 //+------------------------------------------------------------------+
-// 发送持仓信息
+// 发送持仓信息（按品种分别发送）
 //+------------------------------------------------------------------+
 void SendPositions()
 {
-   string positions = "";
-   int count = 0;
-   
    // 动态初始化 MagicNumber 数组
    int magics[8];
    magics[0] = PullbackMagic;
@@ -672,46 +746,55 @@ void SendPositions()
    magics[6] = MomentumScalpMagic;
    magics[7] = SpreadMagicNumber;
    
-   for(int i = 0; i < OrdersTotal(); i++)
+   for(int s = 0; s < g_symbolCount; s++)
    {
-      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+      string positions = "";
+      int count = 0;
+      string baseSymbol = g_symbols[s];
+      
+      for(int i = 0; i < OrdersTotal(); i++)
       {
-         if(!IsAllowedSymbol(OrderSymbol()))
-             continue;
-         
-         // 检查是否属于任一策略
-         bool isOurOrder = false;
-         for(int j = 0; j < 8; j++)
+         if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
          {
-            if(OrderMagicNumber() == magics[j])
+            // 品种匹配（BaseSymbol 归一化比较）
+            if(BaseSymbol(OrderSymbol()) != baseSymbol &&
+               OrderSymbol() != GetBrokerSymbol(baseSymbol))
+               continue;
+            
+            // 检查是否属于任一策略
+            bool isOurOrder = false;
+            for(int j = 0; j < 8; j++)
             {
-               isOurOrder = true;
-               break;
+               if(OrderMagicNumber() == magics[j])
+               {
+                  isOurOrder = true;
+                  break;
+               }
             }
+            if(!isOurOrder) continue;
+            
+            if(positions != "") positions += ",";
+            positions += StringFormat(
+               "{\"ticket\":%d,\"symbol\":\"%s\",\"type\":\"%s\",\"lots\":%.2f,\"open_price\":%.5f,"
+               "\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"open_time\":%d,\"comment\":\"%s\",\"magic\":%d}",
+               OrderTicket(), OrderSymbol(),
+               (OrderType() == OP_BUY ? "BUY" : "SELL"),
+               OrderLots(), OrderOpenPrice(),
+               OrderStopLoss(), OrderTakeProfit(),
+               OrderProfit(), OrderOpenTime(), OrderComment(),
+               OrderMagicNumber()
+            );
+            count++;
          }
-         if(!isOurOrder) continue;
-         
-         if(positions != "") positions += ",";
-         positions += StringFormat(
-            "{\"ticket\":%d,\"symbol\":\"%s\",\"type\":\"%s\",\"lots\":%.2f,\"open_price\":%.5f,"
-            "\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"open_time\":%d,\"comment\":\"%s\",\"magic\":%d}",
-            OrderTicket(), OrderSymbol(),
-            (OrderType() == OP_BUY ? "BUY" : "SELL"),
-            OrderLots(), OrderOpenPrice(),
-            OrderStopLoss(), OrderTakeProfit(),
-            OrderProfit(), OrderOpenTime(), OrderComment(),
-            OrderMagicNumber()
-         );
-         count++;
       }
+      
+      string json = StringFormat(
+         "{\"account_id\":\"%s\",\"symbol\":\"%s\",\"magic\":%d,\"positions\":[%s]}",
+         AccountID, baseSymbol, PullbackMagic, positions
+      );
+      
+      HttpPost("/positions", json);
    }
-   
-   string json = StringFormat(
-      "{\"account_id\":\"%s\",\"symbol\":\"%s\",\"magic\":%d,\"positions\":[%s]}",
-      AccountID, Symbol_, PullbackMagic, positions
-   );
-   
-   HttpPost("/positions", json);
 }
 
 // ============================================================
