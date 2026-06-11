@@ -16,12 +16,14 @@ const (
 const (
 	defaultMaxTickAge      = 2 * time.Minute
 	defaultMaxSpread       = 5.0
+	jpyCrossMaxSpread      = 6.0 // JPY crosses have wider normal spreads
 	atrExpansionRatio      = 2.0
 	minATRHistoryForFilter = 10
 )
 
 type Input struct {
 	Now     time.Time
+	Symbol  string // Base symbol (e.g. "GBPJPY", "XAUUSD") for per-symbol limits
 	Runtime domain.AccountRuntime
 	State   domain.AccountState
 }
@@ -68,7 +70,7 @@ func Evaluate(input Input) Result {
 	} else if now.Sub(input.Runtime.LastTickAt.UTC()) > defaultMaxTickAge {
 		add("tick.stale", SeverityBlocking)
 	}
-	if input.State.Tick.Spread > defaultMaxSpread {
+	if input.State.Tick.Spread > maxSpreadForSymbol(input.Symbol) {
 		add("spread.too_wide", SeverityBlocking)
 	}
 	if isFridayCloseWindow(now) {
@@ -101,6 +103,22 @@ func filterCodes(filters []Filter) []string {
 		codes = append(codes, filter.Code)
 	}
 	return codes
+}
+
+// maxSpreadForSymbol returns the maximum allowed spread for a given symbol.
+// JPY crosses get a wider limit due to normal market spreads.
+func maxSpreadForSymbol(symbol string) float64 {
+	base := domain.BaseSymbol(symbol)
+	switch base {
+	case "GBPJPY":
+		return 6.0 // wide spread pair
+	case "EURJPY", "USDJPY":
+		return 5.0
+	case "GBPUSD", "USDCAD":
+		return 4.0 // tighter spread majors
+	default:
+		return defaultMaxSpread // 5.0
+	}
 }
 
 func isFridayCloseWindow(now time.Time) bool {

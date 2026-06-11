@@ -276,6 +276,16 @@ func BaseSymbol(raw string) string {
 		return "XAUUSD"
 	case "GBPJPY":
 		return "GBPJPY"
+	case "GBPUSD":
+		return "GBPUSD"
+	case "USDCAD":
+		return "USDCAD"
+	case "EURJPY":
+		return "EURJPY"
+	case "USDJPY":
+		return "USDJPY"
+	case "EURUSD":
+		return "EURUSD"
 	}
 	return s
 }

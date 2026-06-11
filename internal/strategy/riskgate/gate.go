@@ -293,16 +293,30 @@ func isAuditOnlyMode(mode string) bool {
 
 func metadataFor(symbol string) symbolMeta {
 	switch domain.BaseSymbol(symbol) {
-	case "GBPJPY":
+	case "GBPJPY", "EURJPY", "USDJPY":
+		// JPY crosses: higher volatility, wider spreads, wider SL range
+		return jpyCrossMetadata(symbol)
+	case "GBPUSD":
 		return symbolMeta{
-			Symbol:        "GBPJPY",
+			Symbol:        "GBPUSD",
 			ContractSize:  100000,
 			MinLot:        0.01,
-			MaxLot:        20,
+			MaxLot:        30,
 			LotStep:       0.01,
-			MaxSpread:     3.5,
-			MinSLDistance: 0.05,
-			MaxSLDistance: 5.0,
+			MaxSpread:     4.0,
+			MinSLDistance: 0.0005,
+			MaxSLDistance: 0.05,
+		}
+	case "USDCAD":
+		return symbolMeta{
+			Symbol:        "USDCAD",
+			ContractSize:  100000,
+			MinLot:        0.01,
+			MaxLot:        30,
+			LotStep:       0.01,
+			MaxSpread:     4.0,
+			MinSLDistance: 0.0005,
+			MaxSLDistance: 0.05,
 		}
 	default:
 		return symbolMeta{
@@ -314,6 +328,59 @@ func metadataFor(symbol string) symbolMeta {
 			MaxSpread:     5.0,
 			MinSLDistance: 0.50,
 			MaxSLDistance: 100.0,
+		}
+	}
+}
+
+// jpyCrossMetadata returns symbol metadata for JPY cross pairs.
+// GBPJPY has wider spread tolerance than EURJPY/USDJPY due to lower liquidity.
+func jpyCrossMetadata(symbol string) symbolMeta {
+	base := domain.BaseSymbol(symbol)
+	switch base {
+	case "GBPJPY":
+		return symbolMeta{
+			Symbol:        "GBPJPY",
+			ContractSize:  100000,
+			MinLot:        0.01,
+			MaxLot:        20,
+			LotStep:       0.01,
+			MaxSpread:     5.0,  // was 3.5 — GBPJPY normal spread 2-5 pips
+			MinSLDistance: 0.03, // was 0.05 — allow tighter SL for scalps
+			MaxSLDistance: 8.0,  // was 5.0 — accommodate wider SL for swings
+		}
+	case "EURJPY":
+		return symbolMeta{
+			Symbol:        "EURJPY",
+			ContractSize:  100000,
+			MinLot:        0.01,
+			MaxLot:        20,
+			LotStep:       0.01,
+			MaxSpread:     4.5, // slightly tighter than GBPJPY
+			MinSLDistance: 0.03,
+			MaxSLDistance: 7.0,
+		}
+	case "USDJPY":
+		return symbolMeta{
+			Symbol:        "USDJPY",
+			ContractSize:  100000,
+			MinLot:        0.01,
+			MaxLot:        30, // more liquid
+			LotStep:       0.01,
+			MaxSpread:     3.5, // most liquid JPY cross
+			MinSLDistance: 0.02,
+			MaxSLDistance: 6.0,
+		}
+	default:
+		// Fallback for unknown JPY crosses
+		return symbolMeta{
+			Symbol:        base,
+			ContractSize:  100000,
+			MinLot:        0.01,
+			MaxLot:        20,
+			LotStep:       0.01,
+			MaxSpread:     5.0,
+			MinSLDistance: 0.03,
+			MaxSLDistance: 8.0,
 		}
 	}
 }

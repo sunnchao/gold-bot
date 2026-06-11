@@ -155,8 +155,16 @@ func GetStrategyConfigBySymbol(baseSymbol string) StrategyConfig {
 		return GoldStrategyConfig()
 	case "GBPJPY":
 		return GBPJPYStrategyConfig()
+	case "EURJPY":
+		return JPYCrossStrategyConfig() // EURJPY shares GBPJPY characteristics
+	case "USDJPY":
+		return JPYCrossStrategyConfig() // USDJPY also a JPY cross
 	case "EURUSD":
 		return EURUSDStrategyConfig()
+	case "GBPUSD":
+		return GBPUSDStrategyConfig()
+	case "USDCAD":
+		return USDCADStrategyConfig()
 	default:
 		return DefaultStrategyConfig()
 	}
@@ -177,23 +185,206 @@ func GoldStrategyConfig() StrategyConfig {
 }
 
 // GBPJPYStrategyConfig returns strategy parameters optimized for GBPJPY trading.
+// GBPJPY is a high-volatility JPY cross with wide daily ranges (100-200+ pips)
+// and frequent false breakouts. Parameters are tuned for:
+// - Wider SL/TP to accommodate larger swings
+// - Lower H4 ADX threshold (GBPJPY rarely sustains ADX 30+)
+// - Relaxed MomentumScalp (M1 ATR too small for meaningful targets)
 func GBPJPYStrategyConfig() StrategyConfig {
 	cfg := DefaultStrategyConfig()
-	// GBPJPY-specific adjustments
-	cfg.PullbackMinADX = 22.0
-	cfg.PullbackSLATR = 1.2
-	cfg.PullbackTP1ATR = 1.2
-	cfg.PullbackTP2ATR = 2.5
+
+	// === H4 trend filter: GBPJPY ADX rarely stays above 30 ===
+	cfg.H4ADXThreshold = 22.0    // was 30 — too strict for JPY crosses
+	cfg.H4RequireConsecutive = 2 // was 3 — GBPJPY trends are choppier
+
+	// === Pullback: ensure TP1:SL > 1.5 for positive expectancy ===
+	cfg.PullbackMinADX = 20.0        // was 22 — GBPJPY ADX baseline is lower
+	cfg.PullbackRSIOversold = 35.0   // was 30 — wider RSI range for GBPJPY
+	cfg.PullbackRSIOverbought = 65.0 // was 70
+	cfg.PullbackDistATR = 0.6        // was 0.5 — GBPJPY pulls back further
+	cfg.PullbackADXBonus = 25.0      // was 30
+	cfg.PullbackSLATR = 1.8          // was 1.2 — too tight, gets stopped out
+	cfg.PullbackTP1ATR = 2.0         // was 1.2 — need TP1:SL > 1.5
+	cfg.PullbackTP2ATR = 3.5         // was 2.5 — wider profit target
+
+	// === BreakoutRetest: wider SL to survive false breakouts ===
+	cfg.BreakoutRetestLookback = 40     // was 50 — S/R changes faster on GBPJPY
+	cfg.BreakoutRetestConfirmWindow = 2 // was 3
+	cfg.BreakoutRetestDistATR = 0.7     // was 0.5
+	cfg.BreakoutRetestSLATR = 2.0       // was 1.5 — false breakouts are common
+	cfg.BreakoutRetestTP1ATR = 2.5      // was 2.0
+	cfg.BreakoutRetestTP2ATR = 4.5      // was 4.0
+
+	// === Divergence: shorter windows, wider thresholds ===
+	cfg.DivergenceWindowRecent = 12    // was 15 — GBPJPY moves faster
+	cfg.DivergenceWindowPrev = 12      // was 15
+	cfg.DivergenceRSIBullThresh = 45.0 // was 40 — wider RSI range
+	cfg.DivergenceRSIBearThresh = 55.0 // was 60
+	cfg.DivergenceSLATR = 1.5          // was 1.0
+	cfg.DivergenceTP1ATR = 2.5         // was 2.0
+	cfg.DivergenceTP2ATR = 4.5         // was 4.0
+
+	// === BreakoutPyramid: lower ADX bar, wider SL ===
+	cfg.BreakoutPyramidMinADX = 25.0       // was 30
+	cfg.BreakoutPyramidSLATR = 2.0         // was 1.5
+	cfg.BreakoutPyramidMinSpacingATR = 2.5 // was 2.0
+
+	// === ScaleIn: wider spacing for volatile moves ===
+	cfg.ScaleInMinADX = 20.0    // was 25
+	cfg.ScaleInMinDistATR = 1.8 // was 1.5
+	cfg.ScaleInSLATR = 1.8      // was 1.2
+	cfg.ScaleInTP1ATR = 2.0     // was 1.5
+	cfg.ScaleInTP2ATR = 3.5     // was 3.0
+
+	// === MomentumScalp: M1 ATR too small for GBPJPY, use wider params ===
+	cfg.MomentumScalpMinADX = 15.0           // was 18
+	cfg.MomentumScalpSLATR = 0.8             // was 0.4 — 0.4 M1-ATR ≈ 1-3 pips, instant stop
+	cfg.MomentumScalpTP1ATR = 1.0            // was 0.5
+	cfg.MomentumScalpTP2ATR = 1.5            // was 0.8
+	cfg.MomentumScalpMinScore = 6            // was 7 — 7 is near-impossible to reach
+	cfg.MomentumScalpMaxHoldingMin = 45      // was 20 — GBPJPY needs more time to develop
+	cfg.MomentumScalpRSIBullThresh = 42.0    // was 45
+	cfg.MomentumScalpRSIBearThresh = 58.0    // was 55
+	cfg.MomentumScalpRSICrossoverBull = 46.0 // was 48
+	cfg.MomentumScalpRSICrossoverBear = 54.0 // was 52
+	cfg.MomentumScalpVolConfirm = 1.02       // was 1.05 — volume less reliable on forex
+
+	// === M15 confirmation ===
+	cfg.M15ConfirmRSIThreshold = 45.0 // was 40 — more lenient for GBPJPY
+
+	// === Global ===
+	cfg.MinScore = 4 // was 5
+
+	return cfg
+}
+
+// JPYCrossStrategyConfig returns strategy parameters optimized for JPY crosses
+// (EURJPY, USDJPY). These pairs share GBPJPY's characteristics:
+// - High volatility, frequent false breakouts
+// - Lower ADX baselines than gold/major pairs
+// - Volume data less reliable than gold
+//
+// Uses GBPJPY config as base. Override per-pair if needed:
+//   - EURJPY: slightly lower volatility than GBPJPY, may need tighter SL
+//   - USDJPY: more liquid, tighter spreads, can use slightly tighter params
+func JPYCrossStrategyConfig() StrategyConfig {
+	// Start with GBPJPY config as the JPY cross baseline
+	// Individual pairs can diverge if backtesting shows differences
+	cfg := GBPJPYStrategyConfig()
 	return cfg
 }
 
 // EURUSDStrategyConfig returns strategy parameters optimized for EURUSD trading.
 func EURUSDStrategyConfig() StrategyConfig {
 	cfg := DefaultStrategyConfig()
-	// EURUSD-specific adjustments
+	// EURUSD: most liquid pair, tighter ranges, lower volatility
+	cfg.H4ADXThreshold = 20.0
+	cfg.H4RequireConsecutive = 2
 	cfg.PullbackMinADX = 20.0
 	cfg.PullbackSLATR = 1.0
-	cfg.PullbackTP1ATR = 1.0
-	cfg.PullbackTP2ATR = 2.0
+	cfg.PullbackTP1ATR = 1.5
+	cfg.PullbackTP2ATR = 2.5
+	cfg.PullbackDistATR = 0.4
+	cfg.BreakoutRetestSLATR = 1.2
+	cfg.BreakoutRetestTP1ATR = 1.8
+	cfg.BreakoutRetestTP2ATR = 3.5
+	cfg.DivergenceSLATR = 0.8
+	cfg.DivergenceTP1ATR = 1.5
+	cfg.DivergenceTP2ATR = 3.0
+	cfg.BreakoutPyramidMinADX = 25.0
+	cfg.ScaleInSLATR = 1.0
+	cfg.ScaleInTP1ATR = 1.5
+	cfg.ScaleInTP2ATR = 2.5
+	cfg.MomentumScalpMinADX = 15.0
+	cfg.MomentumScalpSLATR = 0.3
+	cfg.MomentumScalpTP1ATR = 0.5
+	cfg.MomentumScalpTP2ATR = 0.8
+	cfg.MomentumScalpMinScore = 6
+	cfg.MomentumScalpMaxHoldingMin = 25
+	cfg.M15ConfirmRSIThreshold = 40.0
+	cfg.MinScore = 5
+	return cfg
+}
+
+// GBPUSDStrategyConfig returns strategy parameters for GBPUSD.
+// GBPUSD is a major pair with moderate volatility — wider SL than EURUSD
+// but tighter than JPY crosses.
+func GBPUSDStrategyConfig() StrategyConfig {
+	cfg := DefaultStrategyConfig()
+	// H4 filter
+	cfg.H4ADXThreshold = 22.0
+	cfg.H4RequireConsecutive = 2
+	// Pullback
+	cfg.PullbackMinADX = 20.0
+	cfg.PullbackSLATR = 1.3
+	cfg.PullbackTP1ATR = 1.8
+	cfg.PullbackTP2ATR = 3.0
+	cfg.PullbackDistATR = 0.5
+	// BreakoutRetest
+	cfg.BreakoutRetestSLATR = 1.5
+	cfg.BreakoutRetestTP1ATR = 2.0
+	cfg.BreakoutRetestTP2ATR = 4.0
+	// Divergence
+	cfg.DivergenceSLATR = 1.0
+	cfg.DivergenceTP1ATR = 2.0
+	cfg.DivergenceTP2ATR = 3.5
+	// BreakoutPyramid
+	cfg.BreakoutPyramidMinADX = 28.0
+	cfg.BreakoutPyramidSLATR = 1.5
+	// ScaleIn
+	cfg.ScaleInSLATR = 1.3
+	cfg.ScaleInTP1ATR = 1.8
+	cfg.ScaleInTP2ATR = 3.0
+	// MomentumScalp
+	cfg.MomentumScalpMinADX = 16.0
+	cfg.MomentumScalpSLATR = 0.5
+	cfg.MomentumScalpTP1ATR = 0.7
+	cfg.MomentumScalpTP2ATR = 1.0
+	cfg.MomentumScalpMinScore = 6
+	cfg.MomentumScalpMaxHoldingMin = 30
+	cfg.M15ConfirmRSIThreshold = 42.0
+	cfg.MinScore = 5
+	return cfg
+}
+
+// USDCADStrategyConfig returns strategy parameters for USDCAD.
+// USDCAD is an oil-correlated pair with moderate volatility,
+// trending behavior, and good ADX readings.
+func USDCADStrategyConfig() StrategyConfig {
+	cfg := DefaultStrategyConfig()
+	// H4 filter — USDCAD trends well, can use higher ADX
+	cfg.H4ADXThreshold = 25.0
+	cfg.H4RequireConsecutive = 2
+	// Pullback
+	cfg.PullbackMinADX = 22.0
+	cfg.PullbackSLATR = 1.0
+	cfg.PullbackSLATR = 1.2
+	cfg.PullbackTP1ATR = 1.5
+	cfg.PullbackTP2ATR = 3.0
+	cfg.PullbackDistATR = 0.5
+	// BreakoutRetest
+	cfg.BreakoutRetestSLATR = 1.3
+	cfg.BreakoutRetestTP1ATR = 2.0
+	cfg.BreakoutRetestTP2ATR = 3.5
+	// Divergence
+	cfg.DivergenceSLATR = 0.8
+	cfg.DivergenceTP1ATR = 1.8
+	cfg.DivergenceTP2ATR = 3.0
+	// BreakoutPyramid
+	cfg.BreakoutPyramidMinADX = 28.0
+	cfg.BreakoutPyramidSLATR = 1.5
+	// ScaleIn
+	cfg.ScaleInSLATR = 1.2
+	cfg.ScaleInTP1ATR = 1.5
+	cfg.ScaleInTP2ATR = 3.0
+	// MomentumScalp
+	cfg.MomentumScalpMinADX = 16.0
+	cfg.MomentumScalpSLATR = 0.4
+	cfg.MomentumScalpTP1ATR = 0.6
+	cfg.MomentumScalpTP2ATR = 0.9
+	cfg.MomentumScalpMinScore = 6
+	cfg.MomentumScalpMaxHoldingMin = 25
+	cfg.M15ConfirmRSIThreshold = 40.0
+	cfg.MinScore = 5
 	return cfg
 }

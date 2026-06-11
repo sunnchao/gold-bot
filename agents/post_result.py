@@ -24,6 +24,14 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+# Hermes webhook 多通道推送（飞书+Telegram+Discord）
+try:
+    from utils.hermes_notify import get_notifier as get_hermes_notifier  # type: ignore[assignment]
+    _hermes_available = True
+except ImportError:
+    _hermes_available = False
+    get_hermes_notifier = None  # type: ignore[assignment]
+
 # 加载 .env（Agent 脚本独立运行，需要手动加载）
 try:
     from dotenv import load_dotenv
@@ -342,6 +350,89 @@ def post_feishu_card(account_id, combined_bias, confidence, reasoning,
         return False
 
 
+def _send_hermes_webhook(
+    account_id, combined_bias, confidence, reasoning,
+    exit_suggestion, risk_alert, alert_reason,
+    strategy_name="pullback", symbol="XAUUSD",
+    push_reason="",
+):
+    """通过 Hermes webhook 推送到飞书+Telegram+Discord"""
+    if not _hermes_available or get_hermes_notifier is None:
+        return {}
+
+    notifier = get_hermes_notifier()
+    if not notifier.available:
+        return {}
+
+    # ── 格式化 Markdown 消息 ─────────────────────────
+    strategy_display = STRATEGY_DISPLAY_MAP.get(strategy_name.lower(), strategy_name.upper())
+    bias_map = {"bullish": "🟢 偏多", "bearish": "🔴 偏空", "neutral": "⚪ 中性"}
+    exit_map = {
+        "hold": "持仓", "tighten": "移动止损",
+        "close_long": "平多", "close_short": "平空",
+        "close_all": "清仓", "close_partial": "减仓",
+    }
+    bias_text = bias_map.get(combined_bias.lower(), combined_bias)
+    exit_text = exit_map.get(exit_suggestion.lower(), exit_suggestion)
+
+    # 置信度进度条
+    conf_bar = "▓" * max(1, confidence // 10) + "░" * max(0, 10 - confidence // 10)
+
+    # 信号标签
+    if risk_alert:
+        signal_tag = "🚨 风险警报"
+    elif exit_suggestion.lower() == "hold" and combined_bias.lower() != "neutral":
+        signal_tag = "📈 开单信号"
+    elif exit_suggestion.lower() in ("close_long", "close_short", "close_all"):
+        signal_tag = "📤 平仓信号"
+    elif exit_suggestion.lower() in ("tighten", "close_partial"):
+        signal_tag = "🔄 持仓调整"
+    else:
+        signal_tag = "📋 分析报告"
+
+    # 获取实时价格
+    bid_str, ask_str = _fetch_price(account_id)
+    price_line = f"**价格**: {bid_str}" if bid_str else ""
+
+    # 持仓状态
+    positions, has_profit = check_positions_profit(account_id)
+    pos_line = ""
+    if positions is not None:
+        if positions:
+            longs = sum(1 for p in positions if p.get("type", "").lower() == "buy")
+            shorts = sum(1 for p in positions if p.get("type", "").lower() == "sell")
+            total_profit = sum(p.get("profit", 0) for p in positions)
+            profit_str = f"+{total_profit:.2f}" if total_profit >= 0 else f"{total_profit:.2f}"
+            pos_line = f"**持仓**: 多×{longs} 空×{shorts} | 浮盈 `{profit_str}`"
+        else:
+            pos_line = "**持仓**: 无"
+
+    # 构建 Markdown
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    parts = [
+        f"**{signal_tag}** | {strategy_display} | {symbol}",
+        "",
+        f"**信号**: {bias_text}　|　**置信度**: {confidence}% `{conf_bar}`",
+        f"**操作**: {exit_text}",
+    ]
+    if price_line:
+        parts.append(price_line)
+    if pos_line:
+        parts.append(pos_line)
+
+    reasoning_snippet = reasoning[:300] + ("..." if len(reasoning) > 300 else "")
+    parts.extend(["", f"**分析摘要**", reasoning_snippet])
+
+    if risk_alert and alert_reason:
+        parts.extend(["", f"🚨 **风险提示**: {alert_reason[:200]}"])
+
+    parts.extend(["", f"⏰ {now} | Aurex · 风险第一 · 本金至上"])
+
+    message = "\n".join(parts)
+
+    return notifier.send(message)
+
+
 def main():
     # 参数解析：支持 account_id 作为第一个参数或从文件名推断
     # 格式: post_result.py [account_id] <bias> <conf> <reasoning> <exit> <risk> <alert> [strategy]
@@ -410,7 +501,16 @@ def main():
             exit_suggestion, risk_alert, alert_reason,
             strategy_name=strategy_name, symbol=symbol
         )
-        print(f"推送结果: API={api_ok}, Feishu={feishu_ok} ({push_reason})")
+
+        # Hermes webhook 多通道推送（飞书+Telegram+Discord）
+        hermes_results = _send_hermes_webhook(
+            account_id, combined_bias, confidence, reasoning,
+            exit_suggestion, risk_alert, alert_reason,
+            strategy_name=strategy_name, symbol=symbol,
+            push_reason=push_reason,
+        )
+        hermes_str = ", ".join(f"Hermes-{k}={v}" for k, v in hermes_results.items()) if hermes_results else "Hermes=SKIP"
+        print(f"推送结果: API={api_ok}, Feishu={feishu_ok}, {hermes_str} ({push_reason})")
     else:
         print(f"推送结果: API={api_ok}, Feishu=SKIP")
 
