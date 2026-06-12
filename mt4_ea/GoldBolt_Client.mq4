@@ -809,6 +809,10 @@ void PollAndExecute()
             ExecuteOpen(cmd, cmd_id);
          else if(action == "ADD")
             ExecuteAdd(cmd, cmd_id);
+         else if(action == "PENDING")
+            ExecutePending(cmd, cmd_id);
+         else if(action == "CANCEL_PENDING")
+            ExecuteCancelPending(cmd, cmd_id);
          else
             Print("未知指令类型：", action);
       }
@@ -1078,6 +1082,14 @@ void ExecuteCloseAll(string cmd, string cmd_id)
 // ============================================================
 void ExecuteSignal(string cmd, string cmd_id)
 {
+   string orderType = GetJsonString(cmd, "order_type");
+   if(orderType == "BUY_LIMIT" || orderType == "BUY_STOP" || 
+      orderType == "SELL_LIMIT" || orderType == "SELL_STOP")
+   {
+      ExecutePending(cmd, cmd_id);
+      return;
+   }
+   
    string signalSymbol = GetJsonString(cmd, "symbol");
    string type_str = GetJsonString(cmd, "type");
    double sl       = GetJsonDouble(cmd, "sl");
@@ -1286,6 +1298,211 @@ void ExecuteSignal(string cmd, string cmd_id)
       int err = GetLastError();
       Print("❌ 开仓失败：Error#", err);
       ReportResult(cmd_id, "ERROR", 0, IntegerToString(err));
+   }
+}
+
+// ============================================================
+// 执行挂单指令（限价/止损单）
+// ============================================================
+void ExecutePending(string cmd, string cmd_id)
+{
+   string signalSymbol = GetJsonString(cmd, "symbol");
+   string type_str     = GetJsonString(cmd, "type");
+   string orderType    = GetJsonString(cmd, "order_type");
+   double entry        = GetJsonDouble(cmd, "entry");
+   double sl           = GetJsonDouble(cmd, "sl");
+   double tp1          = GetJsonDouble(cmd, "tp1");
+   int    score        = GetJsonInt(cmd, "score");
+   string strategy     = GetJsonString(cmd, "strategy");
+   datetime expiration = (datetime)GetJsonInt(cmd, "expiration");
+
+   // 确定品种
+   string baseSymbol = signalSymbol;
+   if(StringLen(baseSymbol) == 0)
+      baseSymbol = g_symbols[0];
+
+   string brokerSymbol = GetBrokerSymbol(baseSymbol);
+
+   Print("📡 挂单信号：", type_str, " | 品种=", baseSymbol, " → ", brokerSymbol,
+         " | 入场=", entry, " SL=", sl, " TP=", tp1, " | ", strategy, " 评分:", score);
+
+   // 验证品种
+   if(StringLen(signalSymbol) > 0 && !IsPrimarySymbol(signalSymbol))
+   {
+      Print("❌ 挂单品种不在配置列表：", signalSymbol, " | 已配置: ", Symbols);
+      ReportResult(cmd_id, "ERROR", 0, "symbol_mismatch");
+      return;
+   }
+
+   // 验证方向
+   if(type_str != "BUY" && type_str != "SELL")
+   {
+      Print("❌ 非法挂单方向：", type_str);
+      ReportResult(cmd_id, "ERROR", 0, "invalid_type");
+      return;
+   }
+
+   // 验证策略及magic
+   int magicForOrder = GetStrategyMagic(strategy);
+   if(magicForOrder <= 0)
+   {
+      Print("❌ 未知策略：", strategy);
+      ReportResult(cmd_id, "ERROR", 0, "invalid_strategy");
+      return;
+   }
+
+   if(!IsStrategyEnabled(strategy))
+   {
+      Print("❌ 策略未启用：", strategy);
+      ReportResult(cmd_id, "ERROR", 0, "strategy_disabled");
+      return;
+   }
+
+   double point = GetSymbolPoint(brokerSymbol);
+   if(point <= 0) point = Point;
+
+   // 确定挂单类型
+   int pendingType = -1;
+   if(orderType == "BUY_LIMIT")
+      pendingType = OP_BUYLIMIT;
+   else if(orderType == "BUY_STOP")
+      pendingType = OP_BUYSTOP;
+   else if(orderType == "SELL_LIMIT")
+      pendingType = OP_SELLLIMIT;
+   else if(orderType == "SELL_STOP")
+      pendingType = OP_SELLSTOP;
+   else
+   {
+      // 自动检测：entry 与当前价格的相对位置
+      if(type_str == "BUY")
+      {
+         double ask = MarketInfo(brokerSymbol, MODE_ASK);
+         if(entry <= ask + 5 * point)
+            pendingType = OP_BUYLIMIT; // 低于或接近市价 → 限价买入
+         else
+            pendingType = OP_BUYSTOP;   // 高于市价 → 止损买入
+      }
+      else // SELL
+      {
+         double bid = MarketInfo(brokerSymbol, MODE_BID);
+         if(entry >= bid - 5 * point)
+            pendingType = OP_SELLLIMIT; // 高于或接近市价 → 限价卖出
+         else
+            pendingType = OP_SELLSTOP;  // 低于市价 → 止损卖出
+      }
+   }
+
+   // 检查重复挂单（同品种、同方向、同magic）
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderSymbol() != brokerSymbol) continue;
+      if(OrderMagicNumber() != magicForOrder) continue;
+
+      int ot = OrderType();
+      bool isBuyPending = (ot == OP_BUYLIMIT || ot == OP_BUYSTOP);
+      bool isSellPending = (ot == OP_SELLLIMIT || ot == OP_SELLSTOP);
+      bool newIsBuy = (pendingType == OP_BUYLIMIT || pendingType == OP_BUYSTOP);
+
+      if((newIsBuy && isBuyPending) || (!newIsBuy && isSellPending))
+      {
+         Print("❌ 已有相同方向挂单：", brokerSymbol);
+         ReportResult(cmd_id, "ERROR", 0, "duplicate_pending");
+         return;
+      }
+   }
+
+   // 计算手数
+   double currentPrice = (type_str == "BUY") ? MarketInfo(brokerSymbol, MODE_ASK) : MarketInfo(brokerSymbol, MODE_BID);
+   double sl_distance = MathAbs(currentPrice - sl);
+   double lots = CalcLotsForStrategy(strategy, sl_distance);
+   lots = NormalizeVolume(brokerSymbol, lots);
+
+   string comment = "GB_" + strategy + "_S" + IntegerToString(score);
+
+   // 设置过期时间：默认24小时
+   if(expiration <= 0)
+      expiration = TimeCurrent() + 24 * 60 * 60;
+
+   int ticket = OrderSend(brokerSymbol, pendingType, lots, entry, Slippage,
+                          0, 0, comment, magicForOrder, expiration,
+                          type_str == "BUY" ? clrGreen : clrRed);
+
+   if(ticket > 0)
+   {
+      Print("✅ 挂单成功：#", ticket, " ", type_str, " ", lots, "手 @ ", entry,
+            " | Magic=", magicForOrder, " (", strategy, ")");
+
+      // 尝试设置 SL/TP（部分经纪商可能拒绝，不影响挂单成功）
+      if(sl > 0 || tp1 > 0)
+      {
+         if(OrderSelect(ticket, SELECT_BY_TICKET))
+         {
+            double final_sl = (sl > 0) ? sl : OrderStopLoss();
+            double final_tp = (tp1 > 0) ? tp1 : OrderTakeProfit();
+            if(OrderModify(ticket, entry, final_sl, final_tp, expiration, clrYellow))
+            {
+               Print("📝 挂单设置SL/TP: SL=", final_sl, " TP=", final_tp);
+            }
+            else
+            {
+               int mod_err = GetLastError();
+               Print("⚠️ 挂单SL/TP设置失败: #", ticket, " Error#", mod_err);
+               // 不影响挂单结果
+            }
+         }
+      }
+
+      ReportResult(cmd_id, "OK", ticket, "");
+   }
+   else
+   {
+      int err = GetLastError();
+      Print("❌ 挂单失败：Error#", err);
+      ReportResult(cmd_id, "ERROR", 0, IntegerToString(err));
+   }
+}
+
+// ============================================================
+// 取消挂单指令
+// ============================================================
+void ExecuteCancelPending(string cmd, string cmd_id)
+{
+   int ticket = (int)GetJsonDouble(cmd, "ticket");
+   string reason = GetJsonString(cmd, "reason");
+
+   if(ticket <= 0)
+   {
+      Print("❌ 取消挂单：无效ticket");
+      ReportResult(cmd_id, "ERROR", 0, "invalid_ticket");
+      return;
+   }
+
+   if(!OrderSelect(ticket, SELECT_BY_TICKET))
+   {
+      Print("❌ 取消挂单：找不到订单 #", ticket);
+      ReportResult(cmd_id, "ERROR", 0, "order_not_found");
+      return;
+   }
+
+   int ot = OrderType();
+   if(ot != OP_BUYLIMIT && ot != OP_BUYSTOP && ot != OP_SELLLIMIT && ot != OP_SELLSTOP)
+   {
+      Print("❌ 取消挂单：#", ticket, " 不是挂单（", ot, "）");
+      ReportResult(cmd_id, "ERROR", 0, "not_pending");
+      return;
+   }
+
+   if(OrderDelete(ticket))
+   {
+      Print("🗑️ 取消挂单：#", ticket, " | ", reason);
+      ReportResult(cmd_id, "OK", ticket, "");
+   }
+   else
+   {
+      int err = GetLastError();
+      Print("❌ 取消挂单失败：#", ticket, " Error#", err);
+      ReportResult(cmd_id, "ERROR", ticket, IntegerToString(err));
    }
 }
 

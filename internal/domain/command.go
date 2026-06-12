@@ -17,13 +17,15 @@ const (
 type CommandAction string
 
 const (
-	CommandActionSignal       CommandAction = "SIGNAL"
-	CommandActionModify       CommandAction = "MODIFY"
-	CommandActionClose        CommandAction = "CLOSE"
-	CommandActionClosePartial CommandAction = "CLOSE_PARTIAL"
-	CommandActionCloseAll     CommandAction = "CLOSE_ALL"
-	CommandActionOpen         CommandAction = "OPEN"
-	CommandActionAdd          CommandAction = "ADD"
+	CommandActionSignal           CommandAction = "SIGNAL"
+	CommandActionModify           CommandAction = "MODIFY"
+	CommandActionClose            CommandAction = "CLOSE"
+	CommandActionClosePartial     CommandAction = "CLOSE_PARTIAL"
+	CommandActionCloseAll         CommandAction = "CLOSE_ALL"
+	CommandActionOpen             CommandAction = "OPEN"
+	CommandActionAdd              CommandAction = "ADD"
+	CommandActionPending          CommandAction = "PENDING"
+	CommandActionCancelPending    CommandAction = "CANCEL_PENDING"
 )
 
 type Command struct {

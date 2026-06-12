@@ -139,7 +139,7 @@ func (e *LiveTradingExecutor) analyzeAndQueue(ctx context.Context, accountID, sy
 	if strings.EqualFold(timeframe, "positions") {
 		analysisMode = "positions"
 	}
-	command := e.buildSignalCommand(accountID, symbol, *signal, snapshot.Bars, analysisMode)
+	command := e.buildSignalCommand(accountID, symbol, *signal, snapshot.Bars, analysisMode, snapshot.CurrentPrice, atr)
 	if _, err := e.commands.Get(ctx, command.CommandID); err == nil {
 		log.Printf("[STRATEGY] 🔁 duplicate live signal skipped account=%s symbol=%s strategy=%s command_id=%s",
 			accountID, symbol, signal.Strategy, command.CommandID)
@@ -160,7 +160,30 @@ func (e *LiveTradingExecutor) analyzeAndQueue(ctx context.Context, accountID, sy
 	return nil
 }
 
-func (e *LiveTradingExecutor) buildSignalCommand(accountID, symbol string, signal domain.Signal, bars map[string][]domain.Bar, analysisMode string) domain.Command {
+// orderTypeForSignal determines whether to use market or pending order based on price distance.
+// Returns "market" for close prices, or a specific pending type for far prices.
+func orderTypeForSignal(price, entry, atr float64, side string) string {
+	if atr <= 0 {
+		return "market"
+	}
+	dist := math.Abs(price - entry)
+	if dist > atr*0.3 {
+		if side == "BUY" {
+			if entry <= price {
+				return "BUY_LIMIT"
+			}
+			return "BUY_STOP"
+		} else {
+			if entry >= price {
+				return "SELL_LIMIT"
+			}
+			return "SELL_STOP"
+		}
+	}
+	return "market"
+}
+
+func (e *LiveTradingExecutor) buildSignalCommand(accountID, symbol string, signal domain.Signal, bars map[string][]domain.Bar, analysisMode string, currentPrice, atr float64) domain.Command {
 	createdAt := time.Now().UTC()
 	if e.now != nil {
 		createdAt = e.now().UTC()
@@ -170,30 +193,40 @@ func (e *LiveTradingExecutor) buildSignalCommand(accountID, symbol string, signa
 	}
 	decisionKey := liveDecisionKey(signal.Strategy, bars)
 	commandID := buildStrategyCommandID(accountID, symbol, signal, decisionKey)
+
+	payload := map[string]any{
+		"decision_id":            commandID,
+		"symbol":                 symbol,
+		"type":                   signal.Side,
+		"entry":                  signal.Entry,
+		"sl":                     signal.StopLoss,
+		"tp1":                    signal.TP1,
+		"tp2":                    signal.TP2,
+		"score":                  signal.Score,
+		"strategy":               signal.Strategy,
+		"atr":                    signal.ATR,
+		"scale_in_parent_ticket": signal.ScaleInParentTicket,
+		"weighted_avg_entry":     signal.WeightedAvgEntry,
+		"unified_sl":             signal.UnifiedSL,
+		"scale_in_count":         signal.ScaleInCount,
+		"trigger_key":            decisionKey,
+		"source":                 "live_strategy",
+		"analysis_mode":          analysisMode,
+	}
+
+	// Determine order type based on price distance from entry
+	orderType := orderTypeForSignal(currentPrice, signal.Entry, atr, signal.Side)
+	payload["order_type"] = orderType
+	if orderType != "market" {
+		payload["expiration"] = time.Now().Add(24 * time.Hour).Unix()
+	}
+
 	return domain.Command{
 		CommandID: commandID,
 		AccountID: accountID,
 		Action:    domain.CommandActionSignal,
 		CreatedAt: createdAt,
-		Payload: map[string]any{
-			"decision_id":            commandID,
-			"symbol":                 symbol,
-			"type":                   signal.Side,
-			"entry":                  signal.Entry,
-			"sl":                     signal.StopLoss,
-			"tp1":                    signal.TP1,
-			"tp2":                    signal.TP2,
-			"score":                  signal.Score,
-			"strategy":               signal.Strategy,
-			"atr":                    signal.ATR,
-			"scale_in_parent_ticket": signal.ScaleInParentTicket,
-			"weighted_avg_entry":     signal.WeightedAvgEntry,
-			"unified_sl":             signal.UnifiedSL,
-			"scale_in_count":         signal.ScaleInCount,
-			"trigger_key":            decisionKey,
-			"source":                 "live_strategy",
-			"analysis_mode":          analysisMode,
-		},
+		Payload:   payload,
 	}
 }
 
