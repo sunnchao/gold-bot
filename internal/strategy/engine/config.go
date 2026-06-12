@@ -130,7 +130,7 @@ func DefaultStrategyConfig() StrategyConfig {
 
 		MinScore: 5,
 
-		MomentumScalpMinADX:           18.0,
+		MomentumScalpMinADX:           20.0,
 		MomentumScalpEMAPeriod1:       5,
 		MomentumScalpEMAPeriod2:       8,
 		MomentumScalpEMAPeriod3:       12,
@@ -237,11 +237,11 @@ func GBPJPYStrategyConfig() StrategyConfig {
 	cfg.ScaleInTP2ATR = 3.5     // was 3.0
 
 	// === MomentumScalp: M1 ATR too small for GBPJPY, use wider params ===
-	cfg.MomentumScalpMinADX = 15.0           // was 18
+	cfg.MomentumScalpMinADX = 18.0           // was 18
 	cfg.MomentumScalpSLATR = 0.8             // was 0.4 — 0.4 M1-ATR ≈ 1-3 pips, instant stop
 	cfg.MomentumScalpTP1ATR = 1.0            // was 0.5
 	cfg.MomentumScalpTP2ATR = 1.5            // was 0.8
-	cfg.MomentumScalpMinScore = 6            // was 7 — 7 is near-impossible to reach
+	cfg.MomentumScalpMinScore = 7            // was 7 — requires strong signal
 	cfg.MomentumScalpMaxHoldingMin = 45      // was 20 — GBPJPY needs more time to develop
 	cfg.MomentumScalpRSIBullThresh = 42.0    // was 45
 	cfg.MomentumScalpRSIBearThresh = 58.0    // was 55
@@ -253,7 +253,7 @@ func GBPJPYStrategyConfig() StrategyConfig {
 	cfg.M15ConfirmRSIThreshold = 45.0 // was 40 — more lenient for GBPJPY
 
 	// === Global ===
-	cfg.MinScore = 4 // was 5
+	cfg.MinScore = 5 // was 5
 
 	return cfg
 }

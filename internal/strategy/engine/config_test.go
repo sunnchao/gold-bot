@@ -5,8 +5,8 @@ import "testing"
 func TestDefaultStrategyConfigKeepsDefaultMomentumScalpThresholds(t *testing.T) {
 	cfg := DefaultStrategyConfig()
 
-	if cfg.MomentumScalpMinADX != 18 {
-		t.Fatalf("MomentumScalpMinADX = %v, want 18", cfg.MomentumScalpMinADX)
+	if cfg.MomentumScalpMinADX != 20 {
+		t.Fatalf("MomentumScalpMinADX = %v, want 20", cfg.MomentumScalpMinADX)
 	}
 	if cfg.MomentumScalpVolConfirm != 1.05 {
 		t.Fatalf("MomentumScalpVolConfirm = %v, want 1.05", cfg.MomentumScalpVolConfirm)
@@ -67,14 +67,14 @@ func TestNewForSymbolKeepsDefaultMomentumScalpThresholdsForGBPJPYAliases(t *test
 			cfg := NewForSymbol(symbol).Config
 
 			// GBPJPY has intentionally optimized MomentumScalp params (not default)
-			if cfg.MomentumScalpMinADX != 15 {
-				t.Fatalf("MomentumScalpMinADX = %v, want 15", cfg.MomentumScalpMinADX)
+			if cfg.MomentumScalpMinADX != 18 {
+				t.Fatalf("MomentumScalpMinADX = %v, want 18", cfg.MomentumScalpMinADX)
 			}
 			if cfg.MomentumScalpVolConfirm != 1.02 {
 				t.Fatalf("MomentumScalpVolConfirm = %v, want 1.02", cfg.MomentumScalpVolConfirm)
 			}
-			if cfg.MomentumScalpMinScore != 6 {
-				t.Fatalf("MomentumScalpMinScore = %d, want 6", cfg.MomentumScalpMinScore)
+			if cfg.MomentumScalpMinScore != 7 {
+				t.Fatalf("MomentumScalpMinScore = %d, want 7", cfg.MomentumScalpMinScore)
 			}
 		})
 	}

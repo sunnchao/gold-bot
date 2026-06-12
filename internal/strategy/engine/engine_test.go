@@ -12,8 +12,8 @@ import (
 func TestDefaultStrategyConfigIncludesMomentumScalpDefaults(t *testing.T) {
 	cfg := DefaultStrategyConfig()
 
-	if cfg.MomentumScalpMinADX != 18 {
-		t.Fatalf("MomentumScalpMinADX = %v, want 18", cfg.MomentumScalpMinADX)
+	if cfg.MomentumScalpMinADX != 20 {
+		t.Fatalf("MomentumScalpMinADX = %v, want 20", cfg.MomentumScalpMinADX)
 	}
 	if cfg.MomentumScalpEMAPeriod1 != 5 {
 		t.Fatalf("MomentumScalpEMAPeriod1 = %d, want 5", cfg.MomentumScalpEMAPeriod1)

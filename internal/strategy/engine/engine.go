@@ -427,8 +427,9 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	if snapshot.AIResult != nil && snapshot.AIResult.SuggestedSL > 0 {
 		aiSL := snapshot.AIResult.SuggestedSL
 		dist := math.Abs(best.Entry - aiSL)
-		// Validate: AI SL should be within reasonable range (0.3-3×ATR)
-		if dist >= atr*0.3 && dist <= atr*3.0 {
+		// Validate side direction: BUY SL must be below entry, SELL SL must be above entry
+		sideValid := (best.Side == "BUY" && aiSL < best.Entry) || (best.Side == "SELL" && aiSL > best.Entry)
+		if dist >= atr*0.3 && dist <= atr*3.0 && sideValid {
 			originalSL := best.StopLoss
 			best.StopLoss = aiSL
 			log.Printf("[STRATEGY] 🤖 AI 止损覆盖: %.2f → %.2f (距离=%.2f, ATR=%.2f)", originalSL, aiSL, dist, atr)
@@ -438,7 +439,11 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 				Message:  fmt.Sprintf("🤖 AI止损覆盖: %.2f → %.2f (基于支撑阻力位)", originalSL, aiSL),
 			})
 		} else {
-			log.Printf("[STRATEGY] ⚠️ AI 止损 %.2f 不合理 (距离=%.2f, ATR=%.2f), 保持 ATR 止损 %.2f", aiSL, dist, atr, best.StopLoss)
+			if !sideValid {
+				log.Printf("[STRATEGY] ⚠️ AI 止损 %.2f 方向不合法 (side=%s, entry=%.2f), 保持 ATR 止损 %.2f", aiSL, best.Side, best.Entry, best.StopLoss)
+			} else {
+				log.Printf("[STRATEGY] ⚠️ AI 止损 %.2f 距离不合理 (距离=%.2f, ATR=%.2f), 保持 ATR 止损 %.2f", aiSL, dist, atr, best.StopLoss)
+			}
 		}
 	}
 

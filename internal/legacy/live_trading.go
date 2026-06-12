@@ -11,6 +11,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"gold-bot/internal/domain"
@@ -35,6 +36,11 @@ type LiveTradingExecutor struct {
 	commands        CommandStore
 	analyzerFactory func(symbol string) liveSignalAnalyzer
 	now             func() time.Time
+
+	// AI SL adjust cooldown tracking
+	lastModifyTime map[int64]time.Time // ticket → last enqueue time
+	failCount      map[int64]int       // ticket → consecutive failure count
+	mu             sync.Mutex
 }
 
 func NewLiveTradingExecutor(accounts AccountStore, commands CommandStore) *LiveTradingExecutor {
@@ -302,6 +308,53 @@ func (e *LiveTradingExecutor) checkAIStopLossAdjust(ctx context.Context, account
 	// 只处理第一个持仓（通常只有一个）
 	pos := positions[0]
 	currentSL := pos.SL
+	ticket := pos.Ticket
+
+	// --- DIRECTION PROTECTION ---
+	// BUY positions: only allow newSL >= currentSL (tighter to price, moving toward profit)
+	// SELL positions: only allow newSL <= currentSL
+	switch strings.ToUpper(pos.Type) {
+	case "BUY":
+		if aiSL < currentSL {
+			log.Printf("[STRATEGY] 🛡️ 方向保护阻止止损下移 BUY: 当前=%.2f AI=%.2f (BUY仅允许上调) | account=%s/%s ticket=%d",
+				currentSL, aiSL, accountID, symbol, ticket)
+			return nil
+		}
+	case "SELL":
+		if aiSL > currentSL {
+			log.Printf("[STRATEGY] 🛡️ 方向保护阻止止损上移 SELL: 当前=%.2f AI=%.2f (SELL仅允许下调) | account=%s/%s ticket=%d",
+				currentSL, aiSL, accountID, symbol, ticket)
+			return nil
+		}
+	}
+
+	e.mu.Lock()
+
+	// Lazy init the tracking maps
+	if e.lastModifyTime == nil {
+		e.lastModifyTime = make(map[int64]time.Time)
+		e.failCount = make(map[int64]int)
+	}
+
+	// --- COOLDOWN CHECK ---
+	if lastTime, ok := e.lastModifyTime[ticket]; ok {
+		if e.now().Sub(lastTime) < 5*time.Minute {
+			e.mu.Unlock()
+			log.Printf("[STRATEGY] ⏳ 冷却中，跳过止损调整 (距离上次 %.0f秒) | account=%s/%s ticket=%d",
+				e.now().Sub(lastTime).Seconds(), accountID, symbol, ticket)
+			return nil
+		}
+	}
+
+	// --- FAILURE THROTTLE CHECK ---
+	if e.failCount[ticket] >= 3 {
+		e.mu.Unlock()
+		log.Printf("[STRATEGY] 🚫 连续失败 %d 次，跳过止损调整 | account=%s/%s ticket=%d",
+			e.failCount[ticket], accountID, symbol, ticket)
+		return nil
+	}
+
+	e.mu.Unlock()
 
 	// 计算 AI 止损与当前止损的差距
 	distance := math.Abs(aiSL - currentSL)
@@ -327,11 +380,21 @@ func (e *LiveTradingExecutor) checkAIStopLossAdjust(ctx context.Context, account
 		if isDuplicateCommandErr(err) {
 			return nil
 		}
+		// Real DB error – increment failure counter
+		e.mu.Lock()
+		e.failCount[ticket]++
+		e.mu.Unlock()
 		return fmt.Errorf("enqueue modify command %s: %w", command.CommandID, err)
 	}
 
+	// Success – record time and reset failure counter
+	e.mu.Lock()
+	e.lastModifyTime[ticket] = e.now()
+	e.failCount[ticket] = 0
+	e.mu.Unlock()
+
 	log.Printf("[STRATEGY] ✅ AI 止损调整已发送 | account=%s/%s ticket=%d current=%.2f -> ai=%.2f (%.2f 点)",
-		accountID, symbol, pos.Ticket, currentSL, aiSL, distance)
+		accountID, symbol, ticket, currentSL, aiSL, distance)
 	return nil
 }
 
