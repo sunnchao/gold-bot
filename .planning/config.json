@@ -1,0 +1,19 @@
+{
+  "project": "gold-bot-fibonacci",
+  "version": "1.0.0",
+  "created": "2026-06-13",
+  "phase": 1,
+  "mode": "normal",
+  "granularity": 1,
+  "research_agents": true,
+  "hooks": {
+    "state_orientation": false,
+    "phase_boundary": false,
+    "commit_validation": false,
+    "workflow_guard": false
+  },
+  "feature_flags": {
+    "fib_extension_tp": false,
+    "fib_retracement_pullback": false
+  }
+}
