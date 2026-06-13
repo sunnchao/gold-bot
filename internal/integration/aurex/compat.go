@@ -79,6 +79,9 @@ type IndicatorPack struct {
 	Fib500     float64 `json:"fib_500"`
 	Fib618     float64 `json:"fib_618"`
 	Fib786     float64 `json:"fib_786"`
+	Fib1272    float64 `json:"fib_1272"`
+	Fib1618    float64 `json:"fib_1618"`
+	Fib2618    float64 `json:"fib_2618"`
 	PP         float64 `json:"pp"`
 	R1         float64 `json:"r1"`
 	S1         float64 `json:"s1"`
@@ -146,6 +149,9 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 			Fib500:     safeFloat(last.Fib500),
 			Fib618:     safeFloat(last.Fib618),
 			Fib786:     safeFloat(last.Fib786),
+			Fib1272:    safeFloat(last.Fib1272),
+			Fib1618:    safeFloat(last.Fib1618),
+			Fib2618:    safeFloat(last.Fib2618),
 			PP:         safeFloat(last.PP),
 			R1:         safeFloat(last.R1),
 			S1:         safeFloat(last.S1),
@@ -286,6 +292,9 @@ func safeBar(bar domain.Bar) domain.Bar {
 	bar.Fib500 = safeFloat(bar.Fib500)
 	bar.Fib618 = safeFloat(bar.Fib618)
 	bar.Fib786 = safeFloat(bar.Fib786)
+	bar.Fib1272 = safeFloat(bar.Fib1272)
+	bar.Fib1618 = safeFloat(bar.Fib1618)
+	bar.Fib2618 = safeFloat(bar.Fib2618)
 	bar.PP = safeFloat(bar.PP)
 	bar.R1 = safeFloat(bar.R1)
 	bar.R2 = safeFloat(bar.R2)

@@ -116,6 +116,81 @@ func (e Engine) checkM15Entry(m15 []domain.Bar, side string, price float64) (boo
 	}
 }
 
+func detectLastSwing(bars []domain.Bar, window int) (high, low float64, trend string) {
+	if len(bars) < window {
+		window = len(bars)
+	}
+	if window < 2 {
+		return 0, 0, ""
+	}
+	start := len(bars) - window
+	high = bars[start].High
+	low = bars[start].Low
+	for i := start + 1; i < len(bars); i++ {
+		if bars[i].High > high {
+			high = bars[i].High
+		}
+		if bars[i].Low < low {
+			low = bars[i].Low
+		}
+	}
+	last := bars[len(bars)-1].Close
+	first := bars[start].Close
+	if last >= first {
+		trend = "UP"
+	} else {
+		trend = "DOWN"
+	}
+	return
+}
+
+func (e Engine) applyFibExtensionTP(signal *domain.Signal, h4, h1 []domain.Bar, price, atr float64) *domain.Signal {
+	if signal == nil || !e.Config.FibExtension.Enabled {
+		return signal
+	}
+
+	cfg := e.Config.FibExtension
+
+	var swingHigh, swingLow float64
+	var trend string
+	var adx float64
+
+	if cfg.UseH4Preference && len(h4) >= cfg.SwingWindow {
+		swingHigh, swingLow, trend = detectLastSwing(h4, cfg.SwingWindow)
+		adx = h4[len(h4)-1].ADX
+	}
+	if (!cfg.UseH4Preference || adx < cfg.MinADX || swingHigh == 0 || swingLow == 0) && len(h1) >= cfg.SwingWindow {
+		swingHigh, swingLow, trend = detectLastSwing(h1, cfg.SwingWindow)
+		adx = h1[len(h1)-1].ADX
+	}
+	if adx < cfg.MinADX || swingHigh == 0 || swingLow == 0 {
+		return signal
+	}
+
+	ext := indicator.CalculateFibExtension(swingHigh, swingLow, trend)
+
+	if signal.Side == "BUY" && trend == "UP" {
+		if ext.Level1272 > price && ext.Level1272-price > atr*0.5 {
+			signal.TP1 = round2(ext.Level1272)
+		}
+		if ext.Level1618 > price && ext.Level1618-price > atr*1.0 {
+			signal.TP2 = round2(ext.Level1618)
+		}
+	} else if signal.Side == "SELL" && trend == "DOWN" {
+		if ext.Level1272 < price && price-ext.Level1272 > atr*0.5 {
+			signal.TP1 = round2(ext.Level1272)
+		}
+		if ext.Level1618 < price && price-ext.Level1618 > atr*1.0 {
+			signal.TP2 = round2(ext.Level1618)
+		}
+	}
+
+	log.Printf("[STRATEGY] 🎯 Fib扩展位: Side=%s Trend=%s SwingH=%.2f SwingL=%.2f ADX=%.1f TP1=%.2f TP2=%.2f",
+		signal.Side, trend, swingHigh, swingLow, adx, signal.TP1, signal.TP2)
+
+	return signal
+}
+
 func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []domain.AnalysisLog) {
 	logs := make([]domain.AnalysisLog, 0, 8)
 	log.Printf("[STRATEGY] 🔍 开始分析 account=%s | price=%.2f | H1 bars=%d | positions=%d",
@@ -224,7 +299,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 
 	signals := make([]domain.Signal, 0, 4)
 
-	if signal, detail := e.checkPullback(h1, price, atr); signal != nil {
+	if signal, detail := e.checkPullback(h1, price, atr, h4, m30); signal != nil {
 		signals = append(signals, *signal)
 		logs = append(logs, detail)
 		log.Printf("[STRATEGY] %s", detail.Message)
@@ -270,6 +345,10 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		log.Printf("[STRATEGY] %s", detail.Message)
 	} else {
 		logs = append(logs, detail)
+	}
+
+	for i := range signals {
+		signals[i] = *e.applyFibExtensionTP(&signals[i], h4, h1, price, atr)
 	}
 
 	if len(signals) == 0 {
@@ -471,7 +550,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	return &best, logs
 }
 
-func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
+func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.Bar, m15 []domain.Bar) (*domain.Signal, domain.AnalysisLog) {
 	cfg := e.Config
 	last := h1[len(h1)-1]
 
@@ -513,6 +592,7 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Sign
 			}
 		}
 
+		side := "BUY"
 		score := 5
 		details := make([]string, 0, 3)
 		if last.MACDHist > 0 {
@@ -533,7 +613,7 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Sign
 		}
 
 		signal := &domain.Signal{
-			Side:     "BUY",
+			Side:     side,
 			Entry:    price,
 			StopLoss: round2(price - atr*cfg.PullbackSLATR),
 			TP1:      round2(price + atr*cfg.PullbackTP1ATR),
@@ -541,6 +621,78 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Sign
 			Score:    min(score, 10),
 			Strategy: "pullback",
 		}
+
+		if e.Config.PullbackFib.RetracementEnabled {
+			if len(h4) == 0 {
+				return nil, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: "pullback",
+					Message:  "🌀 pullback+FIB: H4数据不足 ⏭",
+				}
+			}
+			fibCfg := e.Config.PullbackFib
+			h4Last := h4[len(h4)-1]
+			fibTrend := "UP"
+			if h4Last.EMA20 < h4Last.EMA50 {
+				fibTrend = "DOWN"
+			}
+
+			if (side == "BUY" && fibTrend != "UP") || (side == "SELL" && fibTrend != "DOWN") {
+				return nil, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: "pullback",
+					Message:  "🌀 pullback+FIB: 信号方向与H4趋势不一致 ⏭",
+				}
+			}
+
+			if fibCfg.RequireRSIConfirm {
+				if len(m15) == 0 {
+					return nil, domain.AnalysisLog{
+						Level:    "info",
+						Strategy: "pullback",
+						Message:  "🌀 pullback+FIB: M15数据不足,无法做RSI确认 ⏭",
+					}
+				}
+				m15Last := m15[len(m15)-1]
+				if side == "BUY" && m15Last.RSI >= fibCfg.RSIConfirmBullThreshold {
+					return nil, domain.AnalysisLog{
+						Level:    "info",
+						Strategy: "pullback",
+						Message:  fmt.Sprintf("🌀 pullback+FIB: M15 RSI=%.1f 未通过多头确认 ⏭", m15Last.RSI),
+					}
+				}
+				if side == "SELL" && m15Last.RSI <= fibCfg.RSIConfirmBearThreshold {
+					return nil, domain.AnalysisLog{
+						Level:    "info",
+						Strategy: "pullback",
+						Message:  fmt.Sprintf("🌀 pullback+FIB: M15 RSI=%.1f 未通过空头确认 ⏭", m15Last.RSI),
+					}
+				}
+			}
+
+			inZone := indicator.IsPriceInFibZone(price, last.Fib382, last.Fib618, atr, fibCfg.GoldenPocketBufferATR, fibTrend)
+			if !inZone {
+				return nil, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: "pullback",
+					Message:  fmt.Sprintf("🌀 pullback+FIB: 价格 %.2f 不在回撤区 [%.2f-%.2f] ⏭", price, last.Fib382, last.Fib618),
+				}
+			}
+
+			score++
+			signal.Score = min(score, 10)
+			if side == "BUY" {
+				signal.StopLoss = round2(last.Fib786 - atr*fibCfg.StopLossOuterATR)
+			} else {
+				signal.StopLoss = round2(last.Fib786 + atr*fibCfg.StopLossOuterATR)
+			}
+			signal = e.applyFibExtensionTP(signal, h4, h1, price, atr)
+			signal.Strategy = "pullback_fib"
+
+			log.Printf("[STRATEGY] 🌀 pullback+FIB: ✅ 回撤区确认 | Price=%.2f Fib=[%.2f-%.2f] SL=%.2f Score=%d",
+				price, last.Fib382, last.Fib618, signal.StopLoss, signal.Score)
+		}
+
 		return signal, domain.AnalysisLog{
 			Level:    "signal",
 			Strategy: name,
@@ -564,6 +716,7 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Sign
 			}
 		}
 
+		side := "SELL"
 		score := 5
 		details := make([]string, 0, 3)
 		if last.MACDHist < 0 {
@@ -584,7 +737,7 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Sign
 		}
 
 		signal := &domain.Signal{
-			Side:     "SELL",
+			Side:     side,
 			Entry:    price,
 			StopLoss: round2(price + atr*cfg.PullbackSLATR),
 			TP1:      round2(price - atr*cfg.PullbackTP1ATR),
@@ -592,6 +745,78 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64) (*domain.Sign
 			Score:    min(score, 10),
 			Strategy: "pullback",
 		}
+
+		if e.Config.PullbackFib.RetracementEnabled {
+			if len(h4) == 0 {
+				return nil, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: "pullback",
+					Message:  "🌀 pullback+FIB: H4数据不足 ⏭",
+				}
+			}
+			fibCfg := e.Config.PullbackFib
+			h4Last := h4[len(h4)-1]
+			fibTrend := "UP"
+			if h4Last.EMA20 < h4Last.EMA50 {
+				fibTrend = "DOWN"
+			}
+
+			if (side == "BUY" && fibTrend != "UP") || (side == "SELL" && fibTrend != "DOWN") {
+				return nil, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: "pullback",
+					Message:  "🌀 pullback+FIB: 信号方向与H4趋势不一致 ⏭",
+				}
+			}
+
+			if fibCfg.RequireRSIConfirm {
+				if len(m15) == 0 {
+					return nil, domain.AnalysisLog{
+						Level:    "info",
+						Strategy: "pullback",
+						Message:  "🌀 pullback+FIB: M15数据不足,无法做RSI确认 ⏭",
+					}
+				}
+				m15Last := m15[len(m15)-1]
+				if side == "BUY" && m15Last.RSI >= fibCfg.RSIConfirmBullThreshold {
+					return nil, domain.AnalysisLog{
+						Level:    "info",
+						Strategy: "pullback",
+						Message:  fmt.Sprintf("🌀 pullback+FIB: M15 RSI=%.1f 未通过多头确认 ⏭", m15Last.RSI),
+					}
+				}
+				if side == "SELL" && m15Last.RSI <= fibCfg.RSIConfirmBearThreshold {
+					return nil, domain.AnalysisLog{
+						Level:    "info",
+						Strategy: "pullback",
+						Message:  fmt.Sprintf("🌀 pullback+FIB: M15 RSI=%.1f 未通过空头确认 ⏭", m15Last.RSI),
+					}
+				}
+			}
+
+			inZone := indicator.IsPriceInFibZone(price, last.Fib382, last.Fib618, atr, fibCfg.GoldenPocketBufferATR, fibTrend)
+			if !inZone {
+				return nil, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: "pullback",
+					Message:  fmt.Sprintf("🌀 pullback+FIB: 价格 %.2f 不在回撤区 [%.2f-%.2f] ⏭", price, last.Fib382, last.Fib618),
+				}
+			}
+
+			score++
+			signal.Score = min(score, 10)
+			if side == "BUY" {
+				signal.StopLoss = round2(last.Fib786 - atr*fibCfg.StopLossOuterATR)
+			} else {
+				signal.StopLoss = round2(last.Fib786 + atr*fibCfg.StopLossOuterATR)
+			}
+			signal = e.applyFibExtensionTP(signal, h4, h1, price, atr)
+			signal.Strategy = "pullback_fib"
+
+			log.Printf("[STRATEGY] 🌀 pullback+FIB: ✅ 回撤区确认 | Price=%.2f Fib=[%.2f-%.2f] SL=%.2f Score=%d",
+				price, last.Fib382, last.Fib618, signal.StopLoss, signal.Score)
+		}
+
 		return signal, domain.AnalysisLog{
 			Level:    "signal",
 			Strategy: name,

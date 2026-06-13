@@ -1,5 +1,24 @@
 # 更新日志
 
+## 2026-06-13
+
+### v1.3.0 — Fibonacci 交易法
+
+#### 新功能
+
+- **Fibonacci 扩展目标管理（方案B）**: 新增 `CalculateFibExtension()` 计算 127.2%/161.8%/261.8% 扩展位，引擎层 `applyFibExtensionTP()` 为非侵入式 TP 增强。所有策略可选择以 Fib 扩展位作为动态止盈。默认关闭（`FibExtension.Enabled=false`）。
+  - XAUUSD 扩展 ADX 阈值=25, GBPJPY 扩展 ADX 阈值=28
+  - H4 扩展位优先，回退到 H1
+  - API payload 新增 `fib_1272`/`fib_1618`/`fib_2618` 字段
+
+- **Fibonacci 回撤入场增强（方案A）**: pullback 策略集成 Golden Pocket 38.2%-61.8% 回撤区过滤器。开启后价格必须在回撤区内才允许入场，止损移至 FIB786 + ATR 缓冲，TP 联动扩展目标。默认关闭（`PullbackFib.RetracementEnabled=false`）。
+  - H4 EMA 趋势方向校验（方向不一致跳过）
+  - 可选 M15 RSI 确认（默认关闭）
+  - 日志标签 `[STRATEGY] 🌀 pullback+FIB`
+  - XAUUSD: buffer=0.5, GBPJPY: buffer=0.3（更严格）
+
+- 新测试文件 `fibonacci_test.go`，13 个测试覆盖全场景
+
 ## 2026-04-15
 
 ### v1.5.0

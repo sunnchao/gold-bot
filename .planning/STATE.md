@@ -1,7 +1,7 @@
 # STATE.md
 
 **File:** `.planning/STATE.md`  
-**Updated:** 2026-06-13 after multi-model analysis
+**Updated:** 2026-06-13 after Phase 2 implementation
 
 ## Project Reference
 
@@ -9,41 +9,41 @@ See: `.planning/PROJECT.md` (updated 2026-06-13)
 
 **Core value:** 在不增加系统复杂度的前提下，通过 Fibonacci 比例关系提升现有策略的盈亏比和入场精度
 
-**Current focus:** Phase planning — Fibonacci Extension Target (方案B)
+**Current focus:** ✅ ALL PHASES COMPLETE
 
 ## Current Position
 
-- **Phase:** Planning
-- **Current step:** Analysis complete, requirements defined, roadmap approved
-- **Next step:** Begin Phase 1 implementation
+- **Phase 1:** ✅ Complete — Fib Extension Target Management
+- **Phase 2:** ✅ Complete — Fib Retracement Pullback Enhancement
 
-## Key Open Questions
+## Completed Deliverables
 
-| Question | Status | Notes |
-|----------|--------|-------|
-| Swing High/Low 窗口大小？ | Open | 复用现有 50-bar，per-symbol 可配置 |
-| Fib 扩展位优先级（H4 vs H1）？ | Decision: H4 > H1 | H4 级别扩展位更可靠 |
-| 扩展位默认启用还是关闭？ | Decision: 关闭 | 向后兼容，需配置显式开启 |
-| pullback+Fib 增强默认启用？ | Decision: 关闭 | 向后兼容 |
+### Phase 1 — Fib Extension Target (方案B)
+
+- [x] `CalculateFibExtension()` — 127.2%/161.8%/261.8% 扩展位计算
+- [x] `IsPriceInFibZone()` — 价格在回撤区判断
+- [x] `FibExtensionTPConfig` — 配置开关 (Enabled=false 默认)
+- [x] `detectLastSwing()` — Swing High/Low 识别
+- [x] `applyFibExtensionTP()` — 引擎非侵入 TP 增强层
+- [x] API payload 扩展 `fib_1272`/`fib_1618`/`fib_2618`
+- [x] Per-symbol ADX 阈值 (XAUUSD=25, GBPJPY=28)
+
+### Phase 2 — Fib Retracement Pullback Enhancement (方案A)
+
+- [x] `PullbackFibConfig` — 完整配置结构 (RetracementEnabled=false 默认)
+- [x] `checkPullback()` 新增 H4/m15 参数
+- [x] H4 EMA 趋势方向校验 (方向不一致则跳过)
+- [x] 38.2%-61.8% Golden Pocket 价格区间过滤
+- [x] 可选 M15 RSI 确认 (默认关闭)
+- [x] 止损移至 FIB786 + ATR 缓冲
+- [x] TP 联动 Phase 1 扩展目标
+- [x] 日志标签 `[STRATEGY] 🌀 pullback+FIB`
+- [x] XAUUSD: buffer=0.5, GBPJPY: buffer=0.3 (更严格)
+- [x] 5 个新增测试全部通过
 
 ## Active Context
 
-**Multi-model consensus (2026-06-13):**
-- DeepSeek V4 Pro: 建议 A→B→C（先入场，再扩展，C延后）
-- Kimi K2.6: 建议 B→A，放弃C（B杠杆效应最大）
-- GLM 5.1: Hybrid方案，B先，A融合pullback，否决C
-- Qwen 3.7: 建议 B→C→改良A（增强而非替代）
-- **最终决策**: B先再A，A融合到pullback，C不做，时间周期不做
-
-## Last Decisions
-
-| Date | Decision | Rationale |
-|------|----------|-----------|
-| 2026-06-13 | 方案B优先于方案A | 改动最小，惠及所有策略，风险最低 |
-| 2026-06-13 | A不做独立策略 | 与pullback信号冗余，融合增强更优 |
-| 2026-06-13 | 默认关闭 | 向后兼容，配置显式开启 |
-| 2026-06-13 | H4扩展位优先于H1 | H4级别更可靠 |
-| 2026-06-13 | C方案暂停 | 风险过高，3/4模型反对 |
+**No open tasks remaining for this milestone.** The feature is default-off, backward compatible, and fully tested.
 
 ---
-*Last updated: 2026-06-13*
+*Last updated: 2026-06-13 after Phase 2 implementation*

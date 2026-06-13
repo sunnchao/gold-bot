@@ -79,6 +79,25 @@ func EnrichBars(bars []domain.Bar) []domain.Bar {
 		out[i].Fib500 = fib.Fib500
 		out[i].Fib618 = fib.Fib618
 		out[i].Fib786 = fib.Fib786
+
+		swingHigh := windowHighs[0]
+		swingLow := windowLows[0]
+		for j := 1; j < len(windowHighs); j++ {
+			if windowHighs[j] > swingHigh {
+				swingHigh = windowHighs[j]
+			}
+			if windowLows[j] < swingLow {
+				swingLow = windowLows[j]
+			}
+		}
+		trend := "DOWN"
+		if out[i].Close > out[i].Open {
+			trend = "UP"
+		}
+		ext := CalculateFibExtension(swingHigh, swingLow, trend)
+		out[i].Fib1272 = ext.Level1272
+		out[i].Fib1618 = ext.Level1618
+		out[i].Fib2618 = ext.Level2618
 	}
 
 	// Pivot Points (using previous bar's HLC)

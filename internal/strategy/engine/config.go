@@ -1,5 +1,23 @@
 package engine
 
+type FibExtensionTPConfig struct {
+	Enabled         bool    `json:"enabled" yaml:"enabled"`
+	MinADX          float64 `json:"min_adx" yaml:"min_adx"`
+	SwingWindow     int     `json:"swing_window" yaml:"swing_window"`
+	UseH4Preference bool    `json:"use_h4_preference" yaml:"use_h4_preference"`
+}
+
+type PullbackFibConfig struct {
+	RetracementEnabled      bool    `json:"retracement_enabled" yaml:"retracement_enabled"`
+	GoldenPocketBufferATR   float64 `json:"golden_pocket_buffer_atr" yaml:"golden_pocket_buffer_atr"`
+	RequireRSIConfirm       bool    `json:"require_rsi_confirm" yaml:"require_rsi_confirm"`
+	RSIConfirmBullThreshold float64 `json:"rsi_confirm_bull_threshold" yaml:"rsi_confirm_bull_threshold"`
+	RSIConfirmBearThreshold float64 `json:"rsi_confirm_bear_threshold" yaml:"rsi_confirm_bear_threshold"`
+	StopLossOuterATR        float64 `json:"stop_loss_outer_atr" yaml:"stop_loss_outer_atr"`
+	UsePendingOrder         bool    `json:"use_pending_order" yaml:"use_pending_order"`
+	PendingOrderLevel       string  `json:"pending_order_level" yaml:"pending_order_level"`
+}
+
 // StrategyConfig holds all configurable parameters for the strategy engine.
 type StrategyConfig struct {
 	// Pullback strategy
@@ -72,6 +90,9 @@ type StrategyConfig struct {
 	MomentumScalpVolConfirm       float64 `json:"momentum_scalp_vol_confirm" yaml:"momentum_scalp_vol_confirm"`
 	MomentumScalpMinScore         int     `json:"momentum_scalp_min_score" yaml:"momentum_scalp_min_score"`
 	MomentumScalpMaxHoldingMin    int     `json:"momentum_scalp_max_holding_min" yaml:"momentum_scalp_max_holding_min"`
+
+	FibExtension FibExtensionTPConfig `json:"fib_extension" yaml:"fib_extension"`
+	PullbackFib PullbackFibConfig     `json:"pullback_fib" yaml:"pullback_fib"`
 }
 
 // DefaultStrategyConfig returns the recommended strategy parameters.
@@ -144,6 +165,23 @@ func DefaultStrategyConfig() StrategyConfig {
 		MomentumScalpVolConfirm:       1.05,
 		MomentumScalpMinScore:         7,
 		MomentumScalpMaxHoldingMin:    20,
+
+		FibExtension: FibExtensionTPConfig{
+			Enabled:         false,
+			MinADX:          25.0,
+			SwingWindow:     50,
+			UseH4Preference: true,
+		},
+		PullbackFib: PullbackFibConfig{
+			RetracementEnabled:      false,
+			GoldenPocketBufferATR:   0.5,
+			RequireRSIConfirm:       false,
+			RSIConfirmBullThreshold: 40,
+			RSIConfirmBearThreshold: 60,
+			StopLossOuterATR:        0.5,
+			UsePendingOrder:         false,
+			PendingOrderLevel:       "618",
+		},
 	}
 }
 
@@ -181,6 +219,8 @@ func GoldStrategyConfig() StrategyConfig {
 	cfg.MomentumScalpMinADX = 18.0
 	cfg.MomentumScalpVolConfirm = 1.05
 	cfg.MomentumScalpMinScore = 6
+	cfg.FibExtension.MinADX = 25.0
+	cfg.PullbackFib.RetracementEnabled = true
 	return cfg
 }
 
@@ -254,6 +294,9 @@ func GBPJPYStrategyConfig() StrategyConfig {
 
 	// === Global ===
 	cfg.MinScore = 5 // was 5
+	cfg.FibExtension.MinADX = 28.0
+	cfg.PullbackFib.RetracementEnabled = true
+	cfg.PullbackFib.GoldenPocketBufferATR = 0.3
 
 	return cfg
 }

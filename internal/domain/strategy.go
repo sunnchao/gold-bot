@@ -35,16 +35,19 @@ type Bar struct {
 	StochD float64 `json:"stoch_d,omitempty"`
 	VolSMA float64 `json:"vol_sma,omitempty"`
 
-	Fib236 float64 `json:"fib_236,omitempty"`
-	Fib382 float64 `json:"fib_382,omitempty"`
-	Fib500 float64 `json:"fib_500,omitempty"`
-	Fib618 float64 `json:"fib_618,omitempty"`
-	Fib786 float64 `json:"fib_786,omitempty"`
-	PP     float64 `json:"pp,omitempty"`
-	R1     float64 `json:"r1,omitempty"`
-	R2     float64 `json:"r2,omitempty"`
-	S1     float64 `json:"s1,omitempty"`
-	S2     float64 `json:"s2,omitempty"`
+	Fib236  float64 `json:"fib_236,omitempty"`
+	Fib382  float64 `json:"fib_382,omitempty"`
+	Fib500  float64 `json:"fib_500,omitempty"`
+	Fib618  float64 `json:"fib_618,omitempty"`
+	Fib786  float64 `json:"fib_786,omitempty"`
+	Fib1272 float64 `json:"fib_1272,omitempty"`
+	Fib1618 float64 `json:"fib_1618,omitempty"`
+	Fib2618 float64 `json:"fib_2618,omitempty"`
+	PP      float64 `json:"pp,omitempty"`
+	R1      float64 `json:"r1,omitempty"`
+	R2      float64 `json:"r2,omitempty"`
+	S1      float64 `json:"s1,omitempty"`
+	S2      float64 `json:"s2,omitempty"`
 }
 
 func (b *Bar) UnmarshalJSON(data []byte) error {
@@ -75,16 +78,19 @@ func (b *Bar) UnmarshalJSON(data []byte) error {
 		StochD float64 `json:"stoch_d,omitempty"`
 		VolSMA float64 `json:"vol_sma,omitempty"`
 
-		Fib236 float64 `json:"fib_236,omitempty"`
-		Fib382 float64 `json:"fib_382,omitempty"`
-		Fib500 float64 `json:"fib_500,omitempty"`
-		Fib618 float64 `json:"fib_618,omitempty"`
-		Fib786 float64 `json:"fib_786,omitempty"`
-		PP     float64 `json:"pp,omitempty"`
-		R1     float64 `json:"r1,omitempty"`
-		R2     float64 `json:"r2,omitempty"`
-		S1     float64 `json:"s1,omitempty"`
-		S2     float64 `json:"s2,omitempty"`
+		Fib236  float64 `json:"fib_236,omitempty"`
+		Fib382  float64 `json:"fib_382,omitempty"`
+		Fib500  float64 `json:"fib_500,omitempty"`
+		Fib618  float64 `json:"fib_618,omitempty"`
+		Fib786  float64 `json:"fib_786,omitempty"`
+		Fib1272 float64 `json:"fib_1272,omitempty"`
+		Fib1618 float64 `json:"fib_1618,omitempty"`
+		Fib2618 float64 `json:"fib_2618,omitempty"`
+		PP      float64 `json:"pp,omitempty"`
+		R1      float64 `json:"r1,omitempty"`
+		R2      float64 `json:"r2,omitempty"`
+		S1      float64 `json:"s1,omitempty"`
+		S2      float64 `json:"s2,omitempty"`
 	}
 
 	var raw rawBar
@@ -118,6 +124,9 @@ func (b *Bar) UnmarshalJSON(data []byte) error {
 		Fib500:     raw.Fib500,
 		Fib618:     raw.Fib618,
 		Fib786:     raw.Fib786,
+		Fib1272:    raw.Fib1272,
+		Fib1618:    raw.Fib1618,
+		Fib2618:    raw.Fib2618,
 		PP:         raw.PP,
 		R1:         raw.R1,
 		R2:         raw.R2,
