@@ -69,7 +69,12 @@ func New(cfg config.Config) (*App, error) {
 	now := time.Now().UTC()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if err := db.PingContext(r.Context()); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("db_unreachable"))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -115,8 +120,11 @@ func New(cfg config.Config) (*App, error) {
 	log.Printf("[APP] ✅ 路由注册完成 | Dashboard: /")
 
 	server := &http.Server{
-		Addr:    cfg.HTTPAddr,
-		Handler: mux,
+		Addr:         cfg.HTTPAddr,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	return &App{

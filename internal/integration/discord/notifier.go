@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -14,6 +16,7 @@ type Notifier struct {
 	Client     *http.Client
 	Cooldown   time.Duration
 	lastSent   time.Time
+	mu         sync.Mutex
 }
 
 func New(webhookURL string, client *http.Client) *Notifier {
@@ -31,9 +34,14 @@ func (n *Notifier) Send(ctx context.Context, payload map[string]any) error {
 	if n.WebhookURL == "" {
 		return fmt.Errorf("discord webhook URL is empty")
 	}
+
+	n.mu.Lock()
 	if !n.lastSent.IsZero() && time.Since(n.lastSent) < n.Cooldown {
+		n.mu.Unlock()
 		return nil
 	}
+	n.lastSent = time.Now()
+	n.mu.Unlock()
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -46,15 +54,17 @@ func (n *Notifier) Send(ctx context.Context, payload map[string]any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := n.Client.Do(req)
-	if err != nil {
-		return fmt.Errorf("send discord notification: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("discord status: %d", resp.StatusCode)
-	}
+	go func() {
+		resp, err := n.Client.Do(req)
+		if err != nil {
+			log.Printf("[DISCORD] send notification failed: %v", err)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+			log.Printf("[DISCORD] webhook status: %d", resp.StatusCode)
+		}
+	}()
 
-	n.lastSent = time.Now()
 	return nil
 }

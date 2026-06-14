@@ -125,6 +125,7 @@ type PositionStateStore interface {
 // PendingSignalStore defines the interface for arbitration signal management.
 type PendingSignalStore interface {
 	SavePendingSignal(ctx context.Context, signal *domain.PendingSignal) error
+	GetPendingSignalByID(ctx context.Context, id int64) (*domain.PendingSignal, error)
 	GetPendingSignals(ctx context.Context, accountID, symbol string) ([]domain.PendingSignal, error)
 	UpdateArbitration(ctx context.Context, id int64, result, reason string) error
 	ExpireStaleSignals(ctx context.Context) (int64, error)

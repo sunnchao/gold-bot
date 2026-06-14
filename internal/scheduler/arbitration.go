@@ -136,28 +136,23 @@ func (m *ArbitrationManager) waitForArbitration(ctx context.Context, signalID in
 			}
 		case <-ticker.C:
 			// Check arbitration result from database
-			signals, err := m.store.GetPendingSignals(ctx, "", "")
+			sig, err := m.store.GetPendingSignalByID(ctx, signalID)
 			if err != nil {
 				log.Printf("[ARBITRATION] ⚠️ 检查仲裁结果失败: %v", err)
 				continue
 			}
-
-			for _, sig := range signals {
-				if sig.ID == signalID {
-					switch sig.Status {
-					case "approved":
-						return ArbitrationResult{
-							SignalID: signalID,
-							Status:   "approved",
-							Reason:   sig.ArbitrationReason,
-						}
-					case "rejected":
-						return ArbitrationResult{
-							SignalID: signalID,
-							Status:   "rejected",
-							Reason:   sig.ArbitrationReason,
-						}
-					}
+			switch sig.Status {
+			case "approved":
+				return ArbitrationResult{
+					SignalID: signalID,
+					Status:   "approved",
+					Reason:   sig.ArbitrationReason,
+				}
+			case "rejected":
+				return ArbitrationResult{
+					SignalID: signalID,
+					Status:   "rejected",
+					Reason:   sig.ArbitrationReason,
 				}
 			}
 		}

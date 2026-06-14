@@ -8,7 +8,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -18,6 +20,7 @@ type Notifier struct {
 	Client     *http.Client
 	Cooldown   time.Duration
 	lastSent   time.Time
+	mu         sync.Mutex
 }
 
 func New(webhookURL, secret string, client *http.Client) *Notifier {
@@ -36,9 +39,14 @@ func (n *Notifier) Send(ctx context.Context, content string, title string) error
 	if n.WebhookURL == "" {
 		return fmt.Errorf("feishu webhook URL is empty")
 	}
+
+	n.mu.Lock()
 	if !n.lastSent.IsZero() && time.Since(n.lastSent) < n.Cooldown {
+		n.mu.Unlock()
 		return nil
 	}
+	n.lastSent = time.Now()
+	n.mu.Unlock()
 
 	timestamp := time.Now().Unix()
 	payload := map[string]any{
@@ -73,16 +81,18 @@ func (n *Notifier) Send(ctx context.Context, content string, title string) error
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := n.Client.Do(req)
-	if err != nil {
-		return fmt.Errorf("send feishu notification: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("feishu status: %d", resp.StatusCode)
-	}
+	go func() {
+		resp, err := n.Client.Do(req)
+		if err != nil {
+			log.Printf("[FEISHU] send notification failed: %v", err)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("[FEISHU] webhook status: %d", resp.StatusCode)
+		}
+	}()
 
-	n.lastSent = time.Now()
 	return nil
 }
 

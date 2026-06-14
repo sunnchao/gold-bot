@@ -58,6 +58,19 @@ func NewForSymbol(symbol string, options ...func(*Engine)) Engine {
 // atrMult: ATR multiplier for fallback (e.g., 1.5 for pullback strategy)
 // Returns: stop-loss price and whether AI suggestion was used
 func calculateSL(aiResult *domain.AIResult, side string, price, atr, atrMult float64) (sl float64, usedAI bool) {
+	// Guard: ATR must be valid, otherwise use a safe default distance
+	if atr <= 0 || math.IsNaN(atr) || math.IsInf(atr, 0) {
+		defaultDist := price * 0.002 // 0.2% of entry price as fallback
+		if defaultDist <= 0 {
+			defaultDist = 1.0 // absolute fallback
+		}
+		log.Printf("[STRATEGY] ⚠️ ATR=%.4f 无效, 使用默认距离 %.4f 计算止损", atr, defaultDist)
+		if side == "BUY" {
+			return round2(price - defaultDist), false
+		}
+		return round2(price + defaultDist), false
+	}
+
 	if aiResult != nil && aiResult.SuggestedSL > 0 {
 		// Validate AI SL is reasonable (within 3×ATR from entry)
 		dist := math.Abs(price - aiResult.SuggestedSL)
