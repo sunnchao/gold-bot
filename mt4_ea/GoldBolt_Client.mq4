@@ -1932,6 +1932,39 @@ string GetArrayElement(string array_str, int index)
 }
 
 //+------------------------------------------------------------------+
+//| 计算波动率加权手数（使用 H1 ATR）                                 |
+//+------------------------------------------------------------------+
+void CalculateVolWeightedLots(double &brentLots, double &wtiLots)
+{
+   double brentATR = iATR(SpreadSymbol1, PERIOD_H1, 14, 0);
+   double wtiATR   = iATR(SpreadSymbol2, PERIOD_H1, 14, 0);
+
+   // 如果 ATR 数据不可用，回退到原始手数
+   if(brentATR <= 0 || wtiATR <= 0)
+   {
+      brentLots = NormalizeVolume(SpreadSymbol1, SpreadLots);
+      wtiLots   = NormalizeVolume(SpreadSymbol2, SpreadLots);
+      return;
+   }
+
+   double avgATR = (brentATR + wtiATR) / 2.0;
+
+   // 调整：波动率大的腿手数缩小，波动率小的腿手数放大
+   brentLots = SpreadLots * (avgATR / brentATR);
+   wtiLots   = SpreadLots * (avgATR / wtiATR);
+
+   // 归一化到经纪商步长
+   brentLots = NormalizeVolume(SpreadSymbol1, brentLots);
+   wtiLots   = NormalizeVolume(SpreadSymbol2, wtiLots);
+
+   // 确保不小于最小手数
+   double brentMin = MarketInfo(SpreadSymbol1, MODE_MINLOT);
+   double wtiMin   = MarketInfo(SpreadSymbol2, MODE_MINLOT);
+   if(brentMin > 0 && brentLots < brentMin) brentLots = brentMin;
+   if(wtiMin > 0 && wtiLots < wtiMin)       wtiLots   = wtiMin;
+}
+
+//+------------------------------------------------------------------+
 //| 自动价差交易（Brent-WTI spread）                                  |
 //+------------------------------------------------------------------+
 void AutoSpreadTrade()
@@ -1943,6 +1976,12 @@ void AutoSpreadTrade()
    static datetime lastCheck = 0;
    if(TimeCurrent() - lastCheck < SpreadTradeInterval) return;
    lastCheck = TimeCurrent();
+
+   // 输出波动率信息便于监控
+   double debugBrentATR = iATR(SpreadSymbol1, PERIOD_H1, 14, 0);
+   double debugWtiATR = iATR(SpreadSymbol2, PERIOD_H1, 14, 0);
+   if(debugBrentATR > 0 && debugWtiATR > 0)
+      Print("🛢️ 波动率 Brent ATR=", debugBrentATR, " WTI ATR=", debugWtiATR, " 比例=", (debugBrentATR/debugWtiATR));
 
    double brentBid = MarketInfo(SpreadSymbol1, MODE_BID);
    double brentAsk = MarketInfo(SpreadSymbol1, MODE_ASK);
@@ -2003,17 +2042,21 @@ void AutoSpreadTrade()
          double sellPrice = MarketInfo(SpreadSymbol1, MODE_BID);
          double buyPrice  = MarketInfo(SpreadSymbol2, MODE_ASK);
 
-         int ticket1 = OrderSend(SpreadSymbol1, OP_SELL, SpreadLots, sellPrice, Slippage, 0, 0,
+         double volBrentLots = SpreadLots;
+         double volWtiLots = SpreadLots;
+         CalculateVolWeightedLots(volBrentLots, volWtiLots);
+
+         int ticket1 = OrderSend(SpreadSymbol1, OP_SELL, volBrentLots, sellPrice, Slippage, 0, 0,
                                  "GB_SPREAD_SELL", SpreadMagicNumber, 0, clrRed);
          if(ticket1 > 0)
-            Print("✅ 价差开仓：#", ticket1, " ", SpreadSymbol1, " SELL ", SpreadLots, "手 @ ", sellPrice);
+            Print("✅ 价差开仓：#", ticket1, " ", SpreadSymbol1, " SELL ", volBrentLots, "手 @ ", sellPrice);
          else
             Print("❌ 价差开仓失败 SELL ", SpreadSymbol1, " Error#", GetLastError());
 
-         int ticket2 = OrderSend(SpreadSymbol2, OP_BUY, SpreadLots, buyPrice, Slippage, 0, 0,
+         int ticket2 = OrderSend(SpreadSymbol2, OP_BUY, volWtiLots, buyPrice, Slippage, 0, 0,
                                  "GB_SPREAD_BUY", SpreadMagicNumber, 0, clrGreen);
          if(ticket2 > 0)
-            Print("✅ 价差开仓：#", ticket2, " ", SpreadSymbol2, " BUY ", SpreadLots, "手 @ ", buyPrice);
+            Print("✅ 价差开仓：#", ticket2, " ", SpreadSymbol2, " BUY ", volWtiLots, "手 @ ", buyPrice);
          else
             Print("❌ 价差开仓失败 BUY ", SpreadSymbol2, " Error#", GetLastError());
       }
@@ -2024,17 +2067,21 @@ void AutoSpreadTrade()
          double buyPrice  = MarketInfo(SpreadSymbol1, MODE_ASK);
          double sellPrice = MarketInfo(SpreadSymbol2, MODE_BID);
 
-         int ticket1 = OrderSend(SpreadSymbol1, OP_BUY, SpreadLots, buyPrice, Slippage, 0, 0,
+         double volBrentLots = SpreadLots;
+         double volWtiLots = SpreadLots;
+         CalculateVolWeightedLots(volBrentLots, volWtiLots);
+
+         int ticket1 = OrderSend(SpreadSymbol1, OP_BUY, volBrentLots, buyPrice, Slippage, 0, 0,
                                  "GB_SPREAD_BUY", SpreadMagicNumber, 0, clrGreen);
          if(ticket1 > 0)
-            Print("✅ 价差开仓：#", ticket1, " ", SpreadSymbol1, " BUY ", SpreadLots, "手 @ ", buyPrice);
+            Print("✅ 价差开仓：#", ticket1, " ", SpreadSymbol1, " BUY ", volBrentLots, "手 @ ", buyPrice);
          else
             Print("❌ 价差开仓失败 BUY ", SpreadSymbol1, " Error#", GetLastError());
 
-         int ticket2 = OrderSend(SpreadSymbol2, OP_SELL, SpreadLots, sellPrice, Slippage, 0, 0,
+         int ticket2 = OrderSend(SpreadSymbol2, OP_SELL, volWtiLots, sellPrice, Slippage, 0, 0,
                                  "GB_SPREAD_SELL", SpreadMagicNumber, 0, clrRed);
          if(ticket2 > 0)
-            Print("✅ 价差开仓：#", ticket2, " ", SpreadSymbol2, " SELL ", SpreadLots, "手 @ ", sellPrice);
+            Print("✅ 价差开仓：#", ticket2, " ", SpreadSymbol2, " SELL ", volWtiLots, "手 @ ", sellPrice);
          else
             Print("❌ 价差开仓失败 SELL ", SpreadSymbol2, " Error#", GetLastError());
       }
