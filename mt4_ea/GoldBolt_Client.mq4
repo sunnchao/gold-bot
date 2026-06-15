@@ -412,9 +412,6 @@ int OnInit()
    
    dailyStartEquity = AccountEquity();
    
-   // 检查更新
-   CheckForUpdate();
-   
    // 注册账户信息（含 broker 信息），失败时由 OnTick 每 5 秒重试
    if(!RegisterAccount())
    {
@@ -465,6 +462,7 @@ void OnTick()
        SendHeartbeat();
        SendPositions();
        PollAndExecute();
+       CheckForUpdate();
        AutoSpreadTrade();
        lastPollTime = now;
     }
