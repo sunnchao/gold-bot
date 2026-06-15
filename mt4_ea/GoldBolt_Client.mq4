@@ -68,9 +68,14 @@ extern double   MomentumScalpRiskPercent  = 0.5;      // 动量剥头皮单笔�
 input group "===== 原油对冲套利 ====="
 extern bool     EnableSpread        = false;    // 🛢️ 启用原油对冲套利
 extern int      SpreadMagicNumber   = 20250224; // 原油策略魔术号
-extern string   SpreadSymbol1       = "UKOIL";  // 腿 1: Brent (布伦特)
-extern string   SpreadSymbol2       = "USOIL";  // 腿 2: WTI (美国)
+extern string   SpreadSymbol1       = "UKOilCash";  // 腿 1: Brent (布伦特)
+extern string   SpreadSymbol2       = "USOilCash";  // 腿 2: WTI (美国)
 extern double   SpreadLots          = 0.05;     // 每腿交易手数
+// 自动价差交易参数
+extern bool     EnableAutoSpreadTrade = true;    // 🛢️ 启用自动价差交易
+extern int      SpreadEntryPts       = 150;      // 开仓阈值（点数），价差偏离超过此值开仓
+extern int      SpreadExitPts        = 50;       // 平仓阈值（点数），价差回归到此时平仓
+extern int      SpreadTradeInterval  = 60;       // 检查间隔（秒）
 
 //+------------------------------------------------------------------+
 //| 通信参数配置                                                       |
@@ -460,6 +465,7 @@ void OnTick()
        SendHeartbeat();
        SendPositions();
        PollAndExecute();
+       AutoSpreadTrade();
        lastPollTime = now;
     }
     
@@ -1925,6 +1931,163 @@ string GetArrayElement(string array_str, int index)
    }
    
    return "";
+}
+
+//+------------------------------------------------------------------+
+//| 自动价差交易（Brent-WTI spread）                                  |
+//+------------------------------------------------------------------+
+void AutoSpreadTrade()
+{
+   if(!EnableAutoSpreadTrade) return;
+   if(!EnableSpread) return;
+   if(!spreadSymbolsReady) return;
+
+   static datetime lastCheck = 0;
+   if(TimeCurrent() - lastCheck < SpreadTradeInterval) return;
+   lastCheck = TimeCurrent();
+
+   double brentBid = MarketInfo(SpreadSymbol1, MODE_BID);
+   double brentAsk = MarketInfo(SpreadSymbol1, MODE_ASK);
+   double wtiBid   = MarketInfo(SpreadSymbol2, MODE_BID);
+   double wtiAsk   = MarketInfo(SpreadSymbol2, MODE_ASK);
+
+   if(brentBid <= 0 || brentAsk <= 0 || wtiBid <= 0 || wtiAsk <= 0)
+   {
+      Print("🛢️ 原油价差：价格数据不可用");
+      return;
+   }
+
+   double brentMid = (brentBid + brentAsk) / 2;
+   double wtiMid   = (wtiBid + wtiAsk) / 2;
+   double spread = brentMid - wtiMid;
+
+   double wtiPoint = MarketInfo(SpreadSymbol2, MODE_POINT);
+   if(wtiPoint <= 0)
+   {
+      Print("🛢️ 原油价差：WTI 点值不可用");
+      return;
+   }
+
+   int spreadLongCount = 0;
+   int spreadShortCount = 0;
+   double ukLongLots = 0, usShortLots = 0;
+   double ukShortLots = 0, usLongLots = 0;
+
+   for(int i = 0; i < OrdersTotal(); i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderMagicNumber() != SpreadMagicNumber) continue;
+
+      string sym = OrderSymbol();
+      int type = OrderType();
+
+      if(sym == SpreadSymbol1)
+      {
+         if(type == OP_BUY)  { spreadLongCount++;  ukLongLots  += OrderLots(); }
+         if(type == OP_SELL) { spreadShortCount++; ukShortLots += OrderLots(); }
+      }
+      else if(sym == SpreadSymbol2)
+      {
+         if(type == OP_BUY)  { spreadShortCount++; usLongLots  += OrderLots(); }
+         if(type == OP_SELL) { spreadLongCount++;  usShortLots += OrderLots(); }
+      }
+   }
+
+   double spreadPoints = spread / wtiPoint;
+   int spreadPointsInt = (int)MathRound(spreadPoints);
+
+   if(spreadLongCount == 0 && spreadShortCount == 0)
+   {
+      if(spreadPointsInt > SpreadEntryPts)
+      {
+         Print("🛢️ 价差过大 ", spreadPointsInt, "点 > ", SpreadEntryPts, "点 → 做窄价差：SELL ", SpreadSymbol1, " + BUY ", SpreadSymbol2);
+
+         double sellPrice = MarketInfo(SpreadSymbol1, MODE_BID);
+         double buyPrice  = MarketInfo(SpreadSymbol2, MODE_ASK);
+
+         int ticket1 = OrderSend(SpreadSymbol1, OP_SELL, SpreadLots, sellPrice, Slippage, 0, 0,
+                                 "GB_SPREAD_SELL", SpreadMagicNumber, 0, clrRed);
+         if(ticket1 > 0)
+            Print("✅ 价差开仓：#", ticket1, " ", SpreadSymbol1, " SELL ", SpreadLots, "手 @ ", sellPrice);
+         else
+            Print("❌ 价差开仓失败 SELL ", SpreadSymbol1, " Error#", GetLastError());
+
+         int ticket2 = OrderSend(SpreadSymbol2, OP_BUY, SpreadLots, buyPrice, Slippage, 0, 0,
+                                 "GB_SPREAD_BUY", SpreadMagicNumber, 0, clrGreen);
+         if(ticket2 > 0)
+            Print("✅ 价差开仓：#", ticket2, " ", SpreadSymbol2, " BUY ", SpreadLots, "手 @ ", buyPrice);
+         else
+            Print("❌ 价差开仓失败 BUY ", SpreadSymbol2, " Error#", GetLastError());
+      }
+      else if(spreadPointsInt < -SpreadEntryPts)
+      {
+         Print("🛢️ 价差过小 ", spreadPointsInt, "点 < -", SpreadEntryPts, "点 → 做阔价差：BUY ", SpreadSymbol1, " + SELL ", SpreadSymbol2);
+
+         double buyPrice  = MarketInfo(SpreadSymbol1, MODE_ASK);
+         double sellPrice = MarketInfo(SpreadSymbol2, MODE_BID);
+
+         int ticket1 = OrderSend(SpreadSymbol1, OP_BUY, SpreadLots, buyPrice, Slippage, 0, 0,
+                                 "GB_SPREAD_BUY", SpreadMagicNumber, 0, clrGreen);
+         if(ticket1 > 0)
+            Print("✅ 价差开仓：#", ticket1, " ", SpreadSymbol1, " BUY ", SpreadLots, "手 @ ", buyPrice);
+         else
+            Print("❌ 价差开仓失败 BUY ", SpreadSymbol1, " Error#", GetLastError());
+
+         int ticket2 = OrderSend(SpreadSymbol2, OP_SELL, SpreadLots, sellPrice, Slippage, 0, 0,
+                                 "GB_SPREAD_SELL", SpreadMagicNumber, 0, clrRed);
+         if(ticket2 > 0)
+            Print("✅ 价差开仓：#", ticket2, " ", SpreadSymbol2, " SELL ", SpreadLots, "手 @ ", sellPrice);
+         else
+            Print("❌ 价差开仓失败 SELL ", SpreadSymbol2, " Error#", GetLastError());
+      }
+   }
+
+   if(spreadLongCount > 0 && spreadShortCount == 0)
+   {
+      if(MathAbs(spreadPointsInt) <= SpreadExitPts)
+      {
+         Print("🛢️ 价差回归 ", spreadPointsInt, "点 ≤ ", SpreadExitPts, "点 → 平仓价差持仓");
+         CloseAllSpreadPositions();
+      }
+   }
+   else if(spreadShortCount > 0 && spreadLongCount == 0)
+   {
+      if(MathAbs(spreadPointsInt) <= SpreadExitPts)
+      {
+         Print("🛢️ 价差回归 ", spreadPointsInt, "点 ≤ ", SpreadExitPts, "点 → 平仓价差持仓");
+         CloseAllSpreadPositions();
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| 平仓所有价差持仓                                                  |
+//+------------------------------------------------------------------+
+void CloseAllSpreadPositions()
+{
+   int closed = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderMagicNumber() != SpreadMagicNumber) continue;
+
+      int ticket = OrderTicket();
+      string symbol = OrderSymbol();
+      double lots = OrderLots();
+      double closePrice = (OrderType() == OP_BUY) ? MarketInfo(symbol, MODE_BID) : MarketInfo(symbol, MODE_ASK);
+      color clr = (OrderType() == OP_BUY) ? clrRed : clrGreen;
+
+      if(OrderClose(ticket, lots, closePrice, Slippage, clr))
+      {
+         Print("✅ 平仓成功：#", ticket, " ", symbol, " ", lots, "手");
+         closed++;
+      }
+      else
+      {
+         Print("❌ 平仓失败：#", ticket, " ", symbol, " Error#", GetLastError());
+      }
+   }
+   Print("🛢️ 价差平仓完成：共平 ", closed, " 单");
 }
 
 //+------------------------------------------------------------------+
