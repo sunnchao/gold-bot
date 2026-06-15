@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gold-bot/internal/domain"
@@ -91,6 +92,20 @@ func (r *CommandRepository) Enqueue(ctx context.Context, command domain.Command)
 	}
 
 	return nil
+}
+
+func (r *CommandRepository) FindPendingAI(ctx context.Context, accountID, symbol, side string) (bool, error) {
+	return retrySQLiteBusyValue(func() (bool, error) {
+		var count int
+		query := `SELECT COUNT(*) FROM commands WHERE account_id=` + ph(1) + pgText() + ` AND status=` + ph(2) + pgText() + ` AND json_extract(payload_json, '$.source')='ai_approve' AND json_extract(payload_json, '$.symbol')=` + ph(3) + pgText() + ` AND json_extract(payload_json, '$.type')=` + ph(4) + pgText() + ` AND (json_extract(payload_json, '$.expiration') IS NULL OR json_extract(payload_json, '$.expiration') > ` + ph(5) + `)`
+		err := r.db.QueryRowContext(ctx, query, accountID, string(domain.CommandStatusPending), symbol, strings.ToUpper(side), time.Now().Unix()).Scan(&count)
+		if err != nil {
+			return false, err
+		}
+		return count > 0, nil
+	}, func() error {
+		return fmt.Errorf("find pending ai for %s/%s/%s: sqlite busy after retries", accountID, symbol, side)
+	})
 }
 
 func (r *CommandRepository) TakePending(ctx context.Context, accountID string, deliveredAt time.Time) ([]domain.Command, error) {

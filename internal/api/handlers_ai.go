@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"time"
 
 	"gold-bot/internal/domain"
 	"gold-bot/internal/integration/aurex"
+	"gold-bot/internal/legacy"
 	"gold-bot/internal/strategy/riskgate"
 )
 
@@ -227,6 +229,102 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 		}
 	}
 
+	// === AI approve → PENDING 挂单 ===
+	if shouldQueueAIPending(tradePlan, riskGateResult) {
+		var currentPrice float64
+		state, err := h.deps.Accounts.GetStateSymbol(r.Context(), accountID, symbol)
+		if err == nil {
+			if state.Tick.Bid > 0 && state.Tick.Ask > 0 {
+				currentPrice = (state.Tick.Bid + state.Tick.Ask) / 2
+			} else if state.Tick.Ask > 0 {
+				currentPrice = state.Tick.Ask
+			} else if state.Tick.Bid > 0 {
+				currentPrice = state.Tick.Bid
+			}
+		}
+
+		if currentPrice <= 0 {
+			log.Printf("[AI] ⚠️ account=%s/%s | AI approve 跳过: 无法获取当前价格", accountID, symbol)
+		} else {
+			entry := pickEntryPrice(tradePlan.EntryZone)
+			if entry <= 0 {
+				log.Printf("[AI] ⚠️ account=%s/%s | AI approve 跳过: entry_zone 无效 min=%v max=%v",
+					accountID, symbol, tradePlan.EntryZone.Min, tradePlan.EntryZone.Max)
+			} else {
+				lots := calcAILots(tradePlan.MaxLots)
+				if lots <= 0 {
+					log.Printf("[AI] ⚠️ account=%s/%s | AI approve 跳过: 手数过小 maxLots=%v",
+						accountID, symbol, tradePlan.MaxLots)
+				} else if hasExisting, err := h.deps.Commands.FindPendingAI(r.Context(), accountID, symbol, tradePlan.Side); err == nil && hasExisting {
+					log.Printf("[AI] ⏭️ account=%s/%s | AI approve 跳过: 已有活跃AI挂单 side=%s",
+						accountID, symbol, tradePlan.Side)
+				} else if err != nil {
+					log.Printf("[AI] ⚠️ account=%s/%s | 检查AI挂单失败: %v", accountID, symbol, err)
+				} else {
+					h1Bars := state.Bars["H1"]
+					atr := 0.0
+					if len(h1Bars) > 0 {
+						atr = h1Bars[len(h1Bars)-1].ATR
+					}
+					if atr > 0 {
+						dist := math.Abs(currentPrice - entry)
+						if dist > atr*3.0 {
+							log.Printf("[AI] ⏭️ account=%s/%s | AI approve 跳过: entry 偏离市价 %.1f > 3×ATR(%.1f)",
+								accountID, symbol, dist, atr*3.0)
+							goto afterAIPending
+						}
+					}
+
+					side := strings.ToUpper(tradePlan.Side)
+					orderType := legacy.OrderTypeForSignal(currentPrice, entry, atr, side)
+					now := h.now().UTC()
+					commandID := fmt.Sprintf("ai_pending_%s_%s_%d", accountID, symbol, now.UnixNano())
+					expiration := now.Add(4 * time.Hour)
+					tp := pickTakeProfit(tradePlan.TakeProfit)
+
+					commandPayload := map[string]any{
+						"command_id":  commandID,
+						"action":      string(domain.CommandActionSignal),
+						"symbol":      symbol,
+						"type":        side,
+						"entry":       math.Round(entry*100) / 100,
+						"entry_min":   math.Round(tradePlan.EntryZone.Min*100) / 100,
+						"entry_max":   math.Round(tradePlan.EntryZone.Max*100) / 100,
+						"sl":          math.Round(tradePlan.StopLoss*100) / 100,
+						"tp":          math.Round(tp*100) / 100,
+						"lots":        math.Round(lots*100) / 100,
+						"order_type":  orderType,
+						"expiration":  expiration.Unix(),
+						"score":       tradePlan.Confidence,
+						"strategy":    "ai_signal",
+						"source":      "ai_approve",
+						"confidence":  tradePlan.Confidence,
+						"decision_id": tradePlan.DecisionID,
+						"reason":      tradePlan.Narrative,
+					}
+					attachTradePlanCommandMetadata(commandPayload, tradePlan, riskGateResult)
+
+					command := domain.Command{
+						CommandID: commandID,
+						AccountID: accountID,
+						Action:    domain.CommandActionSignal,
+						Status:    domain.CommandStatusPending,
+						CreatedAt: now,
+						Payload:   commandPayload,
+					}
+					if err := h.deps.Commands.Enqueue(r.Context(), command); err != nil {
+						log.Printf("[AI] ❌ account=%s/%s | AI approve 入列失败: %v", accountID, symbol, err)
+						writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
+						return
+					}
+					log.Printf("[AI] 📌 account=%s/%s | AI approve 挂单已发送 | side=%s lots=%.2f entry=%.2f order_type=%s confidence=%d expires=%s",
+						accountID, symbol, side, lots, entry, orderType, tradePlan.Confidence, expiration.Format(time.RFC3339))
+				}
+			}
+		}
+	}
+afterAIPending:
+
 	response := map[string]any{"status": "OK", "received": true}
 	if tradePlanValidation != nil {
 		response["trade_plan_validation"] = tradePlanValidation
@@ -430,6 +528,60 @@ func shouldQueueRiskCommand(payload map[string]any) bool {
 	}
 	exitSuggestion := strings.ToLower(asString(payload["exit_suggestion"]))
 	return exitSuggestion == "close_partial" || exitSuggestion == "close_all" || exitSuggestion == "close_short"
+}
+
+// shouldQueueAIPending checks whether to generate a PENDING order from AI trade_plan.
+func shouldQueueAIPending(plan *domain.TradePlan, gate riskgate.Result) bool {
+	if plan == nil {
+		return false
+	}
+	if plan.Mode != "approve" {
+		return false
+	}
+	if plan.Side != "buy" && plan.Side != "sell" {
+		return false
+	}
+	if gate.Status == riskgate.StatusRejected {
+		return false
+	}
+	if plan.Confidence < 70 {
+		return false
+	}
+	return true
+}
+
+// calcAILots reduces trade plan max lots by half, rounded up to 0.01 step.
+func calcAILots(maxLots float64) float64 {
+	if maxLots <= 0 {
+		return 0
+	}
+	half := maxLots * 0.5
+	lots := math.Ceil(half/0.01) * 0.01
+	if lots < 0.01 {
+		return 0
+	}
+	return lots
+}
+
+// pickEntryPrice returns the midpoint of an entry zone.
+func pickEntryPrice(zone domain.TradePlanEntryZone) float64 {
+	if zone.Min <= 0 || zone.Max <= 0 {
+		return 0
+	}
+	if zone.Min == zone.Max {
+		return zone.Min
+	}
+	return (zone.Min + zone.Max) / 2
+}
+
+// pickTakeProfit returns the first positive TP target.
+func pickTakeProfit(tp []float64) float64 {
+	for _, v := range tp {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func asString(value any) string {

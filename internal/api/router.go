@@ -40,6 +40,7 @@ type TokenStore interface {
 
 type CommandStore interface {
 	Enqueue(ctx context.Context, command domain.Command) error
+	FindPendingAI(ctx context.Context, accountID, symbol, side string) (bool, error)
 }
 
 type PendingSignalStore interface {

@@ -609,6 +609,99 @@ func TestOrderResultApplyResultRetriesOnSQLiteBusy(t *testing.T) {
 	}
 }
 
+func TestFindPendingAI(t *testing.T) {
+	repo, _ := newTestCommandRepositories(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	for _, command := range []domain.Command{
+		{
+			CommandID: "ai_pending_active",
+			AccountID: "90011087",
+			Action:    domain.CommandActionSignal,
+			Status:    domain.CommandStatusPending,
+			Payload: map[string]any{
+				"command_id": "ai_pending_active",
+				"symbol":     "XAUUSD",
+				"type":       "BUY",
+				"source":     "ai_approve",
+				"expiration": now.Add(time.Hour).Unix(),
+			},
+			CreatedAt: now,
+		},
+		{
+			CommandID: "ai_pending_expired",
+			AccountID: "90011087",
+			Action:    domain.CommandActionSignal,
+			Status:    domain.CommandStatusPending,
+			Payload: map[string]any{
+				"command_id": "ai_pending_expired",
+				"symbol":     "XAUUSD",
+				"type":       "BUY",
+				"source":     "ai_approve",
+				"expiration": now.Add(-time.Hour).Unix(),
+			},
+			CreatedAt: now,
+		},
+		{
+			CommandID: "ai_pending_other_side",
+			AccountID: "90011087",
+			Action:    domain.CommandActionSignal,
+			Status:    domain.CommandStatusPending,
+			Payload: map[string]any{
+				"command_id": "ai_pending_other_side",
+				"symbol":     "XAUUSD",
+				"type":       "SELL",
+				"source":     "ai_approve",
+				"expiration": now.Add(time.Hour).Unix(),
+			},
+			CreatedAt: now,
+		},
+		{
+			CommandID: "live_pending",
+			AccountID: "90011087",
+			Action:    domain.CommandActionSignal,
+			Status:    domain.CommandStatusPending,
+			Payload: map[string]any{
+				"command_id": "live_pending",
+				"symbol":     "XAUUSD",
+				"type":       "BUY",
+				"source":     "live_strategy",
+				"expiration": now.Add(time.Hour).Unix(),
+			},
+			CreatedAt: now,
+		},
+	} {
+		if err := repo.Enqueue(ctx, command); err != nil {
+			t.Fatalf("Enqueue(%s) returned error: %v", command.CommandID, err)
+		}
+	}
+
+	hasPending, err := repo.FindPendingAI(ctx, "90011087", "XAUUSD", "buy")
+	if err != nil {
+		t.Fatalf("FindPendingAI returned error: %v", err)
+	}
+	if !hasPending {
+		t.Fatal("FindPendingAI = false, want true")
+	}
+
+	hasPending, err = repo.FindPendingAI(ctx, "90011087", "XAUUSD", "sell")
+	if err != nil {
+		t.Fatalf("FindPendingAI(sell) returned error: %v", err)
+	}
+	if !hasPending {
+		t.Fatal("FindPendingAI(sell) = false, want true")
+	}
+
+	hasPending, err = repo.FindPendingAI(ctx, "90011087", "EURUSD", "buy")
+	if err != nil {
+		t.Fatalf("FindPendingAI(EURUSD) returned error: %v", err)
+	}
+	if hasPending {
+		t.Fatal("FindPendingAI(EURUSD) = true, want false")
+	}
+}
+
 func newTestCommandRepositories(t *testing.T) (*CommandRepository, *HistoryRepository) {
 	repo, history, _ := newTestCommandRepositoriesWithPath(t)
 	return repo, history

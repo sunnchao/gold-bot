@@ -160,9 +160,9 @@ func (e *LiveTradingExecutor) analyzeAndQueue(ctx context.Context, accountID, sy
 	return nil
 }
 
-// orderTypeForSignal determines whether to use market or pending order based on price distance.
-// Returns "market" for close prices, or a specific pending type for far prices.
-func orderTypeForSignal(price, entry, atr float64, side string) string {
+// OrderTypeForSignal determines whether to use market or pending order based on price distance.
+// It is shared by both live trading and the AI approve pending-order path.
+func OrderTypeForSignal(price, entry, atr float64, side string) string {
 	if atr <= 0 {
 		return "market"
 	}
@@ -215,7 +215,7 @@ func (e *LiveTradingExecutor) buildSignalCommand(accountID, symbol string, signa
 	}
 
 	// Determine order type based on price distance from entry
-	orderType := orderTypeForSignal(currentPrice, signal.Entry, atr, signal.Side)
+	orderType := OrderTypeForSignal(currentPrice, signal.Entry, atr, signal.Side)
 	payload["order_type"] = orderType
 	if orderType != "market" {
 		payload["expiration"] = time.Now().Add(24 * time.Hour).Unix()
