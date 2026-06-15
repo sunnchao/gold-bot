@@ -69,29 +69,56 @@
 - [ ] **FIB-TEST-07**: `TestPullbackFibOutOfZone` — 验证价格在区间外跳过信号
 - [ ] **FIB-TEST-08**: 集成测试：pullback+Fib 不破坏现有 pullback 非增强模式
 
+## Phase 3: AI Signal Pending Order (新增)
+
+**Defined:** 2026-06-15
+
+### Service-Side (Go)
+
+- [ ] **AI-PEND-01**: 导出 `OrderTypeForSignal()` 为包级函数（`live_trading.go` → `legacy` 包导出）
+- [ ] **AI-PEND-02**: `CommandStore` 接口新增 `FindPendingAI(ctx, accountID, symbol, side) (bool, error)`
+- [ ] **AI-PEND-03**: SQLite 实现 `FindPendingAI`：查询 commands 表 status=pending + source=ai_approve + 同 symbol+同方向+未过期
+- [ ] **AI-PEND-04**: PostgreSQL 实现 `FindPendingAI`：兼容 `JSON_EXTRACT` / `json_extract_path_text` 语法
+
+### AI Approve Command Generation
+
+- [ ] **AI-PEND-05**: `shouldQueueAIPending(plan, gateResult) bool` — 条件检查
+- [ ] **AI-PEND-06**: `calcAILots(maxLots) float64` — Ceil(maxLots*0.5/0.01)*0.01
+- [ ] **AI-PEND-07**: `pickEntryPrice(zone) float64` — EntryZone midpoint
+- [ ] **AI-PEND-08**: `pickTakeProfit(tp []float64) float64` — 取第一个正 TP
+- [ ] **AI-PEND-09**: `hasExistingAIPendingOrder(ctx, accountID, symbol, side) bool`
+- [ ] **AI-PEND-10**: 主逻辑：handleAIResult() 中新增 AI approve 命令生成块
+- [ ] **AI-PEND-11**: PENDING command payload 构造（含 order_type/lots/expiration=4h/source=ai_approve）
+- [ ] **AI-PEND-12**: 价格合理性校验（entry 偏离市价 > 3×ATR 拒绝）
+- [ ] **AI-PEND-13**: 频率控制 + 去重（同 symbol 同方向已有 AI 挂单时跳过）
+
+### AI Analysis Cycle
+
+- [ ] **AI-PEND-14**: gold-analysis-agent sr-analyst.ts 移除 M5 周期
+- [ ] **AI-PEND-15**: gold-analysis-agent risk-manager.ts 移除 M5 周期
+
+### Testing
+
+- [ ] **AI-PEND-16**: 验证现有测试全部通过（`go test ./internal/... -count=1`）
+- [ ] **AI-PEND-17**: 验证构建通过（`go build ./...`）
+
 ## Out of Scope
 
 | Feature | Reason |
 |---------|--------|
-| Fibonacci 独立入场策略 | 与 pullback 信号冗余，融合增强更优 |
-| Fibonacci 时间周期分析 | 四模型一致认为缺乏统计学支撑 |
-| Fibonacci 数列仓位管理（方案 C） | 风险过高，3/4 模型反对 |
-| 全量替换现有 TP 逻辑 | 扩展目标为可选项，不影响现有行为 |
-| 前端 UI 可视化 | 超出当前范围，后续单独考虑 |
+| 策略引擎融合层 | 两条路径触发机制不同，不强融 |
+| AI 信号 Dashboard | 后续单独考虑 |
+| AI 信号历史回测 | 独立的数据科学任务 |
 
 ## Traceability
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FIB-EXT-01 ~ FIB-EXT-12 | Phase 1 | Pending |
-| FIB-RET-01 ~ FIB-RET-12 | Phase 2 | Pending |
-| FIB-TEST-01 ~ FIB-TEST-04 | Phase 1 | Pending |
-| FIB-TEST-05 ~ FIB-TEST-08 | Phase 2 | Pending |
+| AI-PEND-01 ~ AI-PEND-17 | Phase 3 | Pending |
 
 **Coverage:**
-- Phase 1 requirements: 16 total
-- Phase 2 requirements: 16 total
-- Mapped to phases: 32 ✓
+- Phase 3 requirements: 17 total
+- Mapped to phases: 17 ✓
 - Unmapped: 0 ✓
 
 ---

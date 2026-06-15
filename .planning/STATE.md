@@ -1,20 +1,21 @@
 # STATE.md
 
 **File:** `.planning/STATE.md`  
-**Updated:** 2026-06-13 after Phase 2 implementation
+**Updated:** 2026-06-15
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-06-13)
+See: `.planning/PROJECT.md` (updated 2026-06-15)
 
-**Core value:** 在不增加系统复杂度的前提下，通过 Fibonacci 比例关系提升现有策略的盈亏比和入场精度
+**Current focus:** Phase 3 — AI Signal Pending Order
 
-**Current focus:** ✅ ALL PHASES COMPLETE
+**Core value:** 让 AI 分析的高质量开仓信号通过 PENDING 挂单直接执行，手数减半，4h 过期。
 
 ## Current Position
 
 - **Phase 1:** ✅ Complete — Fib Extension Target Management
 - **Phase 2:** ✅ Complete — Fib Retracement Pullback Enhancement
+- **Phase 3:** 🔄 In Progress — AI Signal Pending Order
 
 ## Completed Deliverables
 
@@ -43,7 +44,23 @@ See: `.planning/PROJECT.md` (updated 2026-06-13)
 
 ## Active Context
 
-**No open tasks remaining for this milestone.** The feature is default-off, backward compatible, and fully tested.
+### Phase 3 — AI Signal Pending Order
+
+**Current task:** 代码实现 — 通过 Codex 执行
+
+**Files to modify:**
+1. `internal/legacy/live_trading.go` — 导出 `OrderTypeForSignal()`
+2. `internal/legacy/store.go` — `CommandStore` 接口新增 `FindPendingAI()`
+3. `internal/store/sqlite/commands.go` — SQLite 实现
+4. `internal/store/pg/commands.go` — PostgreSQL 实现
+5. `internal/api/handlers_ai.go` — 核心逻辑 (+80行)
+6. `gold-analysis-agent/src/agents/sr-analyst.ts` — M5 移除
+7. `gold-analysis-agent/src/agents/risk-manager.ts` — M5 移除
+
+**Risks:**
+- AI 信号质量未经验证，假信号直接实盘
+- RiskGate 当前只评估单笔 trade_plan，不掌握全局敞口
+- 两条独立开仓路径可能在极端行情下产生冲突
 
 ---
-*Last updated: 2026-06-13 after Phase 2 implementation*
+*Last updated: 2026-06-15*

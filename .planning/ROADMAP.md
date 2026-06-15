@@ -8,8 +8,9 @@
 
 | # | Phase | Goal | Effort | Status |
 |---|-------|------|--------|--------|
-| 1 | Fib Extension Target Management | 新增 Fibonacci 扩展位计算 + 引擎 TP 增强层 | Medium | Pending |
-| 2 | Fib Retracement Pullback Enhancement | 将 Fib 回撤区融合为 pullback 策略增强过滤器 | Medium | Pending |
+| 1 | Fib Extension Target Management | 新增 Fibonacci 扩展位计算 + 引擎 TP 增强层 | Medium | ✅ Complete |
+| 2 | Fib Retracement Pullback Enhancement | 将 Fib 回撤区融合为 pullback 策略增强过滤器 | Medium | ✅ Complete |
+| 3 | AI Signal Pending Order | AI approve 直通 PENDING 挂单，手数减半，4h 过期 | Small | Pending |
 
 ## Phase Details
 
@@ -61,6 +62,36 @@
 **Risks:**
 - 假突破可能导致价格短暂进入回撤区后继续反向
 - 多周期确认可能延迟入场，错过强单边行情
+
+---
+
+### Phase 3 — AI Signal Pending Order
+
+**Goal:** AI approve 信号直通 PENDING 挂单执行，手数减半，4h 过期，保持策略引擎独立。
+
+**Requirements:** AI-PEND-01 ~ AI-PEND-17
+
+**Files to modify:**
+- `internal/api/handlers_ai.go` — 新增 AI approve 命令生成逻辑 (+80行)
+- `internal/legacy/live_trading.go` — 导出 `OrderTypeForSignal()`
+- `internal/legacy/store.go` — `CommandStore` 接口新增 `FindPendingAI()`
+- `internal/store/sqlite/commands.go` — SQLite 实现 `FindPendingAI()`
+- `internal/store/pg/commands.go` — PostgreSQL 实现 `FindPendingAI()`
+- `gold-analysis-agent/src/agents/sr-analyst.ts` — 移除 M5 周期
+- `gold-analysis-agent/src/agents/risk-manager.ts` — 移除 M5 周期
+
+**Success Criteria:**
+- [ ] AI approve 信号正确生成 PENDING 命令，手数减半
+- [ ] 4h 过期时间正确设置
+- [ ] 5层保护全部生效（RiskGate/置信度/去重/价格校验/手数下限）
+- [ ] 现有 handleAIResult() 的风险命令处理不受影响
+- [ ] 所有已有测试通过（`go test ./internal/... -count=1`）
+- [ ] gold-analysis-agent 不再使用 M5 周期
+
+**Risks:**
+- AI 信号质量未经历史验证，假阳性直接实盘
+- 频率控制不够紧可能生成过多挂单
+- RiskGate 当前只评估单笔 trade_plan，不掌握全局敞口
 
 ---
 

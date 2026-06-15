@@ -69,12 +69,44 @@ Core Value: 在不增加系统复杂度的前提下，通过 Fibonacci 比例关
 | Swing High/Low 基于固定窗口滚动计算 | 复用现有 50-bar 窗口，不与已有计算冲突 | — Pending |
 | 扩展位默认关闭，需配置显式开启 | 向后兼容，不影响现有策略行为 | — Pending |
 
-## Evolution
+---
 
-**After each phase:**
-1. Requirements validated? → Move to Validated
-2. New decisions? → Add to Key Decisions
-3. Context update? → Current state
+## Phase 3: AI Signal Pending Order (新增)
+
+### Validated
+
+- **PENDING Command** — `domain/command.go` 已定义 `CommandActionPending` + `CommandActionCancelPending`
+- **EA ExecutePending** — `mt4_ea/GoldBolt_Client.mq4` 已完整实现 `ExecutePending()` (挂单下单/成交后SLTP/过期删除)
+- **orderTypeForSignal** — `live_trading.go` 已有自动挂单判断逻辑(entry偏离>0.3×ATR转挂单)
+- **RiskGate** — `riskgate/gate.go` 已支持 TradePlan 评估
+- **TradePlan** — `domain/trade_plan.go` 完整定义 entry_zone/stop_loss/take_profit/confidence/expires_at
+
+### Active
+
+- [ ] **AI-PEND-01**: 导出 `OrderTypeForSignal()` 为包级函数供 api 包调用
+- [ ] **AI-PEND-02**: `CommandStore` 新增 `FindPendingAI()` 方法
+- [ ] **AI-PEND-03**: `handlers_ai.go` 新增 AI approve → PENDING 命令逻辑
+- [ ] **AI-PEND-04**: 手数缩减公式执行 (Ceil(maxLots*0.5/0.01)*0.01)
+- [ ] **AI-PEND-05**: 5层保护机制（RiskGate/置信度/去重/价格校验/手数下限）
+- [ ] **AI-PEND-06**: gold-analysis-agent 移除 M5 分析周期
+- [ ] **AI-PEND-07**: 单元测试 + 集成验证
+
+### Out of Scope
+
+- **策略引擎融合层** — AI 不修改 Analyze() 核心逻辑，走独立路径
+- **前端 Dashboard 展示** — 后续单独考虑
+- **AI 信号的历史回测** — 属于独立的数据科学任务
+
+## Key Decisions
+
+| Decision | Rationale | Outcome |
+|----------|-----------|---------|
+| 不修改策略引擎，直接复用 PENDING 链路 | 两条路径触发方式不同，强行融合需架构级重构 | ✓ Good |
+| 复用 SIGNAL + order_type 机制，不新增命令类型 | EA 端已有完整兼容性，零改动 | ✓ Good |
+| Entry 取 EntryZone midpoint | TradePlan 无具体 entry_price | ✓ Good |
+| 手数 Ceil(maxLots*0.5/0.01)*0.01 | 0.1→0.05, 0.05→0.03 完全匹配需求 | ✓ Good |
+| AI 分析周期至少 M15 | 移除 M5/M1 减少噪音 | ✓ Good |
 
 ---
-*Last updated: 2026-06-13 after multi-model analysis review (DeepSeek/Kimi/GLM/Qwen)*
+
+*Last updated: 2026-06-15 after architecture analysis*

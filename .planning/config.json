@@ -1,8 +1,9 @@
 {
-  "project": "gold-bot-fibonacci",
-  "version": "1.0.0",
+  "project": "gold-bot",
+  "version": "1.4.0",
   "created": "2026-06-13",
-  "phase": 1,
+  "updated": "2026-06-15",
+  "phase": 3,
   "mode": "normal",
   "granularity": 1,
   "research_agents": true,
@@ -13,7 +14,8 @@
     "workflow_guard": false
   },
   "feature_flags": {
-    "fib_extension_tp": false,
-    "fib_retracement_pullback": false
+    "fib_extension_tp": true,
+    "fib_retracement_pullback": true,
+    "ai_signal_pending": false
   }
 }
