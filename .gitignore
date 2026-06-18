@@ -58,3 +58,4 @@ data/goldbot.db*
 
 docs
 .commandcode*.db
+.commandcode

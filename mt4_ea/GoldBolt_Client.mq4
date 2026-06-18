@@ -105,7 +105,6 @@ int      g_symbolCount = 0;    // 品种数量
 bool     gbConnected      = false;        // 当前连接状态
 datetime lastSuccessTime  = 0;            // 最后成功通信时间
 int      failCount        = 0;            // 连续失败次数
-datetime lastReconnectTry = 0;            // 上次重连尝试时间
 datetime lastRegisterTry  = 0;            // 上次注册尝试时间（每5秒重试）
 bool     gbRegistered     = false;        // 注册是否成功
 
@@ -796,16 +795,16 @@ void PollAndExecute()
       if(count == 0) continue;
       
       Print("📨 [", baseSymbol, "] 收到 ", count, " 条指令");
-      string commands_str = GetJsonArray(response, "commands");
+      string commands_str = GetJsonArraySafe(response, "commands");
       
       for(int i = 0; i < count; i++)
       {
          string cmd = GetArrayElement(commands_str, i);
          if(StringLen(cmd) == 0) continue;
-         
-         string action = GetJsonString(cmd, "action");
-         string cmd_id = GetJsonString(cmd, "command_id");
-         
+
+         string action = GetJsonStringSafe(cmd, "action");
+         string cmd_id = GetJsonStringSafe(cmd, "command_id");
+
          if(action == "SIGNAL")
             ExecuteSignal(cmd, cmd_id);
          else if(action == "MODIFY")
@@ -835,10 +834,10 @@ void PollAndExecute()
 // ============================================================
 void ExecuteOpen(string cmd, string cmd_id)
 {
-   string symbol = GetJsonString(cmd, "symbol");
-   string side   = GetJsonString(cmd, "side");
+   string symbol = GetJsonStringSafe(cmd, "symbol");
+   string side   = GetJsonStringSafe(cmd, "side");
    double lots   = GetJsonDouble(cmd, "lots");
-   string reason = GetJsonString(cmd, "reason");
+   string reason = GetJsonStringSafe(cmd, "reason");
     
    Print("🛢️ 价差开仓：", symbol, " ", side, " ", lots, "手 | ", reason);
 
@@ -916,9 +915,9 @@ void ExecuteAdd(string cmd, string cmd_id)
 // ============================================================
 void ExecuteClosePartial(string cmd, string cmd_id)
 {
-   string symbol = GetJsonString(cmd, "symbol");
+   string symbol = GetJsonStringSafe(cmd, "symbol");
    double lots   = GetJsonDouble(cmd, "lots");
-   string reason = GetJsonString(cmd, "reason");
+   string reason = GetJsonStringSafe(cmd, "reason");
     
    Print("🛢️ 价差部分平仓：", symbol, " ", lots, "手 | ", reason);
 
@@ -1016,9 +1015,9 @@ void ExecuteClosePartial(string cmd, string cmd_id)
 // ============================================================
 void ExecuteCloseAll(string cmd, string cmd_id)
 {
-   string symbol = GetJsonString(cmd, "symbol");
+   string symbol = GetJsonStringSafe(cmd, "symbol");
    double lots   = GetJsonDouble(cmd, "lots");
-   string reason = GetJsonString(cmd, "reason");
+   string reason = GetJsonStringSafe(cmd, "reason");
     
    Print("🛢️ 价差全部平仓：", symbol, " ", lots, "手 | ", reason);
 
@@ -1093,22 +1092,22 @@ void ExecuteCloseAll(string cmd, string cmd_id)
 // ============================================================
 void ExecuteSignal(string cmd, string cmd_id)
 {
-   string orderType = GetJsonString(cmd, "order_type");
-   if(orderType == "BUY_LIMIT" || orderType == "BUY_STOP" || 
+   string orderType = GetJsonStringSafe(cmd, "order_type");
+   if(orderType == "BUY_LIMIT" || orderType == "BUY_STOP" ||
       orderType == "SELL_LIMIT" || orderType == "SELL_STOP")
    {
       ExecutePending(cmd, cmd_id);
       return;
    }
-   
-   string signalSymbol = GetJsonString(cmd, "symbol");
-   string type_str = GetJsonString(cmd, "type");
+
+   string signalSymbol = GetJsonStringSafe(cmd, "symbol");
+   string type_str = GetJsonStringSafe(cmd, "type");
    double sl       = GetJsonDouble(cmd, "sl");
    double tp1      = GetJsonDouble(cmd, "tp1");
    // 兼容 AI 信号的 tp 字段名
    if(tp1 == 0.0) tp1 = GetJsonDouble(cmd, "tp");
    int    score    = GetJsonInt(cmd, "score");
-   string strategy = GetJsonString(cmd, "strategy");
+   string strategy = GetJsonStringSafe(cmd, "strategy");
    
    // 确定品种：使用信号自带的品种，否则用第一个配置品种
    string baseSymbol = signalSymbol;
@@ -1325,14 +1324,14 @@ void ExecuteSignal(string cmd, string cmd_id)
 // ============================================================
 void ExecutePending(string cmd, string cmd_id)
 {
-   string signalSymbol = GetJsonString(cmd, "symbol");
-   string type_str     = GetJsonString(cmd, "type");
-   string orderType    = GetJsonString(cmd, "order_type");
+   string signalSymbol = GetJsonStringSafe(cmd, "symbol");
+   string type_str     = GetJsonStringSafe(cmd, "type");
+   string orderType    = GetJsonStringSafe(cmd, "order_type");
    double entry        = GetJsonDouble(cmd, "entry");
    double sl           = GetJsonDouble(cmd, "sl");
    double tp1          = GetJsonDouble(cmd, "tp1");
    int    score        = GetJsonInt(cmd, "score");
-   string strategy     = GetJsonString(cmd, "strategy");
+   string strategy     = GetJsonStringSafe(cmd, "strategy");
    datetime expiration = (datetime)GetJsonInt(cmd, "expiration");
 
    // 确定品种
@@ -1411,7 +1410,7 @@ void ExecutePending(string cmd, string cmd_id)
       }
    }
 
-   // 检查重复挂单（同品种、同方向、同magic）
+   // 检查重复挂单（同品种、同方向、同magic、价格相近）
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
@@ -1425,9 +1424,15 @@ void ExecutePending(string cmd, string cmd_id)
 
       if((newIsBuy && isBuyPending) || (!newIsBuy && isSellPending))
       {
-         Print("❌ 已有相同方向挂单：", brokerSymbol);
-         ReportResult(cmd_id, "ERROR", 0, "duplicate_pending");
-         return;
+         // 检查价格是否过于接近（10 点以内视为重复）
+         double existingPrice = OrderOpenPrice();
+         double point = GetSymbolPoint(brokerSymbol);
+         if(MathAbs(existingPrice - entry) < 10 * point)
+         {
+            Print("❌ 已有相近价格挂单：", brokerSymbol, " 现有=", existingPrice, " 新=", entry);
+            ReportResult(cmd_id, "ERROR", 0, "duplicate_pending");
+            return;
+         }
       }
    }
 
@@ -1488,7 +1493,7 @@ void ExecutePending(string cmd, string cmd_id)
 void ExecuteCancelPending(string cmd, string cmd_id)
 {
    int ticket = (int)GetJsonDouble(cmd, "ticket");
-   string reason = GetJsonString(cmd, "reason");
+   string reason = GetJsonStringSafe(cmd, "reason");
 
    if(ticket <= 0)
    {
@@ -1582,7 +1587,7 @@ void ExecuteModify(string cmd, string cmd_id)
 void ExecuteClose(string cmd, string cmd_id)
 {
    int ticket = (int)GetJsonDouble(cmd, "ticket");
-   string reason = GetJsonString(cmd, "reason");
+   string reason = GetJsonStringSafe(cmd, "reason");
    
    Print("📤 平仓：#", ticket, " | ", reason);
    
@@ -1805,9 +1810,6 @@ string HttpPost(string path, string data)
       Print("⚠️ GB Server 断连 | 失败次数：", failCount, " | 路径：", path);
    }
    return "";
-   
-   string result = CharArrayToString(result_data);
-   return result;
 }
 
 // ============================================================
@@ -1820,7 +1822,7 @@ void CheckForUpdate()
    
    if(StringLen(resp) > 0)
    {
-      string latest = GetJsonString(resp, "latest_version");
+      string latest = GetJsonStringSafe(resp, "latest_version");
       int build = GetJsonInt(resp, "latest_build");
       bool force = GetJsonBool(resp, "force_update");
       
@@ -2148,6 +2150,106 @@ void CloseAllSpreadPositions()
       }
    }
    Print("🛢️ 价差平仓完成：共平 ", closed, " 单");
+}
+
+//+------------------------------------------------------------------+
+//| 安全的 JSON 字符串解析（处理转义）                                |
+//+------------------------------------------------------------------+
+string GetJsonStringSafe(string json, string key)
+{
+   string pattern = "\"" + key + "\":\"";
+   int pos = StringFind(json, pattern);
+   if(pos < 0) return "";
+
+   int start = pos + StringLen(pattern);
+   string result = "";
+   bool escaped = false;
+
+   for(int i = start; i < StringLen(json); i++)
+   {
+      ushort c = StringGetChar(json, i);
+
+      if(escaped)
+      {
+         // 处理转义字符
+         if(c == 'n') result += "\n";
+         else if(c == 't') result += "\t";
+         else if(c == 'r') result += "\r";
+         else if(c == '\\') result += "\\";
+         else if(c == '"') result += "\"";
+         else result += ShortToString(c);  // 未知转义，保留原字符
+
+         escaped = false;
+      }
+      else if(c == '\\')
+      {
+         escaped = true;
+      }
+      else if(c == '"')
+      {
+         break;  // 字符串结束
+      }
+      else
+      {
+         result += ShortToString(c);
+      }
+   }
+
+   return result;
+}
+
+//+------------------------------------------------------------------+
+//| 安全的 JSON 数组解析（忽略字符串内的括号）                        |
+//+------------------------------------------------------------------+
+string GetJsonArraySafe(string json, string key)
+{
+   string pattern = "\"" + key + "\":[";
+   int pos = StringFind(json, pattern);
+   if(pos < 0) return "";
+
+   int start = pos + StringLen(pattern) - 1;
+   int bracket_count = 0;
+   int end = start;
+   bool in_string = false;
+   bool escaped = false;
+
+   for(int i = start; i < StringLen(json); i++)
+   {
+      ushort c = StringGetChar(json, i);
+
+      if(escaped)
+      {
+         escaped = false;
+         continue;
+      }
+
+      if(c == '\\')
+      {
+         escaped = true;
+         continue;
+      }
+
+      if(c == '"')
+      {
+         in_string = !in_string;
+         continue;
+      }
+
+      if(in_string) continue;  // 忽略字符串内的字符
+
+      if(c == '[') bracket_count++;
+      else if(c == ']')
+      {
+         bracket_count--;
+         if(bracket_count == 0)
+         {
+            end = i;
+            break;
+         }
+      }
+   }
+
+   return StringSubstr(json, start + 1, end - start - 1);
 }
 
 //+------------------------------------------------------------------+
