@@ -2,50 +2,38 @@ package sqlite
 
 import "testing"
 
-func TestDetectDialectRecognizesPostgresURLForms(t *testing.T) {
-	tests := []struct {
-		name string
-		dsn  string
-		want bool
-	}{
-		{name: "postgres url", dsn: "postgres://user:pass@localhost:5432/goldbot", want: true},
-		{name: "postgresql url", dsn: "postgresql://user:pass@localhost:5432/goldbot", want: true},
-		{name: "empty dsn", dsn: "", want: false},
-		{name: "key value dsn", dsn: "host=localhost port=5432 user=goldbot password=secret dbname=goldbot sslmode=disable", want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := detectPg(tt.dsn); got != tt.want {
-				t.Fatalf("detectPg(%q) = %v, want %v", tt.dsn, got, tt.want)
-			}
-		})
+func TestDialectAlwaysReturnsPostgres(t *testing.T) {
+	if got := Dialect(); got != "postgres" {
+		t.Fatalf("Dialect() = %q, want %q", got, "postgres")
 	}
 }
 
 func TestPhsFromUsesCorrectPostgresSequence(t *testing.T) {
-	t.Cleanup(resetDialectForTest)
-	setPgForTest(true)
-
 	if got := phsFrom(3, 4); got != "$3, $4, $5, $6" {
 		t.Fatalf("phsFrom(3, 4) = %q, want %q", got, "$3, $4, $5, $6")
 	}
 }
 
-func TestPhsFromUsesQuestionMarksForSQLite(t *testing.T) {
-	t.Cleanup(resetDialectForTest)
-	setPgForTest(false)
-
-	if got := phsFrom(3, 4); got != "?, ?, ?, ?" {
-		t.Fatalf("phsFrom(3, 4) = %q, want %q", got, "?, ?, ?, ?")
+func TestPhAlwaysUsesPostgresPlaceholders(t *testing.T) {
+	if got := ph(2); got != "$2" {
+		t.Fatalf("ph(2) = %q, want %q", got, "$2")
 	}
 }
 
 func TestDeleteStalePositionStatesPlaceholderSequenceStartsAtThreeForPostgres(t *testing.T) {
-	t.Cleanup(resetDialectForTest)
-	setPgForTest(true)
-
 	if got := phsFrom(3, 2); got != "$3, $4" {
 		t.Fatalf("phsFrom(3, 2) = %q, want %q", got, "$3, $4")
+	}
+}
+
+func TestPgTextIsEmptyForPostgres(t *testing.T) {
+	if got := pgText(); got != "" {
+		t.Fatalf("pgText() = %q, want empty string", got)
+	}
+}
+
+func TestJSONExtractUsesPostgresJSONBTextExtraction(t *testing.T) {
+	if got := jsonExtract("payload_json", "source"); got != "payload_json::jsonb->>'source'" {
+		t.Fatalf("jsonExtract(payload_json, source) = %q, want %q", got, "payload_json::jsonb->>'source'")
 	}
 }

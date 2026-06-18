@@ -26,6 +26,20 @@ func (h eaHandler) version(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// versionCheck responds to the EA's /version_check endpoint with compatibility fields.
+func (h eaHandler) versionCheck(w http.ResponseWriter, _ *http.Request) {
+	info, err := h.releases.Current()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"latest_version": info.Version,
+		"latest_build":   info.Build,
+		"force_update":   false,
+	})
+}
+
 func (h eaHandler) download(w http.ResponseWriter, r *http.Request) {
 	info, err := h.releases.Current()
 	if err != nil {

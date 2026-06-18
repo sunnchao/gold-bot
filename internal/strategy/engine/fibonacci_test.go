@@ -184,8 +184,8 @@ func TestPullbackFibFilter_Disabled(t *testing.T) {
 	if signal.Strategy != "pullback" {
 		t.Fatalf("strategy = %q, want pullback", signal.Strategy)
 	}
-	if signal.StopLoss != 92 {
-		t.Fatalf("stop loss = %v, want 92", signal.StopLoss)
+	if signal.StopLoss != 91 {
+		t.Fatalf("stop loss = %v, want 91", signal.StopLoss)
 	}
 }
 

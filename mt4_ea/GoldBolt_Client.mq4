@@ -12,8 +12,8 @@
 #include <StdLib.mqh>
 
 // ============ 版本信息 ============
-#define EA_VERSION  "2.8.2"
-#define EA_BUILD    8
+#define EA_VERSION  "2.8.3"
+#define EA_BUILD    9
 
 //+------------------------------------------------------------------+
 //| 服务器连接配置                                                      |
@@ -61,6 +61,9 @@ extern int      MomentumScalpMagic        = 20250237; // 动量剥头皮 Magic
 extern bool     MomentumScalpUseFixedLots = true;     // 动量剥头皮使用固定手数
 extern double   MomentumScalpFixedLots    = 0.05;     // 动量剥头皮固定手数
 extern double   MomentumScalpRiskPercent  = 0.5;      // 动量剥头皮单笔风险 %
+
+extern bool     EnableAISignal      = true;     // 🤖 AI 信号挂单策略
+extern int      AISignalMagic       = 20250238; // AI 信号 Magic
 
 //+------------------------------------------------------------------+
 //| 原油对冲套利配置                                                   |
@@ -118,6 +121,7 @@ int GetStrategyMagic(string strategy)
    if(strategy == "counter_pullback") return CounterMagic;
    if(strategy == "range") return RangeMagic;
    if(strategy == "momentum_scalp") return MomentumScalpMagic;
+   if(strategy == "ai_signal") return AISignalMagic;
    return 0;
 }
 
@@ -131,6 +135,7 @@ bool IsStrategyEnabled(string strategy)
    if(strategy == "counter_pullback") return EnableCounter;
    if(strategy == "range") return EnableRange;
    if(strategy == "momentum_scalp") return EnableMomentumScalp;
+   if(strategy == "ai_signal") return EnableAISignal;
    return false;
 }
 
@@ -222,6 +227,7 @@ bool IsOurMagic(int magic)
    if(magic == CounterMagic) return true;
    if(magic == RangeMagic) return true;
    if(magic == MomentumScalpMagic) return true;
+   if(magic == AISignalMagic) return true;
    if(magic == SpreadMagicNumber) return true;
    return false;
 }
@@ -334,7 +340,7 @@ int OnInit()
    Print("策略Magic: 趋势回调=", PullbackMagic, " 突破回踩=", BreakoutMagic,
          " RSI背离=", DivergenceMagic, " 突破加仓=", PyramidMagic,
          " 反向回调=", CounterMagic, " 震荡区间=", RangeMagic,
-         " 动量剥头皮=", MomentumScalpMagic);
+         " 动量剥头皮=", MomentumScalpMagic, " AI信号=", AISignalMagic);
    Print("风控：",
          (UseFixedLots ? ("固定手数=" + DoubleToString(FixedLots, 2)) : ("风险=" + DoubleToString(MaxRiskPercent, 1) + "%")),
          " | 持仓上限", MaxPositions,
@@ -381,7 +387,7 @@ int OnInit()
    // 扫描已有持仓（按策略分类）
    Print("📊 扫描已有持仓...");
    int pullbackCount = 0, breakoutCount = 0, divergenceCount = 0;
-   int pyramidCount = 0, counterCount = 0, rangeCount = 0, momentumScalpCount = 0, spreadCount = 0;
+   int pyramidCount = 0, counterCount = 0, rangeCount = 0, momentumScalpCount = 0, aiSignalCount = 0, spreadCount = 0;
    
    for(int i = 0; i < OrdersTotal(); i++)
    {
@@ -401,12 +407,13 @@ int OnInit()
          else if(magic == CounterMagic){ counterCount++; Print("   🔄 反向回调: ", info); }
          else if(magic == RangeMagic){ rangeCount++; Print("   📊 震荡区间: ", info); }
          else if(magic == MomentumScalpMagic){ momentumScalpCount++; Print("   ⚡ 动量剥头皮: ", info); }
+         else if(magic == AISignalMagic){ aiSignalCount++; Print("   🤖 AI信号: ", info); }
          else if(magic == SpreadMagicNumber){ spreadCount++; Print("   🛢️ 原油对冲: ", info); }
       }
    }
    
    Print("   趋势回调: ", pullbackCount, " 单 | 突破回踩: ", breakoutCount, " 单 | RSI背离: ", divergenceCount, " 单");
-   Print("   突破加仓: ", pyramidCount, " 单 | 反向回调: ", counterCount, " 单 | 震荡区间: ", rangeCount, " 单 | 动量剥头皮: ", momentumScalpCount, " 单");
+   Print("   突破加仓: ", pyramidCount, " 单 | 反向回调: ", counterCount, " 单 | 震荡区间: ", rangeCount, " 单 | 动量剥头皮: ", momentumScalpCount, " 单 | AI信号: ", aiSignalCount, " 单");
    Print("   原油对冲: ", spreadCount, " 单");
    Print("=============================================");
    
@@ -1098,6 +1105,8 @@ void ExecuteSignal(string cmd, string cmd_id)
    string type_str = GetJsonString(cmd, "type");
    double sl       = GetJsonDouble(cmd, "sl");
    double tp1      = GetJsonDouble(cmd, "tp1");
+   // 兼容 AI 信号的 tp 字段名
+   if(tp1 == 0.0) tp1 = GetJsonDouble(cmd, "tp");
    int    score    = GetJsonInt(cmd, "score");
    string strategy = GetJsonString(cmd, "strategy");
    
@@ -1164,6 +1173,12 @@ void ExecuteSignal(string cmd, string cmd_id)
     
    double sl_distance = MathAbs(price - sl);
    double lots = CalcLotsForStrategy(strategy, sl_distance);
+   // AI 信号使用服务端计算的手数（含减半逻辑）
+   if(strategy == "ai_signal")
+   {
+      double cmdLots = GetJsonDouble(cmd, "lots");
+      if(cmdLots > 0) lots = cmdLots;
+   }
    lots = NormalizeVolume(brokerSymbol, lots);
     
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);

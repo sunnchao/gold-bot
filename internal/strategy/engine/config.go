@@ -65,6 +65,11 @@ type StrategyConfig struct {
 	ScaleInMinIntervalMin  int     `json:"scale_in_min_interval_min" yaml:"scale_in_min_interval_min"`
 	ScaleInMaxFloatLossPct float64 `json:"scale_in_max_float_loss_pct" yaml:"scale_in_max_float_loss_pct"`
 
+	// SR-based SL/TP
+	SRBufferATR  float64 `json:"sr_buffer_atr" yaml:"sr_buffer_atr"`
+	SRMaxDistATR float64 `json:"sr_max_dist_atr" yaml:"sr_max_dist_atr"`
+	SRMinDistATR float64 `json:"sr_min_dist_atr" yaml:"sr_min_dist_atr"`
+
 	// H4 trend filter
 	H4ADXThreshold       float64 `json:"h4_adx_threshold" yaml:"h4_adx_threshold"`
 	H4RequireConsecutive int     `json:"h4_require_consecutive" yaml:"h4_require_consecutive"`
@@ -141,6 +146,10 @@ func DefaultStrategyConfig() StrategyConfig {
 		ScaleInTP2ATR:          3.0,
 		ScaleInMinIntervalMin:  30,
 		ScaleInMaxFloatLossPct: 5.0,
+
+		SRBufferATR:  0.5,
+		SRMaxDistATR: 3.0,
+		SRMinDistATR: 0.3,
 
 		// H4 trend - higher threshold, require 3 bars
 		H4ADXThreshold:       30.0,

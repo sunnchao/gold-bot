@@ -552,13 +552,117 @@ func TestCalculateUnifiedSL(t *testing.T) {
 		{Type: "SELL", Lots: 0.05, OpenPrice: 103.0},
 	}
 
-	weightedAvg, unifiedSL := CalculateUnifiedSL(positions, 98.2, 0.03, 2.0, 1.2, "BUY")
+	weightedAvg, unifiedSL := CalculateUnifiedSL(positions, 98.2, 0.03, 2.0, 1.2, "BUY", 2)
 
 	if weightedAvg != 99.99 {
 		t.Fatalf("weighted avg = %v, want 99.99", weightedAvg)
 	}
 	if unifiedSL != 97.59 {
 		t.Fatalf("unified sl = %v, want 97.59", unifiedSL)
+	}
+}
+
+func TestRoundToPrecisionAndRoundingPrecision(t *testing.T) {
+	tests := []struct {
+		symbol    string
+		value     float64
+		wantPrec  int
+		wantRound float64
+	}{
+		{symbol: "EURUSD", value: 1.234567, wantPrec: 5, wantRound: 1.23457},
+		{symbol: "GBPUSD", value: 1.250004, wantPrec: 5, wantRound: 1.25},
+		{symbol: "GBPJPY", value: 198.4567, wantPrec: 3, wantRound: 198.457},
+		{symbol: "XAUUSD", value: 2345.678, wantPrec: 2, wantRound: 2345.68},
+		{symbol: "USOilCash", value: 72.345, wantPrec: 2, wantRound: 72.35},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.symbol, func(t *testing.T) {
+			if got := roundingPrecision(tt.symbol); got != tt.wantPrec {
+				t.Fatalf("precision = %d, want %d", got, tt.wantPrec)
+			}
+			if got := roundToPrecision(tt.value, tt.wantPrec); got != tt.wantRound {
+				t.Fatalf("rounded = %v, want %v", got, tt.wantRound)
+			}
+		})
+	}
+}
+
+func TestPickSLTPBuyUsesNearestSRWithBuffer(t *testing.T) {
+	cfg := DefaultStrategyConfig()
+	price := 1.10000
+	atr := 0.00100
+	last := domain.Bar{
+		EMA20:   1.09960,
+		EMA50:   1.09890,
+		BBLower: 1.09920,
+		BBUpper: 1.10120,
+		Fib382:  1.10080,
+		Fib618:  1.09910,
+		Fib786:  1.09860,
+		R1:      1.10220,
+		S1:      1.09880,
+	}
+
+	sl, tp1, tp2, usedSR := pickSLTP("BUY", price, last, atr, 5, cfg)
+	if !usedSR {
+		t.Fatal("usedSR = false, want true")
+	}
+	if sl != 1.09910 {
+		t.Fatalf("sl = %v, want 1.09910", sl)
+	}
+	if tp1 != 1.10080 {
+		t.Fatalf("tp1 = %v, want 1.10080", tp1)
+	}
+	if tp2 != 1.10080 {
+		t.Fatalf("tp2 = %v, want 1.10080", tp2)
+	}
+}
+
+func TestPickSLTPSellFallsBackWhenNoReasonableSR(t *testing.T) {
+	cfg := DefaultStrategyConfig()
+	price := 1.25000
+	atr := 0.00100
+	last := domain.Bar{
+		EMA20:   1.24995,
+		EMA50:   1.24990,
+		BBLower: 1.24980,
+		BBUpper: 1.25005,
+		Fib382:  1.25006,
+		Fib618:  1.24992,
+		Fib786:  1.24991,
+		R1:      1.25010,
+		S1:      1.24989,
+	}
+
+	sl, tp1, tp2, usedSR := pickSLTP("SELL", price, last, atr, 5, cfg)
+	if usedSR {
+		t.Fatal("usedSR = true, want false")
+	}
+	if sl != 1.25150 {
+		t.Fatalf("sl = %v, want 1.25150", sl)
+	}
+	if tp1 != 1.24850 {
+		t.Fatalf("tp1 = %v, want 1.24850", tp1)
+	}
+	if tp2 != 1.24700 {
+		t.Fatalf("tp2 = %v, want 1.24700", tp2)
+	}
+}
+
+func TestCalculateUnifiedSLUsesProvidedPrecision(t *testing.T) {
+	positions := []domain.Position{
+		{Type: "BUY", Lots: 0.10, OpenPrice: 1.10123},
+		{Type: "BUY", Lots: 0.06, OpenPrice: 1.09987},
+	}
+
+	weightedAvg, unifiedSL := CalculateUnifiedSL(positions, 1.09876, 0.03, 0.00080, 1.2, "BUY", 5)
+
+	if weightedAvg != 1.10041 {
+		t.Fatalf("weightedAvg = %v, want 1.10041", weightedAvg)
+	}
+	if unifiedSL != 1.09945 {
+		t.Fatalf("unifiedSL = %v, want 1.09945", unifiedSL)
 	}
 }
 

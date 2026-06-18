@@ -337,97 +337,116 @@ func (e *LiveTradingExecutor) checkAIStopLossAdjust(ctx context.Context, account
 	if len(positions) == 0 {
 		return nil
 	}
+	currentPrice := snapshot.CurrentPrice
 
-	// 只处理第一个持仓（通常只有一个）
-	pos := positions[0]
-	currentSL := pos.SL
-	ticket := pos.Ticket
+	// 处理所有持仓
+	for _, pos := range positions {
+		currentSL := pos.SL
+		ticket := pos.Ticket
 
-	// --- DIRECTION PROTECTION ---
-	// BUY positions: only allow newSL >= currentSL (tighter to price, moving toward profit)
-	// SELL positions: only allow newSL <= currentSL
-	switch strings.ToUpper(pos.Type) {
-	case "BUY":
-		if aiSL < currentSL {
-			log.Printf("[STRATEGY] 🛡️ 方向保护阻止止损下移 BUY: 当前=%.2f AI=%.2f (BUY仅允许上调) | account=%s/%s ticket=%d",
-				currentSL, aiSL, accountID, symbol, ticket)
-			return nil
+		// 当前 SL 或 TP 为 0 → 不发起修改（无止损可调）
+		if currentSL == 0 || pos.TP == 0 {
+			log.Printf("[STRATEGY] ⏭️ 跳过止损调整: 当前SL=%.6f TP=%.6f (0=无止损/止盈) | account=%s/%s ticket=%d",
+				currentSL, pos.TP, accountID, symbol, ticket)
+			continue
 		}
-	case "SELL":
-		if aiSL > currentSL {
-			log.Printf("[STRATEGY] 🛡️ 方向保护阻止止损上移 SELL: 当前=%.2f AI=%.2f (SELL仅允许下调) | account=%s/%s ticket=%d",
-				currentSL, aiSL, accountID, symbol, ticket)
-			return nil
+
+		// 判断持仓盈亏状态
+		isProfitable := false
+		switch strings.ToUpper(pos.Type) {
+		case "BUY":
+			isProfitable = currentPrice > pos.OpenPrice
+		case "SELL":
+			isProfitable = currentPrice < pos.OpenPrice
 		}
-	}
 
-	e.mu.Lock()
-
-	// Lazy init the tracking maps
-	if e.lastModifyTime == nil {
-		e.lastModifyTime = make(map[int64]time.Time)
-		e.failCount = make(map[int64]int)
-	}
-
-	// --- COOLDOWN CHECK ---
-	if lastTime, ok := e.lastModifyTime[ticket]; ok {
-		if e.now().Sub(lastTime) < 5*time.Minute {
-			e.mu.Unlock()
-			log.Printf("[STRATEGY] ⏳ 冷却中，跳过止损调整 (距离上次 %.0f秒) | account=%s/%s ticket=%d",
-				e.now().Sub(lastTime).Seconds(), accountID, symbol, ticket)
-			return nil
+		// --- DIRECTION PROTECTION (按盈亏状态) ---
+		// 盈利时: BUY只允许上调SL(收紧), SELL只允许下调SL(收紧)
+		// 亏损时: BUY允许下调SL(放宽), SELL允许上调SL(放宽)
+		switch strings.ToUpper(pos.Type) {
+		case "BUY":
+			if isProfitable && aiSL < currentSL {
+				log.Printf("[STRATEGY] 🛡️ BUY盈利中, 阻止止损下移: 当前=%.6f AI=%.6f | account=%s/%s ticket=%d",
+					currentSL, aiSL, accountID, symbol, ticket)
+				continue
+			}
+		case "SELL":
+			if isProfitable && aiSL > currentSL {
+				log.Printf("[STRATEGY] 🛡️ SELL盈利中, 阻止止损上移: 当前=%.6f AI=%.6f | account=%s/%s ticket=%d",
+					currentSL, aiSL, accountID, symbol, ticket)
+				continue
+			}
 		}
-	}
+		// 未盈利或无SL限制时，继续执行MODIFY
 
-	// --- FAILURE THROTTLE CHECK ---
-	if e.failCount[ticket] >= 3 {
-		e.mu.Unlock()
-		log.Printf("[STRATEGY] 🚫 连续失败 %d 次，跳过止损调整 | account=%s/%s ticket=%d",
-			e.failCount[ticket], accountID, symbol, ticket)
-		return nil
-	}
-
-	e.mu.Unlock()
-
-	// 计算 AI 止损与当前止损的差距
-	distance := math.Abs(aiSL - currentSL)
-	threshold := 0.3 * atr // 差距超过 0.3 ATR 才调整
-
-	if distance < threshold {
-		log.Printf("[STRATEGY] 📊 AI 止损差距不足 (%.2f < %.2f ATR)，不调整 | account=%s/%s current=%.2f ai=%.2f",
-			distance, threshold, accountID, symbol, currentSL, aiSL)
-		return nil
-	}
-
-	// 生成 MODIFY 命令
-	command := e.buildModifyCommand(accountID, symbol, pos, aiSL, distance, atr, aiDecisionID(snapshot.AIResult))
-	if _, err := e.commands.Get(ctx, command.CommandID); err == nil {
-		log.Printf("[STRATEGY] 🔁 重复 MODIFY 命令跳过 | account=%s/%s command_id=%s",
-			accountID, symbol, command.CommandID)
-		return nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("check existing modify command %s: %w", command.CommandID, err)
-	}
-
-	if err := e.commands.Enqueue(ctx, command); err != nil {
-		if isDuplicateCommandErr(err) {
-			return nil
-		}
-		// Real DB error – increment failure counter
 		e.mu.Lock()
-		e.failCount[ticket]++
+
+		// Lazy init the tracking maps
+		if e.lastModifyTime == nil {
+			e.lastModifyTime = make(map[int64]time.Time)
+			e.failCount = make(map[int64]int)
+		}
+
+		// --- COOLDOWN CHECK ---
+		if lastTime, ok := e.lastModifyTime[ticket]; ok {
+			if e.now().Sub(lastTime) < 5*time.Minute {
+				e.mu.Unlock()
+				log.Printf("[STRATEGY] ⏳ 冷却中，跳过止损调整 (距离上次 %.0f秒) | account=%s/%s ticket=%d",
+					e.now().Sub(lastTime).Seconds(), accountID, symbol, ticket)
+				continue
+			}
+		}
+
+		// --- FAILURE THROTTLE CHECK ---
+		if e.failCount[ticket] >= 3 {
+			e.mu.Unlock()
+			log.Printf("[STRATEGY] 🚫 连续失败 %d 次，跳过止损调整 | account=%s/%s ticket=%d",
+				e.failCount[ticket], accountID, symbol, ticket)
+			continue
+		}
+
 		e.mu.Unlock()
-		return fmt.Errorf("enqueue modify command %s: %w", command.CommandID, err)
+
+		// 计算 AI 止损与当前止损的差距
+		distance := math.Abs(aiSL - currentSL)
+		threshold := 0.3 * atr
+
+		if distance < threshold {
+			log.Printf("[STRATEGY] 📊 AI 止损差距不足 (%.6f < %.6f ATR)，不调整 | account=%s/%s current=%.6f ai=%.6f",
+				distance, threshold, accountID, symbol, currentSL, aiSL)
+			continue
+		}
+
+		// 生成 MODIFY 命令
+		command := e.buildModifyCommand(accountID, symbol, pos, aiSL, distance, atr, aiDecisionID(snapshot.AIResult))
+		if _, err := e.commands.Get(ctx, command.CommandID); err == nil {
+			log.Printf("[STRATEGY] 🔁 重复 MODIFY 命令跳过 | account=%s/%s command_id=%s",
+				accountID, symbol, command.CommandID)
+			continue
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("check existing modify command %s: %w", command.CommandID, err)
+		}
+
+		if err := e.commands.Enqueue(ctx, command); err != nil {
+			if isDuplicateCommandErr(err) {
+				continue
+			}
+			// Real DB error – increment failure counter
+			e.mu.Lock()
+			e.failCount[ticket]++
+			e.mu.Unlock()
+			return fmt.Errorf("enqueue modify command %s: %w", command.CommandID, err)
+		}
+
+		// Success – record time and reset failure counter
+		e.mu.Lock()
+		e.lastModifyTime[ticket] = e.now()
+		e.failCount[ticket] = 0
+		e.mu.Unlock()
+
+		log.Printf("[STRATEGY] ✅ AI 止损调整已发送 | account=%s/%s ticket=%d current=%.6f -> ai=%.6f (%.6f 点)",
+			accountID, symbol, ticket, currentSL, aiSL, distance)
 	}
-
-	// Success – record time and reset failure counter
-	e.mu.Lock()
-	e.lastModifyTime[ticket] = e.now()
-	e.failCount[ticket] = 0
-	e.mu.Unlock()
-
-	log.Printf("[STRATEGY] ✅ AI 止损调整已发送 | account=%s/%s ticket=%d current=%.2f -> ai=%.2f (%.2f 点)",
-		accountID, symbol, ticket, currentSL, aiSL, distance)
 	return nil
 }
 

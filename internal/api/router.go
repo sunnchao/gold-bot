@@ -98,6 +98,7 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 	mux.Handle("/api/tokens/", auth.requireAdmin(http.HandlerFunc(tokenHandler.delete)))
 	mux.Handle("/api/ea/version", http.HandlerFunc(eaHandler.version))
 	mux.Handle("/api/ea/download", auth.requireToken(http.HandlerFunc(eaHandler.download)))
+	mux.Handle("/version_check", auth.requireToken(http.HandlerFunc(eaHandler.versionCheck)))
 	mux.Handle("/api/v1/overview", auth.requireAdmin(http.HandlerFunc(accountsHandler.overview)))
 	mux.Handle("/api/v1/accounts", auth.requireAdmin(http.HandlerFunc(accountsHandler.list)))
 	mux.Handle("/api/v1/accounts/", auth.requireAdmin(http.HandlerFunc(accountsHandler.detail)))

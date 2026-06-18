@@ -97,7 +97,7 @@ func (r *CommandRepository) Enqueue(ctx context.Context, command domain.Command)
 func (r *CommandRepository) FindPendingAI(ctx context.Context, accountID, symbol, side string) (bool, error) {
 	return retrySQLiteBusyValue(func() (bool, error) {
 		var count int
-		query := `SELECT COUNT(*) FROM commands WHERE account_id=` + ph(1) + pgText() + ` AND status=` + ph(2) + pgText() + ` AND json_extract(payload_json, '$.source')='ai_approve' AND json_extract(payload_json, '$.symbol')=` + ph(3) + pgText() + ` AND json_extract(payload_json, '$.type')=` + ph(4) + pgText() + ` AND (json_extract(payload_json, '$.expiration') IS NULL OR json_extract(payload_json, '$.expiration') > ` + ph(5) + `)`
+		query := `SELECT COUNT(*) FROM commands WHERE account_id=` + ph(1) + pgText() + ` AND status=` + ph(2) + pgText() + ` AND ` + jsonExtract("payload_json", "source") + `='ai_approve' AND ` + jsonExtract("payload_json", "symbol") + `=` + ph(3) + pgText() + ` AND ` + jsonExtract("payload_json", "type") + `=` + ph(4) + pgText() + ` AND (` + jsonExtract("payload_json", "expiration") + ` IS NULL OR ` + jsonExtract("payload_json", "expiration") + ` > ` + ph(5) + `)`
 		err := r.db.QueryRowContext(ctx, query, accountID, string(domain.CommandStatusPending), symbol, strings.ToUpper(side), time.Now().Unix()).Scan(&count)
 		if err != nil {
 			return false, err

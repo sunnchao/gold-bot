@@ -36,8 +36,14 @@ Thumbs.db
 .windsurf/
 .augment/
 .gemini/
+.hermes/
+
+# Task files
+CODEX_TASK.md
+CODEX_EA_FIX.md
 
 # Go / SQLite artifacts
+**/gold-bot
 data/gold_bolt.sqlite*
 *.test
 coverage.out

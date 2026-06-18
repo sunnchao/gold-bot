@@ -7,7 +7,7 @@ import (
 	"gold-bot/internal/domain"
 )
 
-func CalculateUnifiedSL(positions []domain.Position, newEntry, newLots, atr, slATR float64, side string) (weightedAvg, unifiedSL float64) {
+func CalculateUnifiedSL(positions []domain.Position, newEntry, newLots, atr, slATR float64, side string, precision int) (weightedAvg, unifiedSL float64) {
 	totalLots := newLots
 	totalWeighted := newEntry * newLots
 	normalizedSide := strings.ToUpper(strings.TrimSpace(side))
@@ -21,11 +21,11 @@ func CalculateUnifiedSL(positions []domain.Position, newEntry, newLots, atr, slA
 	if totalLots <= 0 {
 		return 0, 0
 	}
-	weightedAvg = round2(totalWeighted / totalLots)
+	weightedAvg = roundToPrecision(totalWeighted/totalLots, precision)
 	if normalizedSide == "BUY" {
-		unifiedSL = round2(weightedAvg - atr*slATR)
+		unifiedSL = roundToPrecision(weightedAvg-atr*slATR, precision)
 	} else {
-		unifiedSL = round2(weightedAvg + atr*slATR)
+		unifiedSL = roundToPrecision(weightedAvg+atr*slATR, precision)
 	}
 	return weightedAvg, unifiedSL
 }

@@ -252,9 +252,6 @@ func TestPendingSignalRepositoryExpireStaleSignalsMarksOnlyExpiredPendingRows(t 
 }
 
 func TestPendingSignalRepositorySavePendingSignalUsesReturningIDForPostgres(t *testing.T) {
-	t.Cleanup(resetDialectForTest)
-	setPgForTest(true)
-
 	now := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
 	signal := &domain.PendingSignal{
 		AccountID:  "90011087",

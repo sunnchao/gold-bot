@@ -18,9 +18,6 @@ func TestPollTakePendingPostgresMarksDelivered(t *testing.T) {
 		t.Skip("TEST_POSTGRES_DSN not set")
 	}
 
-	setPgForTest(true)
-	defer resetDialectForTest()
-
 	repo, db := newTestPostgresCommandRepository(t, dsn)
 	ctx := context.Background()
 	now := time.Date(2026, 4, 13, 1, 2, 3, 0, time.UTC)
@@ -610,7 +607,12 @@ func TestOrderResultApplyResultRetriesOnSQLiteBusy(t *testing.T) {
 }
 
 func TestFindPendingAI(t *testing.T) {
-	repo, _ := newTestCommandRepositories(t)
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN not set")
+	}
+
+	repo, _ := newTestPostgresCommandRepository(t, dsn)
 	ctx := context.Background()
 	now := time.Now().UTC()
 

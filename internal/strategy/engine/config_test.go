@@ -27,6 +27,15 @@ func TestDefaultStrategyConfigKeepsDefaultMomentumScalpThresholds(t *testing.T) 
 	if cfg.MomentumScalpRSICrossoverBear != 52.0 {
 		t.Fatalf("MomentumScalpRSICrossoverBear = %v, want 52.0", cfg.MomentumScalpRSICrossoverBear)
 	}
+	if cfg.SRBufferATR != 0.5 {
+		t.Fatalf("SRBufferATR = %v, want 0.5", cfg.SRBufferATR)
+	}
+	if cfg.SRMaxDistATR != 3.0 {
+		t.Fatalf("SRMaxDistATR = %v, want 3.0", cfg.SRMaxDistATR)
+	}
+	if cfg.SRMinDistATR != 0.3 {
+		t.Fatalf("SRMinDistATR = %v, want 0.3", cfg.SRMinDistATR)
+	}
 }
 
 func TestNewForSymbolUsesGoldMomentumScalpThresholdsForGoldAliases(t *testing.T) {

@@ -14,12 +14,14 @@ import (
 type Engine struct {
 	MinScore int
 	Config   StrategyConfig
+	Precision int
 }
 
 func New(options ...func(*Engine)) Engine {
 	e := Engine{
 		MinScore: 5,
 		Config:   DefaultStrategyConfig(),
+		Precision: 2,
 	}
 	for _, opt := range options {
 		opt(&e)
@@ -47,7 +49,40 @@ func NewForSymbol(symbol string, options ...func(*Engine)) Engine {
 	baseSymbol := domain.BaseSymbol(symbol)
 	cfg := GetStrategyConfigBySymbol(baseSymbol)
 	e := New(append([]func(*Engine){WithConfig(cfg)}, options...)...)
+	e.Precision = roundingPrecision(baseSymbol)
 	return e
+}
+
+func roundToPrecision(value float64, precision int) float64 {
+	pow := math.Pow(10, float64(precision))
+	return math.Round(value*pow) / pow
+}
+
+func roundingPrecision(baseSymbol string) int {
+	switch strings.ToUpper(strings.TrimSpace(baseSymbol)) {
+	case "EURUSD", "GBPUSD", "USDCAD", "AUDUSD", "NZDUSD":
+		return 5
+	case "GBPJPY", "EURJPY", "USDJPY":
+		return 3
+	case "XAUUSD", "XAGUSD", "GOLD", "UKOILCASH", "USOILCASH":
+		return 2
+	default:
+		return 2
+	}
+}
+
+func logPrecision(precision int) int {
+	if precision >= 5 {
+		return 6
+	}
+	if precision == 3 {
+		return 4
+	}
+	return 2
+}
+
+func formatFloat(value float64, precision int) string {
+	return fmt.Sprintf("%.*f", precision, value)
 }
 
 // calculateSL calculates stop-loss price, preferring AI suggestion over ATR-based calculation.
@@ -57,34 +92,37 @@ func NewForSymbol(symbol string, options ...func(*Engine)) Engine {
 // atr: ATR value for fallback calculation
 // atrMult: ATR multiplier for fallback (e.g., 1.5 for pullback strategy)
 // Returns: stop-loss price and whether AI suggestion was used
-func calculateSL(aiResult *domain.AIResult, side string, price, atr, atrMult float64) (sl float64, usedAI bool) {
+func calculateSL(aiResult *domain.AIResult, side string, price, atr, atrMult float64, precision int) (sl float64, usedAI bool) {
 	// Guard: ATR must be valid, otherwise use a safe default distance
 	if atr <= 0 || math.IsNaN(atr) || math.IsInf(atr, 0) {
 		defaultDist := price * 0.002 // 0.2% of entry price as fallback
 		if defaultDist <= 0 {
 			defaultDist = 1.0 // absolute fallback
 		}
-		log.Printf("[STRATEGY] ⚠️ ATR=%.4f 无效, 使用默认距离 %.4f 计算止损", atr, defaultDist)
+		log.Printf("[STRATEGY] ⚠️ ATR=%s 无效, 使用默认距离 %s 计算止损",
+			formatFloat(atr, logPrecision(precision)), formatFloat(defaultDist, logPrecision(precision)))
 		if side == "BUY" {
-			return round2(price - defaultDist), false
+			return roundToPrecision(price-defaultDist, precision), false
 		}
-		return round2(price + defaultDist), false
+		return roundToPrecision(price+defaultDist, precision), false
 	}
 
 	if aiResult != nil && aiResult.SuggestedSL > 0 {
 		// Validate AI SL is reasonable (within 3×ATR from entry)
 		dist := math.Abs(price - aiResult.SuggestedSL)
 		if dist < atr*3.0 && dist > atr*0.3 {
-			log.Printf("[STRATEGY] 🤖 使用 AI 止损: %.2f (距离=%.2f, ATR=%.2f)", aiResult.SuggestedSL, dist, atr)
+			log.Printf("[STRATEGY] 🤖 使用 AI 止损: %s (距离=%s, ATR=%s)",
+				formatFloat(aiResult.SuggestedSL, precision), formatFloat(dist, logPrecision(precision)), formatFloat(atr, logPrecision(precision)))
 			return aiResult.SuggestedSL, true
 		}
-		log.Printf("[STRATEGY] ⚠️ AI 止损 %.2f 不合理 (距离=%.2f > 3×ATR=%.2f), 使用 ATR 计算", aiResult.SuggestedSL, dist, atr*3.0)
+		log.Printf("[STRATEGY] ⚠️ AI 止损 %s 不合理 (距离=%s > 3×ATR=%s), 使用 ATR 计算",
+			formatFloat(aiResult.SuggestedSL, precision), formatFloat(dist, logPrecision(precision)), formatFloat(atr*3.0, logPrecision(precision)))
 	}
 	// Fallback: ATR-based calculation
 	if side == "BUY" {
-		return round2(price - atr*atrMult), false
+		return roundToPrecision(price-atr*atrMult, precision), false
 	}
-	return round2(price + atr*atrMult), false
+	return roundToPrecision(price+atr*atrMult, precision), false
 }
 
 // checkM15Entry checks M15 bars for early entry confirmation.
@@ -157,6 +195,104 @@ func detectLastSwing(bars []domain.Bar, window int) (high, low float64, trend st
 	return
 }
 
+func pickSLTP(side string, price float64, last domain.Bar, atr float64, precision int, cfg StrategyConfig) (sl, tp1, tp2 float64, usedSR bool) {
+	side = strings.ToUpper(strings.TrimSpace(side))
+	if price <= 0 || atr <= 0 || math.IsNaN(price) || math.IsNaN(atr) || math.IsInf(price, 0) || math.IsInf(atr, 0) {
+		return 0, 0, 0, false
+	}
+
+	minDist := cfg.SRMinDistATR * atr
+	maxDist := cfg.SRMaxDistATR * atr
+	buffer := cfg.SRBufferATR * atr
+	if minDist <= 0 || maxDist <= 0 || minDist > maxDist {
+		return 0, 0, 0, false
+	}
+
+	closestLevel := func(levels []float64, wantBelow bool) float64 {
+		best := 0.0
+		bestDist := math.MaxFloat64
+		for _, level := range levels {
+			if level <= 0 || math.IsNaN(level) || math.IsInf(level, 0) {
+				continue
+			}
+			if wantBelow && level >= price {
+				continue
+			}
+			if !wantBelow && level <= price {
+				continue
+			}
+			dist := math.Abs(price - level)
+			if dist < minDist || dist > maxDist {
+				continue
+			}
+			if dist < bestDist {
+				best = level
+				bestDist = dist
+			}
+		}
+		return best
+	}
+
+	var slLevel, tpLevel float64
+	switch side {
+	case "BUY":
+		supports := []float64{last.EMA20, last.EMA50, last.BBLower, last.Fib618, last.Fib786, last.S1}
+		resistances := []float64{last.EMA20, last.BBUpper, last.Fib382, last.R1}
+		slLevel = closestLevel(supports, true)
+		tpLevel = closestLevel(resistances, false)
+		if slLevel <= 0 || tpLevel <= 0 {
+			return roundToPrecision(price-atr*cfg.PullbackSLATR, precision),
+				roundToPrecision(price+atr*cfg.PullbackTP1ATR, precision),
+				roundToPrecision(price+atr*cfg.PullbackTP2ATR, precision), false
+		}
+		sl = roundToPrecision(slLevel-buffer, precision)
+		if sl >= price || math.Abs(price-sl) < minDist {
+			return roundToPrecision(price-atr*cfg.PullbackSLATR, precision),
+				roundToPrecision(price+atr*cfg.PullbackTP1ATR, precision),
+				roundToPrecision(price+atr*cfg.PullbackTP2ATR, precision), false
+		}
+		tp1 = roundToPrecision(tpLevel, precision)
+		tp2 = tp1
+		if second := closestLevel([]float64{last.BBUpper, last.Fib382, last.R1}, false); second > tpLevel {
+			tp2 = roundToPrecision(second, precision)
+		}
+		if tp2 < tp1 {
+			tp2 = tp1
+		}
+		return sl, tp1, tp2, true
+	case "SELL":
+		resistances := []float64{last.EMA20, last.BBUpper, last.Fib382, last.R1}
+		supports := []float64{last.EMA20, last.BBLower, last.Fib618, last.Fib786, last.S1}
+		slLevel = closestLevel(resistances, false)
+		tpLevel = closestLevel(supports, true)
+		if slLevel <= 0 || tpLevel <= 0 {
+			return roundToPrecision(price+atr*cfg.PullbackSLATR, precision),
+				roundToPrecision(price-atr*cfg.PullbackTP1ATR, precision),
+				roundToPrecision(price-atr*cfg.PullbackTP2ATR, precision), false
+		}
+		sl = roundToPrecision(slLevel+buffer, precision)
+		if sl <= price || math.Abs(price-sl) < minDist {
+			return roundToPrecision(price+atr*cfg.PullbackSLATR, precision),
+				roundToPrecision(price-atr*cfg.PullbackTP1ATR, precision),
+				roundToPrecision(price-atr*cfg.PullbackTP2ATR, precision), false
+		}
+		tp1 = roundToPrecision(tpLevel, precision)
+		tp2 = tp1
+		for _, level := range []float64{last.BBLower, last.Fib618, last.Fib786, last.S1} {
+			if level > 0 && level < tpLevel && math.Abs(price-level) >= minDist && math.Abs(price-level) <= maxDist {
+				tp2 = roundToPrecision(level, precision)
+				break
+			}
+		}
+		if tp2 > tp1 {
+			tp2 = tp1
+		}
+		return sl, tp1, tp2, true
+	default:
+		return 0, 0, 0, false
+	}
+}
+
 func (e Engine) applyFibExtensionTP(signal *domain.Signal, h4, h1 []domain.Bar, price, atr float64) *domain.Signal {
 	if signal == nil || !e.Config.FibExtension.Enabled {
 		return signal
@@ -181,33 +317,46 @@ func (e Engine) applyFibExtensionTP(signal *domain.Signal, h4, h1 []domain.Bar, 
 	}
 
 	ext := indicator.CalculateFibExtension(swingHigh, swingLow, trend)
-
+	precision := e.Precision
+	if precision <= 0 {
+		precision = 2
+	}
 	if signal.Side == "BUY" && trend == "UP" {
 		if ext.Level1272 > price && ext.Level1272-price > atr*0.5 {
-			signal.TP1 = round2(ext.Level1272)
+			signal.TP1 = roundToPrecision(ext.Level1272, precision)
 		}
 		if ext.Level1618 > price && ext.Level1618-price > atr*1.0 {
-			signal.TP2 = round2(ext.Level1618)
+			signal.TP2 = roundToPrecision(ext.Level1618, precision)
 		}
 	} else if signal.Side == "SELL" && trend == "DOWN" {
 		if ext.Level1272 < price && price-ext.Level1272 > atr*0.5 {
-			signal.TP1 = round2(ext.Level1272)
+			signal.TP1 = roundToPrecision(ext.Level1272, precision)
 		}
 		if ext.Level1618 < price && price-ext.Level1618 > atr*1.0 {
-			signal.TP2 = round2(ext.Level1618)
+			signal.TP2 = roundToPrecision(ext.Level1618, precision)
 		}
 	}
 
-	log.Printf("[STRATEGY] 🎯 Fib扩展位: Side=%s Trend=%s SwingH=%.2f SwingL=%.2f ADX=%.1f TP1=%.2f TP2=%.2f",
-		signal.Side, trend, swingHigh, swingLow, adx, signal.TP1, signal.TP2)
+	log.Printf("[STRATEGY] 🎯 Fib扩展位: Side=%s Trend=%s SwingH=%s SwingL=%s ADX=%.1f TP1=%s TP2=%s",
+		signal.Side, trend, formatFloat(swingHigh, precision), formatFloat(swingLow, precision), adx,
+		formatFloat(signal.TP1, precision), formatFloat(signal.TP2, precision))
 
 	return signal
 }
 
 func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []domain.AnalysisLog) {
 	logs := make([]domain.AnalysisLog, 0, 8)
-	log.Printf("[STRATEGY] 🔍 开始分析 account=%s | price=%.2f | H1 bars=%d | positions=%d",
-		snapshot.AccountID, snapshot.CurrentPrice, len(snapshot.Bars["H1"]), len(snapshot.Positions))
+	precision := e.Precision
+	if snapshot.Symbol != "" {
+		precision = roundingPrecision(domain.BaseSymbol(snapshot.Symbol))
+	}
+	if precision <= 0 {
+		precision = 2
+	}
+	e.Precision = precision
+	logPrec := logPrecision(precision)
+	log.Printf("[STRATEGY] 🔍 开始分析 account=%s | price=%s | H1 bars=%d | positions=%d",
+		snapshot.AccountID, formatFloat(snapshot.CurrentPrice, precision), len(snapshot.Bars["H1"]), len(snapshot.Positions))
 
 	h1 := snapshot.Bars["H1"]
 	m30 := snapshot.Bars["M30"]
@@ -229,11 +378,11 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	price := snapshot.CurrentPrice
 	atr := h1[len(h1)-1].ATR
 	if price <= 0 || atr <= 0 || math.IsNaN(price) || math.IsNaN(atr) {
-		log.Printf("[STRATEGY] ⚠️ 价格或ATR异常: price=%.2f, ATR=%.2f", price, atr)
+		log.Printf("[STRATEGY] ⚠️ 价格或ATR异常: price=%s, ATR=%s", formatFloat(price, precision), formatFloat(atr, logPrec))
 		logs = append(logs, domain.AnalysisLog{
 			Level:    "warn",
 			Strategy: "系统",
-			Message:  fmt.Sprintf("价格或ATR异常: price=%.2f, ATR=%.2f", price, atr),
+			Message:  fmt.Sprintf("价格或ATR异常: price=%s, ATR=%s", formatFloat(price, precision), formatFloat(atr, logPrec)),
 		})
 		return nil, logs
 	}
@@ -303,12 +452,12 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		Level:    "info",
 		Strategy: "市场",
 		Message: fmt.Sprintf(
-			"Price=%.2f | ATR=%.2f | RSI=%.1f | ADX=%.1f | EMA趋势(H1)=%s | H4=%s(ADX=%.1f) | MACD柱=%.2f",
-			price, atr, last.RSI, last.ADX, trend, h4Trend, h4ADX, last.MACDHist,
+			"Price=%s | ATR=%s | RSI=%.1f | ADX=%.1f | EMA趋势(H1)=%s | H4=%s(ADX=%.1f) | MACD柱=%.2f",
+			formatFloat(price, precision), formatFloat(atr, logPrec), last.RSI, last.ADX, trend, h4Trend, h4ADX, last.MACDHist,
 		),
 	})
-	log.Printf("[STRATEGY] 📊 市场状态 | Price=%.2f | ATR=%.2f | RSI=%.1f | ADX=%.1f | EMA趋势(H1)=%s | H4=%s(ADX=%.1f) | MACD柱=%.2f",
-		price, atr, last.RSI, last.ADX, trend, h4Trend, h4ADX, last.MACDHist)
+	log.Printf("[STRATEGY] 📊 市场状态 | Price=%s | ATR=%s | RSI=%.1f | ADX=%.1f | EMA趋势(H1)=%s | H4=%s(ADX=%.1f) | MACD柱=%.2f",
+		formatFloat(price, precision), formatFloat(atr, logPrec), last.RSI, last.ADX, trend, h4Trend, h4ADX, last.MACDHist)
 
 	signals := make([]domain.Signal, 0, 4)
 
@@ -524,17 +673,20 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		if dist >= atr*0.3 && dist <= atr*3.0 && sideValid {
 			originalSL := best.StopLoss
 			best.StopLoss = aiSL
-			log.Printf("[STRATEGY] 🤖 AI 止损覆盖: %.2f → %.2f (距离=%.2f, ATR=%.2f)", originalSL, aiSL, dist, atr)
+			log.Printf("[STRATEGY] 🤖 AI 止损覆盖: %s → %s (距离=%s, ATR=%s)",
+				formatFloat(originalSL, precision), formatFloat(aiSL, precision), formatFloat(dist, logPrec), formatFloat(atr, logPrec))
 			logs = append(logs, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: "AI止损",
-				Message:  fmt.Sprintf("🤖 AI止损覆盖: %.2f → %.2f (基于支撑阻力位)", originalSL, aiSL),
+				Message:  fmt.Sprintf("🤖 AI止损覆盖: %s → %s (基于支撑阻力位)", formatFloat(originalSL, precision), formatFloat(aiSL, precision)),
 			})
 		} else {
 			if !sideValid {
-				log.Printf("[STRATEGY] ⚠️ AI 止损 %.2f 方向不合法 (side=%s, entry=%.2f), 保持 ATR 止损 %.2f", aiSL, best.Side, best.Entry, best.StopLoss)
+				log.Printf("[STRATEGY] ⚠️ AI 止损 %s 方向不合法 (side=%s, entry=%s), 保持 ATR 止损 %s",
+					formatFloat(aiSL, precision), best.Side, formatFloat(best.Entry, precision), formatFloat(best.StopLoss, precision))
 			} else {
-				log.Printf("[STRATEGY] ⚠️ AI 止损 %.2f 距离不合理 (距离=%.2f, ATR=%.2f), 保持 ATR 止损 %.2f", aiSL, dist, atr, best.StopLoss)
+				log.Printf("[STRATEGY] ⚠️ AI 止损 %s 距离不合理 (距离=%s, ATR=%s), 保持 ATR 止损 %s",
+					formatFloat(aiSL, precision), formatFloat(dist, logPrec), formatFloat(atr, logPrec), formatFloat(best.StopLoss, precision))
 			}
 		}
 	}
@@ -554,18 +706,23 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		Level:    "signal",
 		Strategy: "汇总",
 		Message: fmt.Sprintf(
-			"✅ 发出信号: %s @ %.2f | SL=%.2f | 策略=%s | 评分=%d",
-			best.Side, best.Entry, best.StopLoss, best.Strategy, best.Score,
+			"✅ 发出信号: %s @ %s | SL=%s | 策略=%s | 评分=%d",
+			best.Side, formatFloat(best.Entry, precision), formatFloat(best.StopLoss, precision), best.Strategy, best.Score,
 		),
 	})
-	log.Printf("[STRATEGY] ✅ 发出信号: %s @ %.2f | SL=%.2f | TP1=%.2f | TP2=%.2f | 策略=%s | 评分=%d",
-		best.Side, best.Entry, best.StopLoss, best.TP1, best.TP2, best.Strategy, best.Score)
+	log.Printf("[STRATEGY] ✅ 发出信号: %s @ %s | SL=%s | TP1=%s | TP2=%s | 策略=%s | 评分=%d",
+		best.Side, formatFloat(best.Entry, precision), formatFloat(best.StopLoss, precision),
+		formatFloat(best.TP1, precision), formatFloat(best.TP2, precision), best.Strategy, best.Score)
 	return &best, logs
 }
 
 func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.Bar, m15 []domain.Bar) (*domain.Signal, domain.AnalysisLog) {
 	cfg := e.Config
 	last := h1[len(h1)-1]
+	precision := e.Precision
+	if precision <= 0 {
+		precision = 2
+	}
 
 	name := "趋势回调"
 
@@ -628,11 +785,16 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.B
 		signal := &domain.Signal{
 			Side:     side,
 			Entry:    price,
-			StopLoss: round2(price - atr*cfg.PullbackSLATR),
-			TP1:      round2(price + atr*cfg.PullbackTP1ATR),
-			TP2:      round2(price + atr*cfg.PullbackTP2ATR),
+			StopLoss: roundToPrecision(price-atr*cfg.PullbackSLATR, precision),
+			TP1:      roundToPrecision(price+atr*cfg.PullbackTP1ATR, precision),
+			TP2:      roundToPrecision(price+atr*cfg.PullbackTP2ATR, precision),
 			Score:    min(score, 10),
 			Strategy: "pullback",
+		}
+		if sl, tp1, tp2, ok := pickSLTP(side, price, last, atr, precision, cfg); ok {
+			signal.StopLoss = sl
+			signal.TP1 = tp1
+			signal.TP2 = tp2
 		}
 
 		if e.Config.PullbackFib.RetracementEnabled {
@@ -695,9 +857,9 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.B
 			score++
 			signal.Score = min(score, 10)
 			if side == "BUY" {
-				signal.StopLoss = round2(last.Fib786 - atr*fibCfg.StopLossOuterATR)
+				signal.StopLoss = roundToPrecision(last.Fib786-atr*fibCfg.StopLossOuterATR, precision)
 			} else {
-				signal.StopLoss = round2(last.Fib786 + atr*fibCfg.StopLossOuterATR)
+				signal.StopLoss = roundToPrecision(last.Fib786+atr*fibCfg.StopLossOuterATR, precision)
 			}
 			signal = e.applyFibExtensionTP(signal, h4, h1, price, atr)
 			signal.Strategy = "pullback_fib"
@@ -752,11 +914,16 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.B
 		signal := &domain.Signal{
 			Side:     side,
 			Entry:    price,
-			StopLoss: round2(price + atr*cfg.PullbackSLATR),
-			TP1:      round2(price - atr*cfg.PullbackTP1ATR),
-			TP2:      round2(price - atr*cfg.PullbackTP2ATR),
+			StopLoss: roundToPrecision(price+atr*cfg.PullbackSLATR, precision),
+			TP1:      roundToPrecision(price-atr*cfg.PullbackTP1ATR, precision),
+			TP2:      roundToPrecision(price-atr*cfg.PullbackTP2ATR, precision),
 			Score:    min(score, 10),
 			Strategy: "pullback",
+		}
+		if sl, tp1, tp2, ok := pickSLTP(side, price, last, atr, precision, cfg); ok {
+			signal.StopLoss = sl
+			signal.TP1 = tp1
+			signal.TP2 = tp2
 		}
 
 		if e.Config.PullbackFib.RetracementEnabled {
@@ -819,9 +986,9 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.B
 			score++
 			signal.Score = min(score, 10)
 			if side == "BUY" {
-				signal.StopLoss = round2(last.Fib786 - atr*fibCfg.StopLossOuterATR)
+				signal.StopLoss = roundToPrecision(last.Fib786-atr*fibCfg.StopLossOuterATR, precision)
 			} else {
-				signal.StopLoss = round2(last.Fib786 + atr*fibCfg.StopLossOuterATR)
+				signal.StopLoss = roundToPrecision(last.Fib786+atr*fibCfg.StopLossOuterATR, precision)
 			}
 			signal = e.applyFibExtensionTP(signal, h4, h1, price, atr)
 			signal.Strategy = "pullback_fib"
@@ -846,6 +1013,10 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.B
 
 func (e Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
 	cfg := e.Config
+	precision := e.Precision
+	if precision <= 0 {
+		precision = 2
+	}
 	lookback := cfg.BreakoutRetestLookback
 	confirmWindow := cfg.BreakoutRetestConfirmWindow
 	name := "突破回踩"
@@ -930,19 +1101,25 @@ func (e Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domai
 			score++
 			details = append(details, fmt.Sprintf("回踩确认%d根", touchCount1))
 		}
-		return &domain.Signal{
-				Side:     "BUY",
-				Entry:    price,
-				StopLoss: round2(resistance - atr*cfg.BreakoutRetestSLATR),
-				TP1:      round2(price + atr*cfg.BreakoutRetestTP1ATR),
-				TP2:      round2(price + atr*cfg.BreakoutRetestTP2ATR),
-				Score:    min(score, 10),
-				Strategy: "breakout_retest",
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message:  fmt.Sprintf("🟢 BUY 评分=%d | 阻力位=%.2f 突破后回踩 dist=%.2f | %s", score, resistance, distRes, strings.Join(details, " | ")),
-			}
+		signal := &domain.Signal{
+			Side:     "BUY",
+			Entry:    price,
+			StopLoss: roundToPrecision(resistance-atr*cfg.BreakoutRetestSLATR, precision),
+			TP1:      roundToPrecision(price+atr*cfg.BreakoutRetestTP1ATR, precision),
+			TP2:      roundToPrecision(price+atr*cfg.BreakoutRetestTP2ATR, precision),
+			Score:    min(score, 10),
+			Strategy: "breakout_retest",
+		}
+		if sl, tp1, tp2, ok := pickSLTP("BUY", price, last, atr, precision, cfg); ok {
+			signal.StopLoss = sl
+			signal.TP1 = tp1
+			signal.TP2 = tp2
+		}
+		return signal, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message:  fmt.Sprintf("🟢 BUY 评分=%d | 阻力位=%.2f 突破后回踩 dist=%.2f | %s", score, resistance, distRes, strings.Join(details, " | ")),
+		}
 	}
 
 	distSup := math.Abs(price - support)
@@ -968,19 +1145,25 @@ func (e Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domai
 			score++
 			details = append(details, fmt.Sprintf("RSI=%.1f", last.RSI))
 		}
-		return &domain.Signal{
-				Side:     "SELL",
-				Entry:    price,
-				StopLoss: round2(support + atr*cfg.BreakoutRetestSLATR),
-				TP1:      round2(price - atr*cfg.BreakoutRetestTP1ATR),
-				TP2:      round2(price - atr*cfg.BreakoutRetestTP2ATR),
-				Score:    min(score, 10),
-				Strategy: "breakout_retest",
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message:  fmt.Sprintf("🔴 SELL 评分=%d | 支撑位=%.2f 突破后回踩 dist=%.2f | %s", score, support, distSup, strings.Join(details, " | ")),
-			}
+		signal := &domain.Signal{
+			Side:     "SELL",
+			Entry:    price,
+			StopLoss: roundToPrecision(support+atr*cfg.BreakoutRetestSLATR, precision),
+			TP1:      roundToPrecision(price-atr*cfg.BreakoutRetestTP1ATR, precision),
+			TP2:      roundToPrecision(price-atr*cfg.BreakoutRetestTP2ATR, precision),
+			Score:    min(score, 10),
+			Strategy: "breakout_retest",
+		}
+		if sl, tp1, tp2, ok := pickSLTP("SELL", price, last, atr, precision, cfg); ok {
+			signal.StopLoss = sl
+			signal.TP1 = tp1
+			signal.TP2 = tp2
+		}
+		return signal, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message:  fmt.Sprintf("🔴 SELL 评分=%d | 支撑位=%.2f 突破后回踩 dist=%.2f | %s", score, support, distSup, strings.Join(details, " | ")),
+		}
 	}
 
 	message := fmt.Sprintf("阻力=%.2f 支撑=%.2f", resistance, support)
@@ -997,6 +1180,10 @@ func (e Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domai
 
 func (e Engine) checkDivergence(h1, _ []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
 	cfg := e.Config
+	precision := e.Precision
+	if precision <= 0 {
+		precision = 2
+	}
 	name := "RSI背离"
 	if len(h1) < 30 {
 		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "数据不足 ⏭"}
@@ -1045,23 +1232,29 @@ func (e Engine) checkDivergence(h1, _ []domain.Bar, price, atr float64) (*domain
 			score++
 			details = append(details, fmt.Sprintf("StochK=%.0f", last.StochK))
 		}
-		return &domain.Signal{
-				Side:     "BUY",
-				Entry:    price,
-				StopLoss: round2(recentLow - atr*cfg.DivergenceSLATR),
-				TP1:      round2(price + atr*cfg.DivergenceTP1ATR),
-				TP2:      round2(price + atr*cfg.DivergenceTP2ATR),
-				Score:    min(score, 10),
-				Strategy: "divergence",
-				ATRMult:  cfg.DivergenceSLATR,
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message: fmt.Sprintf(
-					"🟢 BUY 评分=%d | 看涨背离: 价格新低%.2f<%.2f RSI抬高%.1f>%.1f | %s",
-					score, recentLow, prevLow, recentRSILow, prevRSILow, strings.Join(details, " | "),
-				),
-			}
+		signal := &domain.Signal{
+			Side:     "BUY",
+			Entry:    price,
+			StopLoss: roundToPrecision(recentLow-atr*cfg.DivergenceSLATR, precision),
+			TP1:      roundToPrecision(price+atr*cfg.DivergenceTP1ATR, precision),
+			TP2:      roundToPrecision(price+atr*cfg.DivergenceTP2ATR, precision),
+			Score:    min(score, 10),
+			Strategy: "divergence",
+			ATRMult:  cfg.DivergenceSLATR,
+		}
+		if sl, tp1, tp2, ok := pickSLTP("BUY", price, last, atr, precision, cfg); ok {
+			signal.StopLoss = sl
+			signal.TP1 = tp1
+			signal.TP2 = tp2
+		}
+		return signal, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message: fmt.Sprintf(
+				"🟢 BUY 评分=%d | 看涨背离: 价格新低%.2f<%.2f RSI抬高%.1f>%.1f | %s",
+				score, recentLow, prevLow, recentRSILow, prevRSILow, strings.Join(details, " | "),
+			),
+		}
 	}
 
 	bearDiv := recentHigh > prevHigh && recentRSIHigh < prevRSIHigh
@@ -1090,23 +1283,29 @@ func (e Engine) checkDivergence(h1, _ []domain.Bar, price, atr float64) (*domain
 			score++
 			details = append(details, fmt.Sprintf("StochK=%.0f", last.StochK))
 		}
-		return &domain.Signal{
-				Side:     "SELL",
-				Entry:    price,
-				StopLoss: round2(recentHigh + atr*cfg.DivergenceSLATR),
-				TP1:      round2(price - atr*cfg.DivergenceTP1ATR),
-				TP2:      round2(price - atr*cfg.DivergenceTP2ATR),
-				Score:    min(score, 10),
-				Strategy: "divergence",
-				ATRMult:  cfg.DivergenceSLATR,
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message: fmt.Sprintf(
-					"🔴 SELL 评分=%d | 看跌背离: 价格新高%.2f>%.2f RSI降低%.1f<%.1f | %s",
-					score, recentHigh, prevHigh, recentRSIHigh, prevRSIHigh, strings.Join(details, " | "),
-				),
-			}
+		signal := &domain.Signal{
+			Side:     "SELL",
+			Entry:    price,
+			StopLoss: roundToPrecision(recentHigh+atr*cfg.DivergenceSLATR, precision),
+			TP1:      roundToPrecision(price-atr*cfg.DivergenceTP1ATR, precision),
+			TP2:      roundToPrecision(price-atr*cfg.DivergenceTP2ATR, precision),
+			Score:    min(score, 10),
+			Strategy: "divergence",
+			ATRMult:  cfg.DivergenceSLATR,
+		}
+		if sl, tp1, tp2, ok := pickSLTP("SELL", price, last, atr, precision, cfg); ok {
+			signal.StopLoss = sl
+			signal.TP1 = tp1
+			signal.TP2 = tp2
+		}
+		return signal, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message: fmt.Sprintf(
+				"🔴 SELL 评分=%d | 看跌背离: 价格新高%.2f>%.2f RSI降低%.1f<%.1f | %s",
+				score, recentHigh, prevHigh, recentRSIHigh, prevRSIHigh, strings.Join(details, " | "),
+			),
+		}
 	}
 
 	message := fmt.Sprintf("RSI=%.1f", last.RSI)
@@ -1534,7 +1733,7 @@ func (e Engine) checkScaleIn(h1 []domain.Bar, price, atr float64, positions []do
 	if newLots < 0.01 {
 		newLots = 0.01
 	}
-	weightedAvg, unifiedSL := CalculateUnifiedSL(sameDirection, price, newLots, atr, cfg.ScaleInSLATR, side)
+	weightedAvg, unifiedSL := CalculateUnifiedSL(sameDirection, price, newLots, atr, cfg.ScaleInSLATR, side, e.Precision)
 
 	score := 5
 	if last.ADX > 30 {
@@ -1558,8 +1757,8 @@ func (e Engine) checkScaleIn(h1 []domain.Bar, price, atr float64, positions []do
 		Side:                side,
 		Entry:               price,
 		StopLoss:            unifiedSL,
-		TP1:                 scaleInTakeProfit(weightedAvg, atr, cfg.ScaleInTP1ATR, side),
-		TP2:                 scaleInTakeProfit(weightedAvg, atr, cfg.ScaleInTP2ATR, side),
+		TP1:                 scaleInTakeProfit(weightedAvg, atr, cfg.ScaleInTP1ATR, side, e.Precision),
+		TP2:                 scaleInTakeProfit(weightedAvg, atr, cfg.ScaleInTP2ATR, side, e.Precision),
 		Score:               score,
 		Strategy:            "scale_in",
 		ATR:                 atr,
@@ -1589,11 +1788,11 @@ func nearAnyLevel(price, threshold float64, levels ...float64) bool {
 	return false
 }
 
-func scaleInTakeProfit(weightedAvg, atr, mult float64, side string) float64 {
+func scaleInTakeProfit(weightedAvg, atr, mult float64, side string, precision int) float64 {
 	if side == "BUY" {
-		return round2(weightedAvg + atr*mult)
+		return roundToPrecision(weightedAvg+atr*mult, precision)
 	}
-	return round2(weightedAvg - atr*mult)
+	return roundToPrecision(weightedAvg-atr*mult, precision)
 }
 
 func min(a, b int) int {

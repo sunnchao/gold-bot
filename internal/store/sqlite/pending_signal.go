@@ -29,23 +29,9 @@ func (r *PendingSignalRepository) SavePendingSignal(ctx context.Context, signal 
 	if signal.ID == 0 {
 		query, args := buildPendingSignalInsert(signal)
 
-		if isPg() {
-			if err := r.db.QueryRowContext(ctx, query, args...).Scan(&signal.ID); err != nil {
-				return fmt.Errorf("insert pending signal: %w", err)
-			}
-			return r.recordCandidateDecision(ctx, signal)
-		}
-
-		result, err := r.db.ExecContext(ctx, query, args...)
-		if err != nil {
+		if err := r.db.QueryRowContext(ctx, query, args...).Scan(&signal.ID); err != nil {
 			return fmt.Errorf("insert pending signal: %w", err)
 		}
-
-		id, err := result.LastInsertId()
-		if err != nil {
-			return fmt.Errorf("get last insert id: %w", err)
-		}
-		signal.ID = id
 		return r.recordCandidateDecision(ctx, signal)
 	}
 
@@ -118,11 +104,8 @@ func buildPendingSignalInsert(signal *domain.PendingSignal) (string, []any) {
 			` + ph(1) + pgText() + `, ` + ph(2) + pgText() + `, ` + ph(3) + pgText() + `,
 			` + ph(4) + `, ` + ph(5) + pgText() + `, ` + ph(6) + pgText() + `,
 			` + ph(7) + pgText() + `, ` + ph(8) + `, ` + ph(9) + `
-		)
+		) RETURNING id
 	`
-	if isPg() {
-		query += ` RETURNING id`
-	}
 
 	return query, []any{
 		signal.AccountID,

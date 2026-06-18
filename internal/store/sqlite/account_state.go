@@ -187,10 +187,7 @@ func (r *AccountRepository) GetStateSymbol(ctx context.Context, accountID, symbo
 
 // recentCutoff returns the SQL expression for "30 minutes ago" appropriate to the dialect.
 func recentCutoff() string {
-	if isPg() {
-		return "updated_at::timestamptz > NOW() - INTERVAL '30 minutes'"
-	}
-	return "updated_at > datetime('now', '-30 minutes')"
+	return "updated_at::timestamptz > NOW() - INTERVAL '30 minutes'"
 }
 
 // ListSymbols returns active symbols for a given account_id.

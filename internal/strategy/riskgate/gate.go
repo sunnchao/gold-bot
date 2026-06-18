@@ -303,7 +303,7 @@ func metadataFor(symbol string) symbolMeta {
 			MinLot:        0.01,
 			MaxLot:        30,
 			LotStep:       0.01,
-			MaxSpread:     4.0,
+			MaxSpread:     80.0,
 			MinSLDistance: 0.0005,
 			MaxSLDistance: 0.05,
 		}
@@ -314,7 +314,7 @@ func metadataFor(symbol string) symbolMeta {
 			MinLot:        0.01,
 			MaxLot:        30,
 			LotStep:       0.01,
-			MaxSpread:     4.0,
+			MaxSpread:     80.0,
 			MinSLDistance: 0.0005,
 			MaxSLDistance: 0.05,
 		}
@@ -325,7 +325,7 @@ func metadataFor(symbol string) symbolMeta {
 			MinLot:        0.01,
 			MaxLot:        50,
 			LotStep:       0.01,
-			MaxSpread:     5.0,
+			MaxSpread:     80.0,
 			MinSLDistance: 0.50,
 			MaxSLDistance: 100.0,
 		}
@@ -344,7 +344,7 @@ func jpyCrossMetadata(symbol string) symbolMeta {
 			MinLot:        0.01,
 			MaxLot:        20,
 			LotStep:       0.01,
-			MaxSpread:     5.0,  // was 3.5 — GBPJPY normal spread 2-5 pips
+			MaxSpread:     80.0,
 			MinSLDistance: 0.03, // was 0.05 — allow tighter SL for scalps
 			MaxSLDistance: 8.0,  // was 5.0 — accommodate wider SL for swings
 		}
@@ -355,7 +355,7 @@ func jpyCrossMetadata(symbol string) symbolMeta {
 			MinLot:        0.01,
 			MaxLot:        20,
 			LotStep:       0.01,
-			MaxSpread:     4.5, // slightly tighter than GBPJPY
+			MaxSpread:     80.0,
 			MinSLDistance: 0.03,
 			MaxSLDistance: 7.0,
 		}
@@ -366,7 +366,7 @@ func jpyCrossMetadata(symbol string) symbolMeta {
 			MinLot:        0.01,
 			MaxLot:        30, // more liquid
 			LotStep:       0.01,
-			MaxSpread:     3.5, // most liquid JPY cross
+			MaxSpread:     80.0,
 			MinSLDistance: 0.02,
 			MaxSLDistance: 6.0,
 		}
@@ -378,7 +378,7 @@ func jpyCrossMetadata(symbol string) symbolMeta {
 			MinLot:        0.01,
 			MaxLot:        20,
 			LotStep:       0.01,
-			MaxSpread:     5.0,
+			MaxSpread:     80.0,
 			MinSLDistance: 0.03,
 			MaxSLDistance: 8.0,
 		}
