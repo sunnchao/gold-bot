@@ -30,6 +30,7 @@ type TradePlan struct {
 	ReasonCodes   []string           `json:"reason_codes"`
 	Conflicts     []string           `json:"conflicts"`
 	Narrative     string             `json:"narrative"`
+	AddOn         bool               `json:"add_on"`
 }
 
 type TradePlanSummary struct {
@@ -97,6 +98,7 @@ func (p TradePlan) Validate(expectedAccountID, expectedSymbol string) error {
 		return fmt.Errorf("trade_plan.narrative is required")
 	}
 
+	// add_on is optional and intentionally not validated; absent JSON maps to false.
 	if p.Mode == "observe" || p.Mode == "veto" {
 		return nil
 	}
