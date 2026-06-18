@@ -18,7 +18,7 @@ import (
 )
 
 func TestAIResultDecisionTimelineRecordsAIResultAndRiskGate(t *testing.T) {
-	ts, decisions, _ := newAIDecisionTimelineServer(t)
+	ts, _, decisions, _ := newAIDecisionTimelineServer(t)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v2/ai_result/90011087/XAUUSD", bytes.NewBufferString(`{
@@ -120,7 +120,7 @@ func TestAIResultDecisionTimelineRecordsAIResultAndRiskGate(t *testing.T) {
 }
 
 func TestAIResultMalformedTradePlanStoresRawResultWithoutTimeline(t *testing.T) {
-	ts, decisions, _ := newAIDecisionTimelineServer(t)
+	ts, _, decisions, _ := newAIDecisionTimelineServer(t)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v2/ai_result/90011087/XAUUSD", bytes.NewBufferString(`{
@@ -186,7 +186,7 @@ func TestAIResultMalformedTradePlanStoresRawResultWithoutTimeline(t *testing.T) 
 }
 
 func TestAIApproveEnqueuesPendingCommand(t *testing.T) {
-	ts, _, commands := newAIDecisionTimelineServer(t)
+	ts, _, _, commands := newAIDecisionTimelineServer(t)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v2/ai_result/90011087/XAUUSD", bytes.NewBufferString(`{
@@ -254,8 +254,8 @@ func TestAIApproveEnqueuesPendingCommand(t *testing.T) {
 	if got := command.Payload["tp"]; got != 3350.79 {
 		t.Fatalf("payload.tp = %v, want 3350.79", got)
 	}
-	if got := command.Payload["lots"]; got != 1.89 {
-		t.Fatalf("payload.lots = %v, want 1.89", got)
+	if got := command.Payload["lots"]; got != 0.01 {
+		t.Fatalf("payload.lots = %v, want 0.01", got)
 	}
 	if got := command.Payload["confidence"]; got != float64(82) {
 		t.Fatalf("payload.confidence = %v, want 82", got)
@@ -269,7 +269,119 @@ func TestAIApproveEnqueuesPendingCommand(t *testing.T) {
 	}
 }
 
-func newAIDecisionTimelineServer(t *testing.T) (http.Handler, *sqlitestore.DecisionRepository, *sqlitestore.CommandRepository) {
+func TestAIApproveSkipsWhenSameSidePositionAlreadyOpen(t *testing.T) {
+	ts, accounts, _, commands := newAIDecisionTimelineServer(t)
+	now := time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)
+	if err := accounts.SavePositions(context.Background(), "90011087", "XAUUSD", []domain.Position{
+		{Ticket: 1001, Symbol: "XAUUSD", Type: "BUY", Lots: 0.10, OpenPrice: 3335.10},
+	}, now); err != nil {
+		t.Fatalf("SavePositions returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/ai_result/90011087/XAUUSD", bytes.NewBufferString(`{
+		"bias":"bullish",
+		"confidence":82,
+		"exit_suggestion":"hold",
+		"risk_alert":false,
+		"trade_plan":{
+			"schema_version":"trade_plan.v1",
+			"decision_id":"tpv1_ai_open_position_skip",
+			"account_id":"90011087",
+			"symbol":"XAUUSD",
+			"mode":"approve",
+			"side":"buy",
+			"confidence":82,
+			"entry_zone":{"min":3335.10,"max":3335.30},
+			"stop_loss":3328.126,
+			"take_profit":[3350.789],
+			"max_lots":3.77,
+			"expires_at":"2099-06-06T09:15:00Z",
+			"reason_codes":["mode.approve","side.buy"],
+			"conflicts":[],
+			"narrative":"skip duplicate when same-side position exists"
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Token", "user-token")
+
+	ts.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v2/ai_result status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	pending, err := commands.TakePending(context.Background(), "90011087", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("TakePending returned error: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("len(pending) = %d, want 0", len(pending))
+	}
+}
+
+func TestAIApproveSkipsWithinThirtyMinuteCooldown(t *testing.T) {
+	ts, _, _, commands := newAIDecisionTimelineServer(t)
+	firstRequest := func(decisionID string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v2/ai_result/90011087/XAUUSD", bytes.NewBufferString(`{
+			"bias":"bullish",
+			"confidence":82,
+			"exit_suggestion":"hold",
+			"risk_alert":false,
+			"trade_plan":{
+				"schema_version":"trade_plan.v1",
+				"decision_id":"`+decisionID+`",
+				"account_id":"90011087",
+				"symbol":"XAUUSD",
+				"mode":"approve",
+				"side":"buy",
+				"confidence":82,
+				"entry_zone":{"min":3335.10,"max":3335.30},
+				"stop_loss":3328.126,
+				"take_profit":[3350.789],
+				"max_lots":3.77,
+				"expires_at":"2099-06-06T09:15:00Z",
+				"reason_codes":["mode.approve","side.buy"],
+				"conflicts":[],
+				"narrative":"cooldown duplicate prevention"
+			}
+		}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Token", "user-token")
+		ts.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := firstRequest("tpv1_ai_cooldown_1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first POST /api/v2/ai_result status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	deliveredAt := time.Date(2026, 6, 15, 9, 1, 0, 0, time.UTC)
+	firstPending, err := commands.TakePending(context.Background(), "90011087", deliveredAt)
+	if err != nil {
+		t.Fatalf("first TakePending returned error: %v", err)
+	}
+	if len(firstPending) != 1 {
+		t.Fatalf("len(firstPending) = %d, want 1", len(firstPending))
+	}
+
+	rec = firstRequest("tpv1_ai_cooldown_2")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second POST /api/v2/ai_result status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	secondPending, err := commands.TakePending(context.Background(), "90011087", deliveredAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("second TakePending returned error: %v", err)
+	}
+	if len(secondPending) != 0 {
+		t.Fatalf("len(secondPending) = %d, want 0", len(secondPending))
+	}
+}
+
+func newAIDecisionTimelineServer(t *testing.T) (http.Handler, *sqlitestore.AccountRepository, *sqlitestore.DecisionRepository, *sqlitestore.CommandRepository) {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "api-ai-decisions.sqlite")
@@ -340,7 +452,7 @@ func newAIDecisionTimelineServer(t *testing.T) (http.Handler, *sqlitestore.Decis
 		Decisions: decisions,
 		Releases:  ea.NewLocalReleaseSource("."),
 	})
-	return mux, decisions, commands
+	return mux, accounts, decisions, commands
 }
 
 func assertDecisionEvent(t *testing.T, got domain.DecisionEvent, stage domain.DecisionStage, status domain.DecisionStatus, reasonCodes []string) {

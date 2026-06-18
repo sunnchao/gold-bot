@@ -44,6 +44,9 @@ CODEX_EA_FIX.md
 
 # Go / SQLite artifacts
 **/gold-bot
+server
+close_ai_positions
+cmd/close_ai_positions/
 data/gold_bolt.sqlite*
 *.test
 coverage.out

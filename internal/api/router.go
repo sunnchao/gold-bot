@@ -71,7 +71,7 @@ type Dependencies struct {
 
 func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 	auth := middleware{tokens: deps.Tokens}
-	aiHandler := aiHandler{deps: deps, now: time.Now}
+	aiHandler := aiHandler{deps: deps, now: time.Now, approveCooldown: newAIApproveCooldown()}
 	tokenHandler := tokenHandler{tokens: deps.Tokens, now: time.Now}
 	eaHandler := eaHandler{tokens: deps.Tokens, releases: deps.Releases}
 	accountsHandler := accountsHandler{deps: deps, now: time.Now}

@@ -96,16 +96,78 @@ func (r *CommandRepository) Enqueue(ctx context.Context, command domain.Command)
 
 func (r *CommandRepository) FindPendingAI(ctx context.Context, accountID, symbol, side string) (bool, error) {
 	return retrySQLiteBusyValue(func() (bool, error) {
-		var count int
-		query := `SELECT COUNT(*) FROM commands WHERE account_id=` + ph(1) + pgText() + ` AND status=` + ph(2) + pgText() + ` AND ` + jsonExtract("payload_json", "source") + `='ai_approve' AND ` + jsonExtract("payload_json", "symbol") + `=` + ph(3) + pgText() + ` AND ` + jsonExtract("payload_json", "type") + `=` + ph(4) + pgText() + ` AND (` + jsonExtract("payload_json", "expiration") + ` IS NULL OR ` + jsonExtract("payload_json", "expiration") + ` > ` + ph(5) + `)`
-		err := r.db.QueryRowContext(ctx, query, accountID, string(domain.CommandStatusPending), symbol, strings.ToUpper(side), time.Now().Unix()).Scan(&count)
+		rows, err := r.db.QueryContext(ctx, `
+			SELECT payload_json
+			FROM commands
+			WHERE account_id = `+ph(1)+pgText()+` AND status = `+ph(2)+pgText()+`
+		`, accountID, string(domain.CommandStatusPending))
 		if err != nil {
 			return false, err
 		}
-		return count > 0, nil
+		defer func() { _ = rows.Close() }()
+
+		nowUnix := time.Now().Unix()
+		wantSymbol := strings.ToUpper(strings.TrimSpace(symbol))
+		wantSide := strings.ToUpper(strings.TrimSpace(side))
+		for rows.Next() {
+			var payloadJSON string
+			if err := rows.Scan(&payloadJSON); err != nil {
+				return false, err
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+				return false, fmt.Errorf("decode command payload: %w", err)
+			}
+			if payloadString(payload["source"]) != "ai_approve" {
+				continue
+			}
+			if !strings.EqualFold(payloadString(payload["symbol"]), wantSymbol) {
+				continue
+			}
+			if !strings.EqualFold(payloadString(payload["type"]), wantSide) {
+				continue
+			}
+			expiration, ok := payloadInt64(payload["expiration"])
+			if ok && expiration <= nowUnix {
+				continue
+			}
+			return true, nil
+		}
+		if err := rows.Err(); err != nil {
+			return false, err
+		}
+		return false, nil
 	}, func() error {
 		return fmt.Errorf("find pending ai for %s/%s/%s: sqlite busy after retries", accountID, symbol, side)
 	})
+}
+
+func payloadString(value any) string {
+	return strings.TrimSpace(fmt.Sprintf("%v", value))
+}
+
+func payloadInt64(value any) (int64, bool) {
+	switch v := value.(type) {
+	case nil:
+		return 0, false
+	case float64:
+		return int64(v), true
+	case float32:
+		return int64(v), true
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
+	}
 }
 
 func (r *CommandRepository) TakePending(ctx context.Context, accountID string, deliveredAt time.Time) ([]domain.Command, error) {

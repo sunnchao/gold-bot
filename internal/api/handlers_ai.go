@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"gold-bot/internal/domain"
@@ -17,8 +18,42 @@ import (
 )
 
 type aiHandler struct {
-	deps Dependencies
-	now  func() time.Time
+	deps            Dependencies
+	now             func() time.Time
+	approveCooldown *aiApproveCooldown
+}
+
+type aiApproveCooldown struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+func newAIApproveCooldown() *aiApproveCooldown {
+	return &aiApproveCooldown{last: make(map[string]time.Time)}
+}
+
+func (c *aiApproveCooldown) active(symbol string, now time.Time, cooldown time.Duration) bool {
+	if c == nil {
+		return false
+	}
+
+	key := strings.ToUpper(strings.TrimSpace(symbol))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	last, ok := c.last[key]
+	return ok && now.Sub(last) < cooldown
+}
+
+func (c *aiApproveCooldown) mark(symbol string, now time.Time) {
+	if c == nil {
+		return
+	}
+
+	key := strings.ToUpper(strings.TrimSpace(symbol))
+	c.mu.Lock()
+	c.last[key] = now
+	c.mu.Unlock()
 }
 
 // analysisPayload handles legacy endpoint /api/analysis_payload/{account_id}
@@ -255,11 +290,17 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 				if lots <= 0 {
 					log.Printf("[AI] ⚠️ account=%s/%s | AI approve 跳过: 手数过小 maxLots=%v",
 						accountID, symbol, tradePlan.MaxLots)
+				} else if hasOpenPositionOnSide(state.Positions, symbol, tradePlan.Side) {
+					log.Printf("[AI] ⏭️ account=%s/%s | AI approve 跳过: 已有同向持仓 side=%s",
+						accountID, symbol, tradePlan.Side)
 				} else if hasExisting, err := h.deps.Commands.FindPendingAI(r.Context(), accountID, symbol, tradePlan.Side); err == nil && hasExisting {
 					log.Printf("[AI] ⏭️ account=%s/%s | AI approve 跳过: 已有活跃AI挂单 side=%s",
 						accountID, symbol, tradePlan.Side)
 				} else if err != nil {
 					log.Printf("[AI] ⚠️ account=%s/%s | 检查AI挂单失败: %v", accountID, symbol, err)
+				} else if h.approveCooldown.active(symbol, now, 30*time.Minute) {
+					log.Printf("[AI] ⏭️ account=%s/%s | AI approve 跳过: 30分钟冷却中",
+						accountID, symbol)
 				} else {
 					h1Bars := state.Bars["H1"]
 					atr := 0.0
@@ -317,6 +358,7 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 						writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "ERROR", "message": err.Error()})
 						return
 					}
+					h.approveCooldown.mark(symbol, now)
 					log.Printf("[AI] 📌 account=%s/%s | AI approve 挂单已发送 | side=%s lots=%.2f entry=%.2f order_type=%s confidence=%d expires=%s",
 						accountID, symbol, side, lots, entry, orderType, tradePlan.Confidence, expiration.Format(time.RFC3339))
 				}
@@ -560,7 +602,30 @@ func calcAILots(maxLots float64) float64 {
 	if lots < 0.01 {
 		return 0
 	}
+	if lots > 0.01 {
+		return 0.01
+	}
 	return lots
+}
+
+func hasOpenPositionOnSide(positions []domain.Position, symbol, side string) bool {
+	wantSymbol := strings.ToUpper(strings.TrimSpace(symbol))
+	wantSide := strings.ToUpper(strings.TrimSpace(side))
+	if wantSide == "BUY" {
+		wantSide = "BUY"
+	} else if wantSide == "SELL" {
+		wantSide = "SELL"
+	}
+
+	for _, position := range positions {
+		if wantSymbol != "" && position.Symbol != "" && !strings.EqualFold(position.Symbol, wantSymbol) {
+			continue
+		}
+		if strings.EqualFold(position.Type, wantSide) {
+			return true
+		}
+	}
+	return false
 }
 
 // pickEntryPrice returns the midpoint of an entry zone.
