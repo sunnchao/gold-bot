@@ -417,21 +417,10 @@ int OnInit()
    Print("=============================================");
    
    dailyStartEquity = AccountEquity();
-   
-   // 注册账户信息（含 broker 信息），失败时由 OnTick 每 5 秒重试
-   if(!RegisterAccount())
-   {
-      gbRegistered = false;
-      Print("⚠️ 注册失败，OnTick 将每 5 秒重试...");
-   }
-   else
-   {
-      // 注册成功后再发送初始数据
-      SendHeartbeat();
-      SendAllBars();
-      SendPositions();
-   }
-   
+
+   // 注册和初始化数据发送由 OnTick 处理（避免 OnInit 阻塞）
+   Print("⏳ 等待首次 Tick 后注册并发送初始数据...");
+
    return INIT_SUCCEEDED;
 }
 
