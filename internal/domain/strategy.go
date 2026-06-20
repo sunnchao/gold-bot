@@ -169,6 +169,7 @@ type Position struct {
 	OpenTime  int64   `json:"open_time,omitempty"`
 	Comment   string  `json:"comment,omitempty"`
 	Magic     int     `json:"magic,omitempty"`
+	Strategy  string  `json:"strategy,omitempty"`
 }
 
 type AnalysisSnapshot struct {
@@ -225,6 +226,7 @@ type Signal struct {
 	TP2                 float64         `json:"tp2"`
 	Score               int             `json:"score"`
 	Strategy            string          `json:"strategy"`
+	FibEnhanced         bool            `json:"fib_enhanced,omitempty"`
 	ATR                 float64         `json:"atr,omitempty"`
 	ATRMult             float64         `json:"atr_mult,omitempty"`
 	ScaleInParentTicket int64           `json:"scale_in_parent_ticket,omitempty"`

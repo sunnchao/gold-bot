@@ -236,6 +236,37 @@ func TestLiveTradingExecutorOnBarsEnqueuesSignalCommand(t *testing.T) {
 	}
 }
 
+func TestLiveTradingExecutorBuildSignalCommandIncludesFibEnhancedFlag(t *testing.T) {
+	executor := &LiveTradingExecutor{
+		now: func() time.Time { return time.Date(2026, time.April, 18, 10, 2, 0, 0, time.UTC) },
+	}
+
+	command := executor.buildSignalCommand(
+		"90011087",
+		"XAUUSD",
+		domain.Signal{
+			Side:        "BUY",
+			Entry:       3335.7,
+			StopLoss:    3331.2,
+			TP1:         3339.8,
+			TP2:         3344.1,
+			Score:       8,
+			Strategy:    "pullback",
+			FibEnhanced: true,
+		},
+		map[string][]domain.Bar{
+			"H1": {{Time: "2026.04.18 10:00"}},
+		},
+		"bars",
+		3335.6,
+		1.5,
+	)
+
+	if got := command.Payload["fib_enhanced"]; got != true {
+		t.Fatalf("payload fib_enhanced = %#v, want true", got)
+	}
+}
+
 func TestBarsThenPollReturnsExecutorSignalPayloadCompatibleWithEA(t *testing.T) {
 	_, db, accounts, tokens, commands := newLegacyLiveServer(t, nil)
 	ctx := context.Background()

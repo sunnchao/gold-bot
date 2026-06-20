@@ -32,7 +32,7 @@ func TestEvaluateRejectsTradeabilityFailures(t *testing.T) {
 		},
 		{
 			name:     "wide spread",
-			mutate:   func(input *Input) { input.State.Tick.Spread = 8.1 },
+			mutate:   func(input *Input) { input.State.Tick.Spread = 80.1 },
 			wantCode: "spread.too_wide",
 		},
 		{
@@ -93,19 +93,46 @@ func TestEvaluateRejectsUnapprovedHedgeOrAdd(t *testing.T) {
 	now := time.Date(2026, 6, 6, 9, 0, 0, 0, time.UTC)
 
 	testCases := []struct {
-		name     string
-		position domain.Position
-		wantCode string
+		name           string
+		position       domain.Position
+		sourceStrategy string
+		wantCode       string
 	}{
 		{
-			name:     "same side add",
-			position: domain.Position{Ticket: 123456, Symbol: "XAUUSD", Type: "BUY", Lots: 0.10},
-			wantCode: "position.add_not_allowed",
+			name:           "same side add - same strategy",
+			position:       domain.Position{Ticket: 123456, Symbol: "XAUUSD", Type: "BUY", Lots: 0.10, Strategy: "pullback"},
+			sourceStrategy: "pullback",
+			wantCode:       "position.add_not_allowed",
 		},
 		{
-			name:     "opposite side hedge",
-			position: domain.Position{Ticket: 123456, Symbol: "XAUUSD", Type: "SELL", Lots: 0.10},
-			wantCode: "position.hedge_not_allowed",
+			name:           "opposite side hedge - same strategy",
+			position:       domain.Position{Ticket: 123456, Symbol: "XAUUSD", Type: "SELL", Lots: 0.10, Strategy: "pullback"},
+			sourceStrategy: "pullback",
+			wantCode:       "position.hedge_not_allowed",
+		},
+		{
+			name:           "same side add - different strategy should pass",
+			position:       domain.Position{Ticket: 123456, Symbol: "XAUUSD", Type: "BUY", Lots: 0.10, Strategy: "pullback"},
+			sourceStrategy: "ai_signal",
+			wantCode:       "",
+		},
+		{
+			name:           "opposite side hedge - different strategy should pass",
+			position:       domain.Position{Ticket: 123456, Symbol: "XAUUSD", Type: "SELL", Lots: 0.10, Strategy: "pullback"},
+			sourceStrategy: "ai_signal",
+			wantCode:       "",
+		},
+		{
+			name:           "same side add - position has no strategy backward compat",
+			position:       domain.Position{Ticket: 123456, Symbol: "XAUUSD", Type: "BUY", Lots: 0.10},
+			sourceStrategy: "ai_signal",
+			wantCode:       "position.add_not_allowed",
+		},
+		{
+			name:           "same side add - input has no source strategy backward compat",
+			position:       domain.Position{Ticket: 123456, Symbol: "XAUUSD", Type: "BUY", Lots: 0.10, Strategy: "pullback"},
+			sourceStrategy: "",
+			wantCode:       "position.add_not_allowed",
 		},
 	}
 
@@ -113,8 +140,19 @@ func TestEvaluateRejectsUnapprovedHedgeOrAdd(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := validInput(now)
 			input.State.Positions = []domain.Position{tc.position}
+			input.SourceStrategy = tc.sourceStrategy
 
 			result := Evaluate(input)
+
+			if tc.wantCode == "" {
+				if result.Status == StatusRejected && hasReason(result, "position.add_not_allowed") {
+					t.Fatalf("expected no add_not_allowed rejection but got status=%q reasons=%v", result.Status, result.ReasonCodes)
+				}
+				if result.Status == StatusRejected && hasReason(result, "position.hedge_not_allowed") {
+					t.Fatalf("expected no hedge_not_allowed rejection but got status=%q reasons=%v", result.Status, result.ReasonCodes)
+				}
+				return
+			}
 
 			if result.Status != StatusRejected {
 				t.Fatalf("status = %q, want %q", result.Status, StatusRejected)

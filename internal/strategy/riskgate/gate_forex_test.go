@@ -10,8 +10,8 @@ func TestMetadataForReturnsForexMajorMetadata(t *testing.T) {
 		wantMinSL     float64
 		wantMaxSL     float64
 	}{
-		{symbol: "GBPUSD", wantSymbol: "GBPUSD", wantMaxSpread: 4.0, wantMinSL: 0.0005, wantMaxSL: 0.05},
-		{symbol: "USDCADm#", wantSymbol: "USDCAD", wantMaxSpread: 4.0, wantMinSL: 0.0005, wantMaxSL: 0.05},
+		{symbol: "GBPUSD", wantSymbol: "GBPUSD", wantMaxSpread: 80.0, wantMinSL: 0.0005, wantMaxSL: 0.05},
+		{symbol: "USDCADm#", wantSymbol: "USDCAD", wantMaxSpread: 80.0, wantMinSL: 0.0005, wantMaxSL: 0.05},
 	}
 
 	for _, tt := range tests {

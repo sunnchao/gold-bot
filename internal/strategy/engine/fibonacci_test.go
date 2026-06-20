@@ -149,8 +149,8 @@ func TestPullbackFibFilter_PriceInZone(t *testing.T) {
 	if signal == nil {
 		t.Fatal("expected signal")
 	}
-	if signal.Strategy != "pullback_fib" {
-		t.Fatalf("strategy = %q, want pullback_fib", signal.Strategy)
+	if signal.Strategy != "pullback" {
+		t.Fatalf("strategy = %q, want pullback", signal.Strategy)
 	}
 }
 

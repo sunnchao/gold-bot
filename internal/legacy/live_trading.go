@@ -213,6 +213,9 @@ func (e *LiveTradingExecutor) buildSignalCommand(accountID, symbol string, signa
 		"source":                 "live_strategy",
 		"analysis_mode":          analysisMode,
 	}
+	if signal.FibEnhanced {
+		payload["fib_enhanced"] = true
+	}
 
 	// Determine order type based on price distance from entry
 	orderType := OrderTypeForSignal(currentPrice, signal.Entry, atr, signal.Side)

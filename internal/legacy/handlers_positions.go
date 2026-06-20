@@ -3,6 +3,7 @@ package legacy
 import (
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"gold-bot/internal/domain"
@@ -30,6 +31,28 @@ func (h *PositionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[POSITIONS] 📋 account=%s | positions_count=%d", req.AccountID, len(req.Positions))
+
+	// 从 AccountState 获取 StrategyMapping，解析每个持仓的策略
+	state, _ := h.accounts.GetStateSymbol(r.Context(), req.AccountID, req.Symbol)
+	mapping := state.StrategyMapping
+	if len(mapping) == 0 {
+		mapping = map[string]string{
+			"20250231": "pullback",
+			"20250232": "breakout_retest",
+			"20250233": "divergence",
+			"20250234": "breakout_pyramid",
+			"20250235": "counter_pullback",
+			"20250236": "range",
+		}
+	}
+	for i := range req.Positions {
+		if req.Positions[i].Strategy == "" && req.Positions[i].Magic > 0 {
+			if strategy, ok := mapping[strconv.Itoa(req.Positions[i].Magic)]; ok {
+				req.Positions[i].Strategy = strategy
+			}
+		}
+	}
+
 	now := h.now().UTC()
 	accountID, err := requireAccountID(req.AccountID)
 	if err != nil {

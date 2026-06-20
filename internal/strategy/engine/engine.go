@@ -862,7 +862,8 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.B
 				signal.StopLoss = roundToPrecision(last.Fib786+atr*fibCfg.StopLossOuterATR, precision)
 			}
 			signal = e.applyFibExtensionTP(signal, h4, h1, price, atr)
-			signal.Strategy = "pullback_fib"
+			signal.Strategy = "pullback"
+			signal.FibEnhanced = true
 
 			log.Printf("[STRATEGY] 🌀 pullback+FIB: ✅ 回撤区确认 | Price=%.2f Fib=[%.2f-%.2f] SL=%.2f Score=%d",
 				price, last.Fib382, last.Fib618, signal.StopLoss, signal.Score)
@@ -991,7 +992,8 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.B
 				signal.StopLoss = roundToPrecision(last.Fib786+atr*fibCfg.StopLossOuterATR, precision)
 			}
 			signal = e.applyFibExtensionTP(signal, h4, h1, price, atr)
-			signal.Strategy = "pullback_fib"
+			signal.Strategy = "pullback"
+			signal.FibEnhanced = true
 
 			log.Printf("[STRATEGY] 🌀 pullback+FIB: ✅ 回撤区确认 | Price=%.2f Fib=[%.2f-%.2f] SL=%.2f Score=%d",
 				price, last.Fib382, last.Fib618, signal.StopLoss, signal.Score)

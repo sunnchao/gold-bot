@@ -31,6 +31,7 @@ type Input struct {
 	Plan            *domain.TradePlan
 	AllowAdd        bool
 	AllowHedge      bool
+	SourceStrategy  string
 }
 
 type Result struct {
@@ -233,6 +234,11 @@ func positionConflictRejects(input Input) []string {
 		}
 		positionSide := positionSide(position.Type)
 		if positionSide == "" || planSide == "none" {
+			continue
+		}
+		// 不同策略的持仓不构成冲突
+		if input.SourceStrategy != "" && position.Strategy != "" &&
+			position.Strategy != input.SourceStrategy {
 			continue
 		}
 		if positionSide == planSide && !input.AllowAdd && !addRejected {

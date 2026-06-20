@@ -1,155 +1,96 @@
-# Gold Bolt Server - Agent 开发指南
+# Gold Bolt - Agent 开发指南
 
 ## 项目概述
 
-**Gold Bolt** 是一个 MT4/MT5 黄金交易自动化系统，包含：
-- MT4 EA 客户端（Windows）
-- GB Server 服务端（Linux）
-- Web 监控面板
-- Discord/飞书推送通知
+**Gold Bolt** 是黄金+多品种自动化交易系统。Go 1.24 服务端 + MQL4 EA 客户端。
+
+## ⚠️ AI Agent 约束规则
+
+**1. AI Agent（含 Hermes/Claude/Codex/Codex 等）禁止直接修改 Go 源码和 MQL4 EA 代码。**
+- 所有代码修改必须通过 Codex CLI 代理执行。
+- Hermes 自身只能用 patch/write_file 修改非代码文件（.md、.env、.json、.yaml、.planning/ 文档等）。
+- 违反此规则可能导致：测试不同步、Codex 上下文缺失、改动不可追溯。
+
+**2. 代码修改流程**
+1. GSD 分析 → 写 `.planning/` 文档
+2. 写 CODEX_TASK.md（含 Mission/Architecture/Steps/DANGER ZONES/Success Criteria）
+3. `cat CODEX_TASK.md | codex exec --yolo` 执行
+4. `go build ./... && go test ./... -count=1` 验证
+5. `git diff --stat HEAD` 检查改动范围
+
+**3. 版本发布前必须询问用户意见。** 禁止未授权 push。
+
+**4. 策略名与 Magic 号映射是 EA 端的事。** Go 端 signal.Strategy 必须是 EA 认识的策略名（pullback/breakout_retest/divergence/breakout_pyramid/counter_pullback/range/momentum_scalp/ai_signal），不能随意发明新名字。子类型标识用 paylaod 字段传递，不影响 strategy 字段。
 
 ## 快速开始
 
-### 1. 服务端部署
-
+### 构建与测试
 ```bash
-cd /home/node/gold_bolt_server
-pip install -r requirements.txt
-python -m gold_bolt_server.app
-# 默认 http://0.0.0.0:8880
+cd /root/gold-bot
+go build ./...
+go test ./internal/... -count=1
 ```
 
-### 2. 服务管理
-
+### Docker 部署
 ```bash
-systemctl restart gold-bolt-server  # 重启
-systemctl status gold-bolt-server    # 状态
-journalctl -u gold-bolt-server -f   # 日志
-```
-
-### 3. EA 配置
-
-```mq4
-ServerURL = "http://服务器IP:8880"
-AccountID = "your_account_id"
-ApiToken = "your_token"
+docker compose build app && docker rm -f gold-bot && docker compose up -d app
 ```
 
 ## 项目结构
 
 ```
-gold_bolt_server/
-├── app.py              # 主应用（Flask + SocketIO）
-├── config.py           # 配置文件
-├── strategy/
-│   ├── engine.py       # 策略引擎
-│   ├── ai_analyzer.py  # AI 分析模块
-│   └── position_mgr.py # 持仓管理
-├── utils/
-│   ├── discord_notify.py  # Discord 推送
-│   └── feishu_notify.py  # 飞书推送
-├── data/
-│   └── manager.py     # 数据管理器
-└── docs/              # 文档
+gold-bot/
+├── internal/
+│   ├── domain/        # 领域模型（Signal, Position, Bar, Command 等）
+│   ├── strategy/
+│   │   ├── engine/    # 策略引擎（checkPullback, checkBreakout 等）
+│   │   ├── indicator/ # 技术指标计算
+│   │   ├── positionmgr/  # 持仓管理
+│   │   └── riskgate/     # 风控 Gate
+│   ├── legacy/        # EA 接口层（handlers, live_trading）
+│   ├── store/         # 数据层（PostgreSQL）
+│   ├── api/           # HTTP API
+│   └── scheduler/     # 信号仲裁调度器
+├── mt4_ea/            # MQL4 EA 客户端
+├── docs/              # 文档
+└── .planning/         # GSD 规划文档
 ```
 
-## 核心模块
+## EA 端点
 
-### 策略引擎 (strategy/engine.py)
+| 端点 | 说明 |
+|------|------|
+| `/register` | EA 注册账户 |
+| `/heartbeat` | 心跳（余额/净值） |
+| `/tick` | 实时报价 |
+| `/bars` | K 线数据 |
+| `/positions` | 持仓信息 |
+| `/poll` | 轮询指令 |
+| `/order_result` | 下单回报 |
 
-负责技术指标计算和信号生成：
-- `pullback` - 趋势回调
-- `breakout_retest` - 突破回踩
-- `divergence` - RSI 背离
-- `breakout_pyramid` - 突破加仓
-- `counter_pullback` - 反向回调
-- `range` - 震荡市区间
+## 策略引擎
 
-### AI 分析 (strategy/ai_analyzer.py)
+策略引擎核心文件：`internal/strategy/engine/engine.go`
 
-调用外部 AI API 进行多周期市场分析：
-- 分周期输出（M15/M30/H1/H4）
-- 综合判断（bias + confidence）
-- 出场建议（hold/tighten/close_partial/close_all）
+| 策略 | Magic | 说明 |
+|------|-------|------|
+| `pullback` | 20250231 | 趋势回调 |
+| `breakout_retest` | 20250232 | 突破回踩 |
+| `divergence` | 20250233 | RSI 背离 |
+| `breakout_pyramid` | 20250234 | 突破加仓 |
+| `counter_pullback` | 20250235 | 反向回调 |
+| `range` | 20250236 | 震荡市区间 |
+| `momentum_scalp` | 20250237 | 动量剥头皮 |
+| `ai_signal` | 20250238 | AI 信号 |
 
-### 持仓管理 (strategy/position_mgr.py)
+## 数据库
 
-根据净值变化执行止损/止盈/保本逻辑。
+PostgreSQL（通过 DSN 环境变量连接）。表结构见 `internal/store/` 下的 migration 文件。
 
-### 数据管理器 (data/manager.py)
+## 日志标签
 
-存储和管理多周期 K 线数据：
-- M30/H1/H4/D1
-- 自动计算 EMA/RSI/ADX/MACD 等指标
-
-## API 端点
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/register` | POST | EA 注册账户 |
-| `/heartbeat` | POST | EA 心跳（含市场状态） |
-| `/tick` | POST | 实时报价 |
-| `/bars` | POST | K 线数据 |
-| `/positions` | POST | 持仓数据 |
-| `/poll` | POST | 轮询指令 |
-| `/api/analysis_payload/<acc_id>` | GET | AI 分析数据 |
-| `/api/trigger_ai` | POST | 手动触发 AI 分析 |
-| `/api/market_status/<acc_id>` | GET | 市场状态 |
-
-## 推送通知
-
-### Discord
-
-Webhook 配置在 `utils/discord_notify.py`，触发条件：
-- 整点触发（0/15/30/45分）
-- AI 分析完成
-
-### 飞书
-
-Webhook 配置在 `utils/feishu_notify.py`，冷却时间 10 分钟。
-
-## 重要规则
-
-### 版本发布规则
-
-1. 每次版本修改创建 CHANGELOG
-2. push 前必须询问用户意见
-3. 禁止未授权直接 push
-
-### Git 操作
-
-```bash
-cd /home/node/gold_bolt_server
-git add .
-git commit -m "描述"
-# 询问用户后再 push
-git push origin main
-```
-
-## 常见问题
-
-### EA 不发送 K 线数据
-
-检查 MT4 图表历史数据是否足够（至少 150+ 根 H4）。EA 日志中搜索 `⚠️ 历史数据不足`。
-
-### AI 分析不触发
-
-检查：
-1. `acc["bars"]` 是否有数据
-2. `market_open` 是否为 true
-3. 服务端日志中搜索 `整点触发`
-
-### 服务启动失败
-
-```bash
-python3 -m py_compile app.py  # 检查语法
-journalctl -u gold-bolt-server -n 50  # 查看错误日志
-```
-
-## 相关文档
-
-- [架构文档](docs/ARCHITECTURE.md)
-- [API 文档](docs/API.md)
-- [策略文档](docs/STRATEGIES.md)
-- [部署指南](docs/DEPLOYMENT.md)
-- [更新日志](docs/CHANGELOG.md)
+- `[STRATEGY]` — 策略引擎分析
+- `[STRATEGY-SCALP]` — 动量剥头皮日志
+- `[POSMGR]` — 持仓管理
+- `[AI]` — AI 分析结果
+- `[RISK]` — 风控 Gate

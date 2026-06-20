@@ -22,10 +22,10 @@ func TestBuildAnalysisPayloadIncludesCappedSafeBarsForAllTimeframes(t *testing.T
 			Time:   "2026.06.06 09:00",
 		},
 		Bars: map[string][]domain.Bar{
-			"M15": makePayloadBars("M15", 250),
-			"M30": makePayloadBars("M30", 250),
-			"H1":  makePayloadBars("H1", 250),
-			"H4":  makePayloadBars("H4", 250),
+			"M15": makePayloadBars("M15", 1050),
+			"M30": makePayloadBars("M30", 1050),
+			"H1":  makePayloadBars("H1", 1050),
+			"H4":  makePayloadBars("H4", 1050),
 		},
 	}
 

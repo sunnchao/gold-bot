@@ -105,7 +105,7 @@ var defaultStrategyMapping = map[string]string{
 }
 
 const staleTickTradeableWindow = 10 * time.Minute
-const analysisPayloadBarsLimit = 200
+const analysisPayloadBarsLimit = 1000
 
 func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime, state domain.AccountState, now time.Time) AnalysisPayload {
 	mapping := state.StrategyMapping

@@ -297,7 +297,7 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 			goto afterAIPending
 		}
 
-		if hasOpenPositionOnSide(state.Positions, symbol, tradePlan.Side) {
+		if hasOpenPositionOnSide(state.Positions, symbol, tradePlan.Side, "ai_signal") {
 			if !tradePlan.AddOn {
 				log.Printf("[AI] ⏭️ account=%s/%s | AI approve 跳过: 已有同向持仓 side=%s 但LLM未推荐加仓",
 					accountID, symbol, tradePlan.Side)
@@ -432,11 +432,12 @@ func (h aiHandler) evaluateRiskGate(ctx context.Context, accountID, symbol strin
 	}
 
 	return riskgate.Evaluate(riskgate.Input{
-		Now:     now,
-		Account: account,
-		Runtime: runtime,
-		State:   state,
-		Plan:    tradePlan,
+		Now:            now,
+		Account:        account,
+		Runtime:        runtime,
+		State:          state,
+		Plan:           tradePlan,
+		SourceStrategy: "ai_signal",
 	}), nil
 }
 
@@ -646,7 +647,7 @@ func calcAILots(maxLots float64) float64 {
 	return lots
 }
 
-func hasOpenPositionOnSide(positions []domain.Position, symbol, side string) bool {
+func hasOpenPositionOnSide(positions []domain.Position, symbol, side, skipStrategy string) bool {
 	wantSymbol := strings.ToUpper(strings.TrimSpace(symbol))
 	wantSide := strings.ToUpper(strings.TrimSpace(side))
 	if wantSide == "BUY" {
@@ -657,6 +658,10 @@ func hasOpenPositionOnSide(positions []domain.Position, symbol, side string) boo
 
 	for _, position := range positions {
 		if wantSymbol != "" && position.Symbol != "" && !strings.EqualFold(position.Symbol, wantSymbol) {
+			continue
+		}
+		// 不同策略的持仓不视为冲突
+		if skipStrategy != "" && position.Strategy != "" && position.Strategy != skipStrategy {
 			continue
 		}
 		if strings.EqualFold(position.Type, wantSide) {
