@@ -662,7 +662,7 @@ func shouldQueueAIPending(plan *domain.TradePlan, gate riskgate.Result) bool {
 	if gate.AuditOnly {
 		return false
 	}
-	if plan.Confidence < 70 {
+	if plan.Confidence < 60 {
 		return false
 	}
 	return true
