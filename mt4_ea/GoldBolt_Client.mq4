@@ -65,6 +65,9 @@ extern double   MomentumScalpRiskPercent  = 0.5;      // 动量剥头皮单笔�
 extern bool     EnableAISignal      = true;     // 🤖 AI 信号挂单策略
 extern int      AISignalMagic       = 20250238; // AI 信号 Magic
 
+extern bool     EnableScaleIn       = true;     // ➕ 浮亏加仓策略
+extern int      ScaleInMagic        = 20250239; // 浮亏加仓 Magic
+
 //+------------------------------------------------------------------+
 //| 原油对冲套利配置                                                   |
 //+------------------------------------------------------------------+
@@ -121,6 +124,7 @@ int GetStrategyMagic(string strategy)
    if(strategy == "range") return RangeMagic;
    if(strategy == "momentum_scalp") return MomentumScalpMagic;
    if(strategy == "ai_signal") return AISignalMagic;
+   if(strategy == "scale_in") return ScaleInMagic;
    return 0;
 }
 
@@ -135,6 +139,7 @@ bool IsStrategyEnabled(string strategy)
    if(strategy == "range") return EnableRange;
    if(strategy == "momentum_scalp") return EnableMomentumScalp;
    if(strategy == "ai_signal") return EnableAISignal;
+   if(strategy == "scale_in") return EnableScaleIn;
    return false;
 }
 
@@ -227,6 +232,7 @@ bool IsOurMagic(int magic)
    if(magic == RangeMagic) return true;
    if(magic == MomentumScalpMagic) return true;
    if(magic == AISignalMagic) return true;
+   if(magic == ScaleInMagic) return true;
    if(magic == SpreadMagicNumber) return true;
    return false;
 }
@@ -386,7 +392,7 @@ int OnInit()
    // 扫描已有持仓（按策略分类）
    Print("📊 扫描已有持仓...");
    int pullbackCount = 0, breakoutCount = 0, divergenceCount = 0;
-   int pyramidCount = 0, counterCount = 0, rangeCount = 0, momentumScalpCount = 0, aiSignalCount = 0, spreadCount = 0;
+   int pyramidCount = 0, counterCount = 0, rangeCount = 0, momentumScalpCount = 0, aiSignalCount = 0, spreadCount = 0, scaleInCount = 0;
    
    for(int i = 0; i < OrdersTotal(); i++)
    {
@@ -407,12 +413,13 @@ int OnInit()
          else if(magic == RangeMagic){ rangeCount++; Print("   📊 震荡区间: ", info); }
          else if(magic == MomentumScalpMagic){ momentumScalpCount++; Print("   ⚡ 动量剥头皮: ", info); }
          else if(magic == AISignalMagic){ aiSignalCount++; Print("   🤖 AI信号: ", info); }
+         else if(magic == ScaleInMagic){ scaleInCount++; Print("   ➕ 加仓: ", info); }
          else if(magic == SpreadMagicNumber){ spreadCount++; Print("   🛢️ 原油对冲: ", info); }
       }
    }
    
    Print("   趋势回调: ", pullbackCount, " 单 | 突破回踩: ", breakoutCount, " 单 | RSI背离: ", divergenceCount, " 单");
-   Print("   突破加仓: ", pyramidCount, " 单 | 反向回调: ", counterCount, " 单 | 震荡区间: ", rangeCount, " 单 | 动量剥头皮: ", momentumScalpCount, " 单 | AI信号: ", aiSignalCount, " 单");
+   Print("   突破加仓: ", pyramidCount, " 单 | 反向回调: ", counterCount, " 单 | 震荡区间: ", rangeCount, " 单 | 动量剥头皮: ", momentumScalpCount, " 单 | AI信号: ", aiSignalCount, " 单 | 加仓: ", scaleInCount, " 单");
    Print("   原油对冲: ", spreadCount, " 单");
    Print("=============================================");
    
@@ -564,7 +571,7 @@ void SendHeartbeat()
 
    // 计算各策略的持仓数量
    int pullbackPos = 0, breakoutPos = 0, divergencePos = 0;
-   int pyramidPos = 0, counterPos = 0, rangePos = 0, momentumScalpPos = 0;
+   int pyramidPos = 0, counterPos = 0, rangePos = 0, momentumScalpPos = 0, scaleInPos = 0;
    
    for(int i = 0; i < OrdersTotal(); i++)
    {
@@ -581,6 +588,7 @@ void SendHeartbeat()
          else if(m == CounterMagic) counterPos++;
          else if(m == RangeMagic) rangePos++;
          else if(m == MomentumScalpMagic) momentumScalpPos++;
+         else if(m == ScaleInMagic) scaleInPos++;
       }
    }
    
@@ -617,7 +625,8 @@ void SendHeartbeat()
       (EnablePyramid ? "true" : "false"), PyramidMagic, pyramidPos,
       (EnableCounter ? "true" : "false"), CounterMagic, counterPos,
       (EnableRange ? "true" : "false"), RangeMagic, rangePos,
-      (EnableMomentumScalp ? "true" : "false"), MomentumScalpMagic, momentumScalpPos
+      (EnableMomentumScalp ? "true" : "false"), MomentumScalpMagic, momentumScalpPos,
+      (EnableScaleIn ? "true" : "false"), ScaleInMagic, scaleInPos
    );
    
    HttpPost("/heartbeat", json);
