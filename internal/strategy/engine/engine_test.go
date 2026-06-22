@@ -604,7 +604,7 @@ func TestPickSLTPBuyUsesNearestSRWithBuffer(t *testing.T) {
 		S1:      1.09880,
 	}
 
-	sl, tp1, tp2, usedSR := pickSLTP("BUY", price, last, atr, 5, cfg)
+	sl, tp1, tp2, usedSR := pickSLTP("BUY", price, last, atr, 5, cfg, nil)
 	if !usedSR {
 		t.Fatal("usedSR = false, want true")
 	}
@@ -635,7 +635,7 @@ func TestPickSLTPSellFallsBackWhenNoReasonableSR(t *testing.T) {
 		S1:      1.24989,
 	}
 
-	sl, tp1, tp2, usedSR := pickSLTP("SELL", price, last, atr, 5, cfg)
+	sl, tp1, tp2, usedSR := pickSLTP("SELL", price, last, atr, 5, cfg, nil)
 	if usedSR {
 		t.Fatal("usedSR = true, want false")
 	}

@@ -236,6 +236,8 @@ func GetStrategyConfigBySymbol(baseSymbol string) StrategyConfig {
 	switch baseSymbol {
 	case "XAUUSD", "GOLD":
 		return GoldStrategyConfig()
+	case "XAGUSD", "SILVER":
+		return SilverStrategyConfig()
 	case "GBPJPY":
 		return GBPJPYStrategyConfig()
 	case "EURJPY":
@@ -251,6 +253,23 @@ func GetStrategyConfigBySymbol(baseSymbol string) StrategyConfig {
 	default:
 		return DefaultStrategyConfig()
 	}
+}
+
+// SilverStrategyConfig returns strategy parameters optimized for silver trading.
+func SilverStrategyConfig() StrategyConfig {
+	cfg := DefaultStrategyConfig()
+	// Silver-specific adjustments: ATR absolute value is small, need wider multiples
+	cfg.PullbackSLATR = 2.0   // default 1.5 → 2.0 (wider stop-loss)
+	cfg.PullbackTP1ATR = 3.0  // default 1.5 → 3.0 (further first target)
+	cfg.PullbackTP2ATR = 5.0  // default 3.0 → 5.0 (further second target)
+	cfg.MinScore = 6          // higher threshold to reduce noise
+	cfg.H4ADXThreshold = 22   // silver trends weaker, lower ADX threshold
+	cfg.MomentumScalpMinADX = 15.0
+	cfg.MomentumScalpSLATR = 0.6
+	cfg.MomentumScalpTP1ATR = 0.8
+	cfg.MomentumScalpTP2ATR = 1.2
+	cfg.MomentumScalpMinScore = 7
+	return cfg
 }
 
 // GoldStrategyConfig returns strategy parameters optimized for gold trading.

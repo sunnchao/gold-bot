@@ -125,6 +125,46 @@ func calculateSL(aiResult *domain.AIResult, side string, price, atr, atrMult flo
 	return roundToPrecision(price+atr*atrMult, precision), false
 }
 
+// calculateTP calculates take-profit prices, preferring AI suggestion over ATR-based calculation.
+func calculateTP(aiResult *domain.AIResult, side string, price, atr, tp1Mult, tp2Mult float64, precision int) (tp1, tp2 float64, usedAI bool) {
+	// Guard: ATR must be valid
+	if atr <= 0 || math.IsNaN(atr) || math.IsInf(atr, 0) {
+		defaultDist := price * 0.004 // 0.4% fallback
+		if defaultDist <= 0 {
+			defaultDist = 2.0
+		}
+		if side == "BUY" {
+			return roundToPrecision(price+defaultDist, precision),
+				roundToPrecision(price+defaultDist*2, precision), false
+		}
+		return roundToPrecision(price-defaultDist, precision),
+			roundToPrecision(price-defaultDist*2, precision), false
+	}
+
+	// Try AI suggested TP first
+	if aiResult != nil && aiResult.SuggestedTP > 0 {
+		tp := aiResult.SuggestedTP
+		dist := math.Abs(price - tp)
+		// Validate direction: BUY TP must be above entry, SELL TP must be below entry
+		sideValid := (side == "BUY" && tp > price) || (side == "SELL" && tp < price)
+		if dist >= atr*0.5 && dist <= atr*5.0 && sideValid {
+			log.Printf("[STRATEGY] 🤖 使用 AI 止盈: %s (距离=%s, ATR=%s)",
+				formatFloat(tp, precision), formatFloat(dist, logPrecision(precision)), formatFloat(atr, logPrecision(precision)))
+			return tp, tp, true // TP1=TP2=AI suggestion
+		}
+		log.Printf("[STRATEGY] ⚠️ AI 止盈 %s 不合理, 使用 ATR 计算",
+			formatFloat(tp, precision))
+	}
+
+	// Fallback: ATR-based
+	if side == "BUY" {
+		return roundToPrecision(price+atr*tp1Mult, precision),
+			roundToPrecision(price+atr*tp2Mult, precision), false
+	}
+	return roundToPrecision(price-atr*tp1Mult, precision),
+		roundToPrecision(price-atr*tp2Mult, precision), false
+}
+
 // checkM15Entry checks M15 bars for early entry confirmation.
 // Returns true if M15 RSI confirms the signal direction and price is near a Fib level.
 func (e Engine) checkM15Entry(m15 []domain.Bar, side string, price float64) (bool, string) {
@@ -195,7 +235,16 @@ func detectLastSwing(bars []domain.Bar, window int) (high, low float64, trend st
 	return
 }
 
-func pickSLTP(side string, price float64, last domain.Bar, atr float64, precision int, cfg StrategyConfig) (sl, tp1, tp2 float64, usedSR bool) {
+func pickSLTP(side string, price float64, last domain.Bar, atr float64, precision int, cfg StrategyConfig, aiResult *domain.AIResult) (sl, tp1, tp2 float64, usedSR bool) {
+	// NEW: Override with AI suggestions if available
+	if aiResult != nil && (aiResult.SuggestedSL > 0 || aiResult.SuggestedTP > 0) {
+		sl, usedSL := calculateSL(aiResult, side, price, atr, cfg.PullbackSLATR, precision)
+		tp1, tp2, usedTP := calculateTP(aiResult, side, price, atr, cfg.PullbackTP1ATR, cfg.PullbackTP2ATR, precision)
+		if usedSL || usedTP {
+			return sl, tp1, tp2, true
+		}
+	}
+
 	side = strings.ToUpper(strings.TrimSpace(side))
 	if price <= 0 || atr <= 0 || math.IsNaN(price) || math.IsNaN(atr) || math.IsInf(price, 0) || math.IsInf(atr, 0) {
 		return 0, 0, 0, false
@@ -706,6 +755,35 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		}
 	}
 
+	// NEW: Apply AI take-profit override if available
+	if snapshot.AIResult != nil && snapshot.AIResult.SuggestedTP > 0 {
+		aiTP := snapshot.AIResult.SuggestedTP
+		dist := math.Abs(best.Entry - aiTP)
+		// Validate direction: BUY TP must be above entry, SELL TP must be below entry
+		sideValid := (best.Side == "BUY" && aiTP > best.Entry) || (best.Side == "SELL" && aiTP < best.Entry)
+		if dist >= atr*0.5 && dist <= atr*5.0 && sideValid {
+			originalTP1, originalTP2 := best.TP1, best.TP2
+			best.TP1 = aiTP
+			best.TP2 = aiTP // TP1=TP2=AI suggestion
+			log.Printf("[STRATEGY] 🤖 AI 止盈覆盖: TP1=%s→%s, TP2=%s→%s",
+				formatFloat(originalTP1, precision), formatFloat(best.TP1, precision),
+				formatFloat(originalTP2, precision), formatFloat(best.TP2, precision))
+			logs = append(logs, domain.AnalysisLog{
+				Level:    "info",
+				Strategy: "AI止盈",
+				Message:  fmt.Sprintf("🤖 AI止盈覆盖: TP1=%s→%s, TP2=%s→%s", formatFloat(originalTP1, precision), formatFloat(best.TP1, precision), formatFloat(originalTP2, precision), formatFloat(best.TP2, precision)),
+			})
+		} else {
+			if !sideValid {
+				log.Printf("[STRATEGY] ⚠️ AI 止盈 %s 方向不合法 (side=%s, entry=%s), 保持 ATR 止盈",
+					formatFloat(aiTP, precision), best.Side, formatFloat(best.Entry, precision))
+			} else {
+				log.Printf("[STRATEGY] ⚠️ AI 止盈 %s 距离不合理 (距离=%s, ATR=%s), 保持 ATR 止盈",
+					formatFloat(aiTP, precision), formatFloat(dist, logPrec), formatFloat(atr, logPrec))
+			}
+		}
+	}
+
 	best.AllStrategies = make([]domain.StrategyScore, 0, len(signals))
 	for _, signal := range signals {
 		best.AllStrategies = append(best.AllStrategies, domain.StrategyScore{
@@ -806,7 +884,7 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.B
 			Score:    min(score, 10),
 			Strategy: "pullback",
 		}
-		if sl, tp1, tp2, ok := pickSLTP(side, price, last, atr, precision, cfg); ok {
+		if sl, tp1, tp2, ok := pickSLTP(side, price, last, atr, precision, cfg, nil); ok {
 			signal.StopLoss = sl
 			signal.TP1 = tp1
 			signal.TP2 = tp2
@@ -936,7 +1014,7 @@ func (e Engine) checkPullback(h1 []domain.Bar, price, atr float64, h4 []domain.B
 			Score:    min(score, 10),
 			Strategy: "pullback",
 		}
-		if sl, tp1, tp2, ok := pickSLTP(side, price, last, atr, precision, cfg); ok {
+		if sl, tp1, tp2, ok := pickSLTP(side, price, last, atr, precision, cfg, nil); ok {
 			signal.StopLoss = sl
 			signal.TP1 = tp1
 			signal.TP2 = tp2
@@ -1127,7 +1205,7 @@ func (e Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domai
 			Score:    min(score, 10),
 			Strategy: "breakout_retest",
 		}
-		if sl, tp1, tp2, ok := pickSLTP("BUY", price, last, atr, precision, cfg); ok {
+		if sl, tp1, tp2, ok := pickSLTP("BUY", price, last, atr, precision, cfg, nil); ok {
 			signal.StopLoss = sl
 			signal.TP1 = tp1
 			signal.TP2 = tp2
@@ -1171,7 +1249,7 @@ func (e Engine) checkBreakoutRetest(h1 []domain.Bar, price, atr float64) (*domai
 			Score:    min(score, 10),
 			Strategy: "breakout_retest",
 		}
-		if sl, tp1, tp2, ok := pickSLTP("SELL", price, last, atr, precision, cfg); ok {
+		if sl, tp1, tp2, ok := pickSLTP("SELL", price, last, atr, precision, cfg, nil); ok {
 			signal.StopLoss = sl
 			signal.TP1 = tp1
 			signal.TP2 = tp2
@@ -1259,7 +1337,7 @@ func (e Engine) checkDivergence(h1, _ []domain.Bar, price, atr float64) (*domain
 			Strategy: "divergence",
 			ATRMult:  cfg.DivergenceSLATR,
 		}
-		if sl, tp1, tp2, ok := pickSLTP("BUY", price, last, atr, precision, cfg); ok {
+		if sl, tp1, tp2, ok := pickSLTP("BUY", price, last, atr, precision, cfg, nil); ok {
 			signal.StopLoss = sl
 			signal.TP1 = tp1
 			signal.TP2 = tp2
@@ -1310,7 +1388,7 @@ func (e Engine) checkDivergence(h1, _ []domain.Bar, price, atr float64) (*domain
 			Strategy: "divergence",
 			ATRMult:  cfg.DivergenceSLATR,
 		}
-		if sl, tp1, tp2, ok := pickSLTP("SELL", price, last, atr, precision, cfg); ok {
+		if sl, tp1, tp2, ok := pickSLTP("SELL", price, last, atr, precision, cfg, nil); ok {
 			signal.StopLoss = sl
 			signal.TP1 = tp1
 			signal.TP2 = tp2
