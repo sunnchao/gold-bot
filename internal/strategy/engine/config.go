@@ -96,9 +96,44 @@ type StrategyConfig struct {
 	MomentumScalpMinScore         int     `json:"momentum_scalp_min_score" yaml:"momentum_scalp_min_score"`
 	MomentumScalpMaxHoldingMin    int     `json:"momentum_scalp_max_holding_min" yaml:"momentum_scalp_max_holding_min"`
 
-	FibExtension FibExtensionTPConfig `json:"fib_extension" yaml:"fib_extension"`
-	PullbackFib PullbackFibConfig     `json:"pullback_fib" yaml:"pullback_fib"`
-}
+		FibExtension FibExtensionTPConfig `json:"fib_extension" yaml:"fib_extension"`
+		PullbackFib PullbackFibConfig     `json:"pullback_fib" yaml:"pullback_fib"`
+		Trend       TrendConfig           `json:"trend" yaml:"trend"`
+	}
+
+	// TrendConfig holds multi-timeframe trend aggregation parameters.
+	type TrendConfig struct {
+		D1Weight  float64 `json:"d1_weight" yaml:"d1_weight"`   // 0.05
+		H4Weight  float64 `json:"h4_weight" yaml:"h4_weight"`   // 0.25
+		H1Weight  float64 `json:"h1_weight" yaml:"h1_weight"`   // 0.35
+		M30Weight float64 `json:"m30_weight" yaml:"m30_weight"` // 0.35
+
+		SoftThreshold   float64 `json:"soft_threshold" yaml:"soft_threshold"`     // 0.30
+		MediumThreshold float64 `json:"medium_threshold" yaml:"medium_threshold"` // 0.15
+
+		WeakADXThreshold   float64 `json:"weak_adx_threshold" yaml:"weak_adx_threshold"`     // 20
+		StrongADXThreshold float64 `json:"strong_adx_threshold" yaml:"strong_adx_threshold"` // 30
+
+		Enabled bool `json:"enabled" yaml:"enabled"` // true
+	}
+
+	// DefaultTrendConfig returns the default multi-timeframe trend config.
+	func DefaultTrendConfig() TrendConfig {
+		return TrendConfig{
+			D1Weight:  0.05,
+			H4Weight:  0.25,
+			H1Weight:  0.35,
+			M30Weight: 0.35,
+
+			SoftThreshold:   0.30,
+			MediumThreshold: 0.15,
+
+			WeakADXThreshold:   20,
+			StrongADXThreshold: 30,
+
+			Enabled: true,
+		}
+	}
 
 // DefaultStrategyConfig returns the recommended strategy parameters.
 func DefaultStrategyConfig() StrategyConfig {
@@ -181,17 +216,18 @@ func DefaultStrategyConfig() StrategyConfig {
 			SwingWindow:     50,
 			UseH4Preference: true,
 		},
-		PullbackFib: PullbackFibConfig{
-			RetracementEnabled:      false,
-			GoldenPocketBufferATR:   0.5,
-			RequireRSIConfirm:       false,
-			RSIConfirmBullThreshold: 40,
-			RSIConfirmBearThreshold: 60,
-			StopLossOuterATR:        0.5,
-			UsePendingOrder:         false,
-			PendingOrderLevel:       "618",
-		},
-	}
+				PullbackFib: PullbackFibConfig{
+					RetracementEnabled:      false,
+					GoldenPocketBufferATR:   0.5,
+					RequireRSIConfirm:       false,
+					RSIConfirmBullThreshold: 40,
+					RSIConfirmBearThreshold: 60,
+					StopLossOuterATR:        0.5,
+					UsePendingOrder:         false,
+					PendingOrderLevel:       "618",
+				},
+				Trend: DefaultTrendConfig(),
+			}
 }
 
 // GetStrategyConfigBySymbol returns the strategy config for a given base symbol.

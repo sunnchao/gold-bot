@@ -9,6 +9,7 @@ import (
 	"gold-bot/internal/domain"
 	"gold-bot/internal/strategy/indicator"
 	"gold-bot/internal/strategy/marketfilter"
+	"gold-bot/internal/strategy/engine"
 )
 
 type AnalysisPayload struct {
@@ -22,6 +23,7 @@ type AnalysisPayload struct {
 	MarketStatus    MarketStatus              `json:"market_status"`
 	MarketFilters   marketfilter.Result       `json:"market_filters"`
 	StrategyMapping map[string]string         `json:"strategy_mapping"`
+	TrendContext    *TrendContextPayload      `json:"trend_context,omitempty"`
 }
 
 type AccountSummary struct {
@@ -92,10 +94,20 @@ type MarketStatus struct {
 	MarketOpen     bool   `json:"market_open"`
 	IsTradeAllowed bool   `json:"is_trade_allowed"`
 	MT4ServerTime  string `json:"mt4_server_time"`
-	Tradeable      bool   `json:"tradeable"`
-}
+		Tradeable      bool   `json:"tradeable"`
+	}
 
-var defaultStrategyMapping = map[string]string{
+	// TrendContextPayload is the JSON-serializable trend context for LLM consumption.
+	type TrendContextPayload struct {
+		D1Direction        string  `json:"d1_direction"`
+		H4Direction        string  `json:"h4_direction"`
+		H1Direction        string  `json:"h1_direction"`
+		M30Direction       string  `json:"m30_direction"`
+		ConsensusDirection string  `json:"consensus_direction"`
+		ConsensusStrength  float64 `json:"consensus_strength"`
+	}
+
+	var defaultStrategyMapping = map[string]string{
 	"20250231": "pullback",
 	"20250232": "breakout_retest",
 	"20250233": "divergence",
@@ -243,6 +255,24 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 		},
 		MarketFilters:   filters,
 		StrategyMapping: mapping,
+		TrendContext:    buildTrendContextPayload(state),
+	}
+}
+
+// buildTrendContextPayload builds a TrendContextPayload from account state bars.
+func buildTrendContextPayload(state domain.AccountState) *TrendContextPayload {
+	tc := engine.BuildTrendContext(
+		state.Bars["D1"], state.Bars["H4"], state.Bars["H1"],
+		state.Bars["M30"], state.Bars["M15"],
+		engine.DefaultTrendConfig(),
+	)
+	return &TrendContextPayload{
+		D1Direction:        tc.D1Direction,
+		H4Direction:        tc.H4Direction,
+		H1Direction:        tc.H1Direction,
+		M30Direction:       tc.M30Direction,
+		ConsensusDirection: tc.ConsensusDirection,
+		ConsensusStrength:  tc.ConsensusStrength,
 	}
 }
 

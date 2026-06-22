@@ -15,6 +15,7 @@ import (
 	"gold-bot/internal/integration/aurex"
 	"gold-bot/internal/legacy"
 	"gold-bot/internal/strategy/riskgate"
+	"gold-bot/internal/strategy/engine"
 )
 
 type aiHandler struct {
@@ -295,6 +296,42 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 			log.Printf("[AI] ⚠️ account=%s/%s | AI approve 跳过: 手数过小 maxLots=%v",
 				accountID, symbol, tradePlan.MaxLots)
 			goto afterAIPending
+		}
+
+		// === Trend context gating for AI approve ===
+		if tradePlan != nil && state.Bars != nil {
+			tc := engine.BuildTrendContext(
+				state.Bars["D1"], state.Bars["H4"], state.Bars["H1"],
+				state.Bars["M30"], state.Bars["M15"],
+				engine.DefaultTrendConfig(),
+			)
+
+			// Inverse trend: raise confidence threshold
+			signalDir := "BULL"
+			if tradePlan.Side == "SELL" {
+				signalDir = "BEAR"
+			}
+			if tc.ConsensusDirection != "NEUTRAL" && tc.ConsensusDirection != signalDir {
+				if tradePlan.Confidence < 75 {
+					log.Printf("[AI] ⏭️ account=%s/%s | AI approve 跳过: 共识=%s 信号=%s confidence=%d < 75",
+						accountID, symbol, tc.ConsensusDirection, tradePlan.Side, tradePlan.Confidence)
+					goto afterAIPending
+				}
+				log.Printf("[AI] ⚠️ account=%s/%s | AI approve 逆势通过: 共识=%s 信号=%s confidence=%d",
+					accountID, symbol, tc.ConsensusDirection, tradePlan.Side, tradePlan.Confidence)
+			}
+
+			// Low consensus strength: halve lots
+			if tc.ConsensusStrength < 0.3 {
+				lots = lots / 2
+				if lots < 0.01 {
+					log.Printf("[AI] ⏭️ account=%s/%s | AI approve 跳过: 震荡手数过小 lots=%.2f",
+						accountID, symbol, lots)
+					goto afterAIPending
+				}
+				log.Printf("[AI] 📉 account=%s/%s | AI approve 震荡减半: 共识强度=%.2f 手数=%.2f",
+					accountID, symbol, tc.ConsensusStrength, lots)
+			}
 		}
 
 		if hasOpenPositionOnSide(state.Positions, symbol, tradePlan.Side, "ai_signal") {

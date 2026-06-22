@@ -364,6 +364,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	m15 := snapshot.Bars["M15"]
 	m5 := snapshot.Bars["M5"]
 	m1 := snapshot.Bars["M1"]
+	d1 := snapshot.Bars["D1"]
 
 	if len(h1) < 50 {
 		log.Printf("[STRATEGY] ⚠️ H1数据不足: %d/50", len(h1))
@@ -458,6 +459,10 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	})
 	log.Printf("[STRATEGY] 📊 市场状态 | Price=%s | ATR=%s | RSI=%.1f | ADX=%.1f | EMA趋势(H1)=%s | H4=%s(ADX=%.1f) | MACD柱=%.2f",
 		formatFloat(price, precision), formatFloat(atr, logPrec), last.RSI, last.ADX, trend, h4Trend, h4ADX, last.MACDHist)
+
+	// Build multi-timeframe trend context (before signal generation, after H4 check)
+	tc := BuildTrendContext(d1, h4, h1, m30, m15, e.Config.Trend)
+	LogTrendContext(tc)
 
 	signals := make([]domain.Signal, 0, 4)
 
@@ -577,6 +582,16 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 				Message:  "H4趋势过滤后无信号",
 			})
 			return nil, logs
+		}
+	}
+
+	// Apply multi-timeframe trend rating (soft penalty — after H4 BLOCK/direction filtering)
+	for i := range signals {
+		rating := ApplyTrendRating(&signals[i], tc, e.Config.Trend)
+		if rating.Penalty > 0 {
+			signals[i].Score -= rating.Penalty
+			log.Printf("[STRATEGY] 📉 趋势降级 | %s | 评分-%d=%d | %s",
+				signals[i].Strategy, rating.Penalty, signals[i].Score, rating.Reason)
 		}
 	}
 

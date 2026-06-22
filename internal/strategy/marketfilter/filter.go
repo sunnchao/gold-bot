@@ -82,7 +82,7 @@ func Evaluate(input Input) Result {
 	if isLowLiquiditySession(now) {
 		add("session.low_liquidity", SeverityWarning)
 	}
-	if hasATRExpansion(input.State.Bars["H1"]) {
+		if hasATRExpansion(input.State.Bars["M30"]) {
 		add("volatility.atr_expansion", SeverityWarning)
 	}
 

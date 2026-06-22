@@ -77,15 +77,15 @@ func TestBuildAnalysisPayloadIncludesMarketFilters(t *testing.T) {
 			Spread: 8.2,
 			Time:   "2026.06.05 20:30",
 		},
-		Bars: map[string][]domain.Bar{
-			"H1": append(makePayloadBars("H1", 40), domain.Bar{
-				Time:  "H1-expansion",
-				Open:  3330,
-				High:  3360,
-				Low:   3300,
-				Close: 3340,
-			}),
-		},
+				Bars: map[string][]domain.Bar{
+					"M30": append(makePayloadBars("M30", 40), domain.Bar{
+						Time:  "M30-expansion",
+						Open:  3330,
+						High:  3360,
+						Low:   3300,
+						Close: 3340,
+					}),
+				},
 	}
 
 	payload := BuildAnalysisPayload(

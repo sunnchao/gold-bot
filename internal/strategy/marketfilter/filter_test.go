@@ -77,9 +77,9 @@ func TestEvaluateMarketFilters(t *testing.T) {
 		{
 			name: "abnormal ATR expansion warns",
 			mutate: func(input *Input) {
-				input.State.Bars = map[string][]domain.Bar{
-					"H1": atrBars(1.0, 24, 2.2),
-				}
+						input.State.Bars = map[string][]domain.Bar{
+							"M30": atrBars(1.0, 24, 2.2),
+						}
 			},
 			wantWarning: "volatility.atr_expansion",
 		},
