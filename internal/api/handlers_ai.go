@@ -357,6 +357,42 @@ func (h aiHandler) handleAIResult(w http.ResponseWriter, r *http.Request, accoun
 
 	log.Printf("[AI] ✅ account=%s/%s | AI 分析结果已保存 | payload_size=%d bytes", accountID, symbol, len(raw))
 
+	// 检测 AI 分析是否调用失败（suggested_sl 和 suggested_tp 均为 0）
+	sl := 0.0
+	if v, ok := payload["suggested_sl"]; ok {
+		switch n := v.(type) {
+		case float64:
+			sl = n
+		case json.Number:
+			sl, _ = n.Float64()
+		}
+	}
+	if sl == 0 {
+		tp := 0.0
+		if v, ok := payload["suggested_tp"]; ok {
+			switch n := v.(type) {
+			case float64:
+				tp = n
+			case json.Number:
+				tp, _ = n.Float64()
+			}
+		}
+		if tp == 0 {
+			log.Printf("[AI] ⚠️ account=%s/%s | AI 分析调用失败(SL/TP均为0), 跳过止损调整并通过 webhook 通知",
+				accountID, symbol)
+			if h.deps.Events != nil {
+				h.deps.Events.Publish(domain.Event{
+					EventID:   fmt.Sprintf("evt_ai_fail_%d", now.UnixNano()),
+					EventType: "ai_analysis_failed",
+					AccountID: accountID,
+					Source:    "api.ai_result",
+					Timestamp: now,
+					Payload:   raw,
+				})
+			}
+		}
+	}
+
 	// Log AI analysis summary if available
 	if bias, ok := payload["bias"].(string); ok {
 		confidence := payload["confidence"]

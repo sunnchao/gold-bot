@@ -110,14 +110,12 @@ func (e *LiveTradingExecutor) analyzeAndQueue(ctx context.Context, accountID, sy
 		if err := json.Unmarshal(state.AIResultJSON, &aiResult); err == nil {
 			snapshot.AIResult = &aiResult
 
-			// 校验 AI 止损合理性：必须在当前价格附近（0.9x-1.1x），防止 fallback 默认值 0
-			if aiResult.SuggestedSL > 0 {
-				if aiResult.SuggestedSL < snapshot.CurrentPrice*0.9 || aiResult.SuggestedSL > snapshot.CurrentPrice*1.1 {
-					log.Printf("[STRATEGY] ⚠️ AI 止损不合理,忽略: %.2f (价格=%.2f, 偏离>10%%) | account=%s/%s",
-						aiResult.SuggestedSL, snapshot.CurrentPrice, accountID, symbol)
-					aiResult.SuggestedSL = 0
-					snapshot.AIResult = &aiResult
-				}
+			// AI 分析失败检测：suggestedSL 和 suggestedTP 均为 0 表示 LLM 调用失败
+			// 此时不应发起止损修改指令，避免误操作
+			if aiResult.SuggestedSL == 0 && aiResult.SuggestedTP == 0 {
+				log.Printf("[STRATEGY] ⚠️ AI 分析调用失败(SL/TP均为0), 跳过止损调整 | account=%s/%s",
+					accountID, symbol)
+				// SuggestedSL 保持 0，后续所有 >0 检查都不会触发止损调整
 			}
 
 			if aiResult.SuggestedSL > 0 {
