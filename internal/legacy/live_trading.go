@@ -109,6 +109,17 @@ func (e *LiveTradingExecutor) analyzeAndQueue(ctx context.Context, accountID, sy
 		var aiResult domain.AIResult
 		if err := json.Unmarshal(state.AIResultJSON, &aiResult); err == nil {
 			snapshot.AIResult = &aiResult
+
+			// 校验 AI 止损合理性：必须在当前价格附近（0.9x-1.1x），防止 fallback 默认值 0
+			if aiResult.SuggestedSL > 0 {
+				if aiResult.SuggestedSL < snapshot.CurrentPrice*0.9 || aiResult.SuggestedSL > snapshot.CurrentPrice*1.1 {
+					log.Printf("[STRATEGY] ⚠️ AI 止损不合理,忽略: %.2f (价格=%.2f, 偏离>10%%) | account=%s/%s",
+						aiResult.SuggestedSL, snapshot.CurrentPrice, accountID, symbol)
+					aiResult.SuggestedSL = 0
+					snapshot.AIResult = &aiResult
+				}
+			}
+
 			if aiResult.SuggestedSL > 0 {
 				log.Printf("[STRATEGY] 🤖 AI 止损可用: %.2f | account=%s/%s", aiResult.SuggestedSL, accountID, symbol)
 			}
@@ -381,6 +392,23 @@ func (e *LiveTradingExecutor) checkAIStopLossAdjust(ctx context.Context, account
 			}
 		}
 		// 未盈利或无SL限制时，继续执行MODIFY
+
+		// --- ABSOLUTE DIRECTION CHECK ---
+		// BUY 止损必须在入场价下方，SELL 止损必须在入场价上方
+		switch strings.ToUpper(pos.Type) {
+		case "BUY":
+			if aiSL >= pos.OpenPrice {
+				log.Printf("[STRATEGY] 🛡️ AI止损方向不合法: BUY SL=%.6f >= 入场价=%.6f | account=%s/%s ticket=%d",
+					aiSL, pos.OpenPrice, accountID, symbol, ticket)
+				continue
+			}
+		case "SELL":
+			if aiSL <= pos.OpenPrice {
+				log.Printf("[STRATEGY] 🛡️ AI止损方向不合法: SELL SL=%.6f <= 入场价=%.6f | account=%s/%s ticket=%d",
+					aiSL, pos.OpenPrice, accountID, symbol, ticket)
+				continue
+			}
+		}
 
 		e.mu.Lock()
 

@@ -523,11 +523,12 @@ func TestLiveTradingExecutorAIStopLossModifyCommandUsesTradePlanDecisionID(t *te
 		},
 		Positions: []domain.Position{
 			{
-				Ticket: 123456,
-				Symbol: "XAUUSD",
-				Type:   "BUY",
-				SL:     3331.0,
-				TP:     3344.0,
+				Ticket:    123456,
+				Symbol:    "XAUUSD",
+				Type:      "BUY",
+				OpenPrice: 3333.0,
+				SL:        3331.0,
+				TP:        3344.0,
 			},
 		},
 	}
