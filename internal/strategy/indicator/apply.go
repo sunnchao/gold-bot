@@ -110,5 +110,26 @@ func EnrichBars(bars []domain.Bar) []domain.Bar {
 		out[i].S2 = piv.S2
 	}
 
+	// Divergence Detection
+	macdDiv := DetectMACDDivergence(out)
+	rsiDiv := DetectRSIDivergence(out)
+	if macdDiv != nil {
+		// Mark the most recent bar
+		last := len(out) - 1
+		if macdDiv.Type == DivBullishMACD {
+			out[last].MACDDivergence = "bullish"
+		} else if macdDiv.Type == DivBearishMACD {
+			out[last].MACDDivergence = "bearish"
+		}
+	}
+	if rsiDiv != nil {
+		last := len(out) - 1
+		if rsiDiv.Type == DivBullishRSI {
+			out[last].RSIDivergence = "bullish"
+		} else if rsiDiv.Type == DivBearishRSI {
+			out[last].RSIDivergence = "bearish"
+		}
+	}
+
 	return out
 }

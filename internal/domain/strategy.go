@@ -48,6 +48,10 @@ type Bar struct {
 	R2      float64 `json:"r2,omitempty"`
 	S1      float64 `json:"s1,omitempty"`
 	S2      float64 `json:"s2,omitempty"`
+
+	// Divergence indicators
+	MACDDivergence string `json:"macd_divergence,omitempty"` // "bullish" | "bearish" | ""
+	RSIDivergence  string `json:"rsi_divergence,omitempty"`  // "bullish" | "bearish" | ""
 }
 
 func (b *Bar) UnmarshalJSON(data []byte) error {
@@ -91,6 +95,9 @@ func (b *Bar) UnmarshalJSON(data []byte) error {
 		R2      float64 `json:"r2,omitempty"`
 		S1      float64 `json:"s1,omitempty"`
 		S2      float64 `json:"s2,omitempty"`
+
+		MACDDivergence string `json:"macd_divergence,omitempty"`
+		RSIDivergence  string `json:"rsi_divergence,omitempty"`
 	}
 
 	var raw rawBar
@@ -132,6 +139,8 @@ func (b *Bar) UnmarshalJSON(data []byte) error {
 		R2:         raw.R2,
 		S1:         raw.S1,
 		S2:         raw.S2,
+		MACDDivergence: raw.MACDDivergence,
+		RSIDivergence:  raw.RSIDivergence,
 	}
 
 	if len(raw.Time) == 0 || bytes.Equal(raw.Time, []byte("null")) {
