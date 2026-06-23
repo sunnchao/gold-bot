@@ -154,3 +154,58 @@ func validTradePlanSide(side string) bool {
 		return false
 	}
 }
+
+// DualTradePlan represents a dual-direction (BUY + SELL) trade plan
+type DualTradePlan struct {
+	Buy   *TradePlan `json:"buy"`
+	Sell  *TradePlan `json:"sell"`
+	Valid bool       `json:"is_dual_direction"`
+}
+
+// ParseDualTradePlan parses dual_trade_plan from payload
+func ParseDualTradePlan(data []byte, expectedAccountID, expectedSymbol string) (*DualTradePlan, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return nil, fmt.Errorf("dual_trade_plan is empty")
+	}
+
+	var raw struct {
+		DualTradePlan struct {
+			Buy                interface{} `json:"buy"`
+			Sell               interface{} `json:"sell"`
+			Bool bool `json:"is_dual_direction"`
+		} `json:"dual_trade_plan"`
+	}
+
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("decode dual_trade_plan: %w", err)
+	}
+
+	if !raw.DualTradePlan.Bool {
+		return nil, fmt.Errorf("is_dual_direction is false")
+	}
+
+	var plan DualTradePlan
+	plan.Valid = true
+
+	if raw.DualTradePlan.Buy != nil {
+		buyRaw, err := json.Marshal(raw.DualTradePlan.Buy)
+		if err == nil {
+			buyPlan, err := ParseTradePlan(buyRaw, expectedAccountID, expectedSymbol)
+			if err == nil {
+				plan.Buy = buyPlan
+			}
+		}
+	}
+
+	if raw.DualTradePlan.Sell != nil {
+		sellRaw, err := json.Marshal(raw.DualTradePlan.Sell)
+		if err == nil {
+			sellPlan, err := ParseTradePlan(sellRaw, expectedAccountID, expectedSymbol)
+			if err == nil {
+				plan.Sell = sellPlan
+			}
+		}
+	}
+
+	return &plan, nil
+}
