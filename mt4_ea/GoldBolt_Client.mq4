@@ -475,6 +475,7 @@ void OnTick()
        SendHeartbeat();
        SendPositions();
        PollAndExecute();
+       PollIndicatorAlerts();  // 🆕 轮询背离/谐波信号
        CheckForUpdate();
        AutoSpreadTrade();
        lastPollTime = now;
@@ -2259,6 +2260,167 @@ string GetJsonArraySafe(string json, string key)
    }
 
    return StringSubstr(json, start + 1, end - start - 1);
+}
+
+//+------------------------------------------------------------------+
+//| Indicator Alert Visual Functions                                   |
+//| 图表上绘制背离/谐波信号                                            |
+//+------------------------------------------------------------------+
+
+// 全局变量：跟踪已创建的对象数量
+int g_indicatorObjectCount = 0;
+string g_indicatorObjectPrefix = "GB_Alert_";
+
+//+------------------------------------------------------------------+
+//| 轮询并显示指标背离信号                                             |
+//+------------------------------------------------------------------+
+void PollIndicatorAlerts()
+{
+   for(int s = 0; s < g_symbolCount; s++)
+   {
+      string baseSymbol = g_symbols[s];
+      string json = StringFormat("{\"account_id\":\"%s\"}", AccountID);
+      string response = HttpPost("/indicator_alert/poll", json);
+      
+      if(StringLen(response) == 0) continue;
+      
+      int count = GetJsonInt(response, "count");
+      if(count == 0) continue;
+      
+      Print("📊 [", baseSymbol, "] 收到 ", count, " 条指标警报");
+      string alerts_str = GetJsonArraySafe(response, "alerts");
+      
+      for(int i = 0; i < count; i++)
+      {
+         string alert = GetArrayElement(alerts_str, i);
+         if(StringLen(alert) == 0) continue;
+         
+         string indicator = GetJsonStringSafe(alert, "indicator");
+         string direction = GetJsonStringSafe(alert, "direction");
+         string timeframe = GetJsonStringSafe(alert, "timeframe");
+         double price = GetJsonDouble(alert, "price");
+         string strength = GetJsonStringSafe(alert, "strength");
+         double confidence = GetJsonDouble(alert, "confidence");
+         string description = GetJsonStringSafe(alert, "description");
+         
+         // 获取时间
+         string timeStr = GetJsonStringSafe(alert, "time");
+         datetime alertTime = StrToTime(timeStr);
+         if(alertTime == 0) alertTime = TimeCurrent();
+         
+         // 绘制到图表
+         DrawDivergenceArrow(baseSymbol, indicator, direction, price, strength, confidence, alertTime);
+         
+         Print("📈 指标警报: ", indicator, " ", direction, " @", price, " [", strength, "]");
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| 绘制背离箭头                                                       |
+//+------------------------------------------------------------------+
+void DrawDivergenceArrow(string symbol, string indicator, string direction, 
+                          double price, string strength, double confidence, datetime time)
+{
+   // 生成唯一对象名称
+   string objName = g_indicatorObjectPrefix + indicator + "_" + direction + "_" + IntegerToString(TimeCurrent());
+   
+   // 删除同名旧对象（防止重复）
+   if(ObjectFind(0, objName) >= 0)
+      ObjectDelete(0, objName);
+   
+   // 选择颜色和箭头类型
+   color arrowColor;
+   int arrowCode;
+   
+   if(direction == "bullish")
+   {
+      arrowColor = clrLime;           // 绿色 - 看涨
+      arrowCode = 233;                // 上箭头
+   }
+   else // bearish
+   {
+      arrowColor = clrRed;            // 红色 - 看跌
+      arrowCode = 234;                // 下箭头
+   }
+   
+   // 根据强度调整颜色深浅
+   if(strength == "moderate")
+   {
+      if(direction == "bullish") arrowColor = clrGreen;
+      else arrowColor = clrDarkOrange;
+   }
+   else if(strength == "weak")
+   {
+      if(direction == "bullish") arrowColor = clrLightGreen;
+      else arrowColor = clrLightSalmon;
+   }
+   
+   // 创建箭头对象
+   if(!ObjectCreate(0, objName, OBJ_ARROW, 0, time, price))
+   {
+      Print("❌ 无法创建箭头对象: ", objName);
+      return;
+   }
+   
+   // 设置箭头属性
+   ObjectSetInteger(0, objName, OBJPROP_ARROWCODE, arrowCode);
+   ObjectSetInteger(0, objName, OBJPROP_COLOR, arrowColor);
+   ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, objName, OBJPROP_ANCHOR, ANCHOR_BOTTOM);
+   ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, objName, OBJPROP_SELECTED, false);
+   
+   // 添加文字标签（在图表角落显示详细信息）
+   string labelName = g_indicatorObjectPrefix + "Label_" + IntegerToString(TimeCurrent());
+   if(ObjectFind(0, labelName) < 0)
+   {
+      ObjectCreate(0, labelName, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, labelName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, labelName, OBJPROP_XDISTANCE, 10);
+      ObjectSetInteger(0, labelName, OBJPROP_YDISTANCE, 20 + g_indicatorObjectCount * 15);
+      ObjectSetInteger(0, labelName, OBJPROP_COLOR, arrowColor);
+      ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 8);
+   }
+   
+   string labelText = indicator + " " + direction + " [" + strength + "]";
+   ObjectSetString(0, labelName, OBJPROP_TEXT, labelText);
+   
+   // 更新对象计数
+   g_indicatorObjectCount++;
+   if(g_indicatorObjectCount > 20)
+   {
+      // 清理最旧的对象
+      CleanOldIndicatorObjects();
+      g_indicatorObjectCount = 0;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| 清理旧的指标对象                                                   |
+//+------------------------------------------------------------------+
+void CleanOldIndicatorObjects()
+{
+   int total = ObjectsTotal(0, -1, -1);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i);
+      if(StringFind(name, g_indicatorObjectPrefix) == 0)
+      {
+         ObjectDelete(0, name);
+      }
+   }
+   Print("🧹 清理指标对象，删除了 ", total, " 个对象");
+}
+
+//+------------------------------------------------------------------+
+//| 更新图表角落文字摘要                                               |
+//+------------------------------------------------------------------+
+void UpdateChartComment(string summary)
+{
+   Comment("GoldBolt Technical View\n" +
+           "=======================\n" +
+           summary);
 }
 
 //+------------------------------------------------------------------+
