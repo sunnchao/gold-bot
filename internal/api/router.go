@@ -88,6 +88,11 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 	mux.Handle("/api/v2/analysis_payload/", auth.requireToken(http.HandlerFunc(aiHandler.analysisPayloadSymbol)))
 	mux.Handle("/api/v2/ai_result/", auth.requireToken(http.HandlerFunc(aiHandler.aiResultSymbol)))
 
+	// Indicator alert endpoints
+	indicatorHandler := newIndicatorAlertHandler()
+	mux.Handle("/indicator_alert/poll", auth.requireToken(http.HandlerFunc(indicatorHandler.pollHandler)))
+	mux.Handle("/indicator_alert/store", auth.requireToken(http.HandlerFunc(indicatorHandler.alertStoreHandler)))
+
 	// Arbitration endpoints
 	mux.Handle("/api/pending_signal/", auth.requireToken(http.HandlerFunc(arbitrationHandler.getPendingSignals)))
 	mux.Handle("/api/arbitration/", auth.requireAdmin(http.HandlerFunc(arbitrationHandler.postArbitrationResult)))
