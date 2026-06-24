@@ -8,20 +8,24 @@ import (
 	"time"
 
 	"gold-bot/internal/domain"
+	"gold-bot/internal/strategy/breakoutcache"
 	"gold-bot/internal/strategy/indicator"
 )
 
 type Engine struct {
-	MinScore int
-	Config   StrategyConfig
-	Precision int
+	MinScore      int
+	Config        StrategyConfig
+	Precision     int
+	BreakoutCache breakoutcache.Cache
+	Symbol        string
 }
 
 func New(options ...func(*Engine)) Engine {
 	e := Engine{
-		MinScore: 5,
-		Config:   DefaultStrategyConfig(),
-		Precision: 2,
+		MinScore:      5,
+		Config:        DefaultStrategyConfig(),
+		Precision:     2,
+		BreakoutCache: breakoutcache.New(),
 	}
 	for _, opt := range options {
 		opt(&e)
@@ -395,6 +399,7 @@ func (e Engine) applyFibExtensionTP(signal *domain.Signal, h4, h1 []domain.Bar, 
 
 func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []domain.AnalysisLog) {
 	logs := make([]domain.AnalysisLog, 0, 8)
+	e.Symbol = snapshot.Symbol
 	precision := e.Precision
 	if snapshot.Symbol != "" {
 		precision = roundingPrecision(domain.BaseSymbol(snapshot.Symbol))
@@ -539,7 +544,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		logs = append(logs, detail)
 	}
 
-	if signal, detail := e.checkBreakoutPyramid(h1, price, atr); signal != nil {
+	if signal, detail := e.checkBreakoutPyramid(h1, m30, price, atr); signal != nil {
 		signals = append(signals, *signal)
 		logs = append(logs, detail)
 		log.Printf("[STRATEGY] %s", detail.Message)
@@ -1415,7 +1420,7 @@ func (e Engine) checkDivergence(h1, _ []domain.Bar, price, atr float64) (*domain
 	return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: message}
 }
 
-func (e Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
+func (e Engine) checkBreakoutPyramid(h1, m30 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
 	cfg := e.Config
 	name := "突破加仓"
 	if len(h1) < 30 {
@@ -1431,7 +1436,7 @@ func (e Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*doma
 		}
 	}
 
-	if price > last.BBUpper && last.EMA20 > last.EMA50 {
+	if last.Close > last.BBUpper && last.EMA20 > last.EMA50 {
 		score := 6
 		details := make([]string, 0, 4)
 
@@ -1453,7 +1458,8 @@ func (e Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*doma
 			score++
 			details = append(details, "MACD柱>0")
 		}
-		return &domain.Signal{
+
+		signal := &domain.Signal{
 				Side:     "BUY",
 				Entry:    price,
 				StopLoss: round2(last.EMA20 - atr*cfg.BreakoutPyramidSLATR),
@@ -1461,14 +1467,12 @@ func (e Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*doma
 				TP2:      round2(price + atr*5.0),
 				Score:    min(score, 10),
 				Strategy: "breakout_pyramid",
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message:  fmt.Sprintf("🟢 BUY 评分=%d | 突破布林上轨=%.2f | %s", score, last.BBUpper, strings.Join(details, " | ")),
 			}
+		message := fmt.Sprintf("🟢 BUY 评分=%d | 收盘价突破布林上轨=%.2f | %s", score, last.BBUpper, strings.Join(details, " | "))
+		return e.confirmBreakoutPyramid(name, "BUY", last.BBUpper, m30, signal, message)
 	}
 
-	if price < last.BBLower && last.EMA20 < last.EMA50 {
+	if last.Close < last.BBLower && last.EMA20 < last.EMA50 {
 		score := 6
 		details := make([]string, 0, 4)
 
@@ -1490,7 +1494,8 @@ func (e Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*doma
 			score++
 			details = append(details, "MACD柱<0")
 		}
-		return &domain.Signal{
+
+		signal := &domain.Signal{
 				Side:     "SELL",
 				Entry:    price,
 				StopLoss: round2(last.EMA20 + atr*cfg.BreakoutPyramidSLATR),
@@ -1498,11 +1503,9 @@ func (e Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*doma
 				TP2:      round2(price - atr*5.0),
 				Score:    min(score, 10),
 				Strategy: "breakout_pyramid",
-			}, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
-				Message:  fmt.Sprintf("🔴 SELL 评分=%d | 突破布林下轨=%.2f | %s", score, last.BBLower, strings.Join(details, " | ")),
 			}
+		message := fmt.Sprintf("🔴 SELL 评分=%d | 收盘价突破布林下轨=%.2f | %s", score, last.BBLower, strings.Join(details, " | "))
+		return e.confirmBreakoutPyramid(name, "SELL", last.BBLower, m30, signal, message)
 	}
 
 	message := fmt.Sprintf("BB=[%.2f, %.2f] Price=%.2f", last.BBLower, last.BBUpper, price)
@@ -1515,6 +1518,72 @@ func (e Engine) checkBreakoutPyramid(h1 []domain.Bar, price, atr float64) (*doma
 		message += " | 在通道内 ⏭"
 	}
 	return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: message}
+}
+
+func (e Engine) confirmBreakoutPyramid(name, side string, bbLevel float64, m30 []domain.Bar, signal *domain.Signal, signalMessage string) (*domain.Signal, domain.AnalysisLog) {
+	cache := e.BreakoutCache
+	if cache == nil || strings.TrimSpace(e.Symbol) == "" {
+		return signal, domain.AnalysisLog{
+				Level:    "signal",
+				Strategy: name,
+			Message:  signalMessage,
+			}
+	}
+
+	pendingLevel, ok, err := cache.Get(e.Symbol, side)
+	if err != nil {
+		log.Printf("[STRATEGY] Redis breakout cache get failed, direct signal fallback: %v", err)
+		return signal, domain.AnalysisLog{
+				Level:    "signal",
+				Strategy: name,
+			Message:  signalMessage,
+			}
+	}
+
+	if ok {
+		if err := cache.Del(e.Symbol, side); err != nil {
+			log.Printf("[STRATEGY] Redis breakout cache delete failed: %v", err)
+		}
+
+		if len(m30) == 0 {
+			return signal, domain.AnalysisLog{
+				Level:    "signal",
+				Strategy: name,
+				Message:  fmt.Sprintf("%s | 二次确认: M30数据不足,按H1突破降级发信号", signalMessage),
+			}
+		}
+
+		m30Close := m30[len(m30)-1].Close
+		confirmed := (side == "BUY" && m30Close > pendingLevel) || (side == "SELL" && m30Close < pendingLevel)
+		if confirmed {
+			return signal, domain.AnalysisLog{
+				Level:    "signal",
+				Strategy: name,
+				Message:  fmt.Sprintf("%s | 二次确认: M30收盘价=%.2f 仍在BB外(阈值=%.2f)", signalMessage, m30Close, pendingLevel),
+			}
+		}
+
+		return nil, domain.AnalysisLog{
+			Level:    "info",
+			Strategy: name,
+			Message:  fmt.Sprintf("假突破: %s M30收盘价=%.2f 回到BB内(阈值=%.2f)", side, m30Close, pendingLevel),
+		}
+	}
+
+	if err := cache.Set(e.Symbol, side, bbLevel); err != nil {
+		log.Printf("[STRATEGY] Redis breakout cache set failed, direct signal fallback: %v", err)
+		return signal, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message:  signalMessage,
+		}
+	}
+
+	return nil, domain.AnalysisLog{
+		Level:    "info",
+		Strategy: name,
+		Message:  fmt.Sprintf("待确认: %s H1收盘价突破BB阈值=%.2f,等待M30二次确认", side, bbLevel),
+	}
 }
 
 func (e Engine) checkMomentumScalp(m15, m5, m1 []domain.Bar, price float64) (*domain.Signal, domain.AnalysisLog) {
