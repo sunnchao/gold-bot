@@ -267,6 +267,42 @@ func TestCheckMomentumScalpReportsSpecificM5FailureReason(t *testing.T) {
 	}
 }
 
+func TestCheckBreakoutPyramidBlocksBuyAheadOfBearishOrderBlock(t *testing.T) {
+	e := New()
+	h1 := breakoutPyramidBuyOrderBlockBarsForTests()
+	price := h1[len(h1)-1].Close
+
+	signal, detail := e.checkBreakoutPyramid(h1, nil, price, 2.0)
+
+	if signal != nil {
+		t.Fatalf("signal = %+v, want nil", signal)
+	}
+	if detail.Level != "info" {
+		t.Fatalf("detail.Level = %q, want info", detail.Level)
+	}
+	if !strings.Contains(detail.Message, "前方有空头OB") {
+		t.Fatalf("detail.Message = %q, want bearish OB block reason", detail.Message)
+	}
+}
+
+func TestCheckBreakoutPyramidBlocksSellAheadOfBullishOrderBlock(t *testing.T) {
+	e := New()
+	h1 := breakoutPyramidSellOrderBlockBarsForTests()
+	price := h1[len(h1)-1].Close
+
+	signal, detail := e.checkBreakoutPyramid(h1, nil, price, 2.0)
+
+	if signal != nil {
+		t.Fatalf("signal = %+v, want nil", signal)
+	}
+	if detail.Level != "info" {
+		t.Fatalf("detail.Level = %q, want info", detail.Level)
+	}
+	if !strings.Contains(detail.Message, "前方有多头OB") {
+		t.Fatalf("detail.Message = %q, want bullish OB block reason", detail.Message)
+	}
+}
+
 func flatH1BarsForMomentumTests() []domain.Bar {
 	bars := make([]domain.Bar, 50)
 	for i := range bars {
@@ -280,6 +316,86 @@ func flatH1BarsForMomentumTests() []domain.Bar {
 			MACDHist: 0,
 		}
 	}
+	return bars
+}
+
+func breakoutPyramidBaseBarsForTests() []domain.Bar {
+	bars := make([]domain.Bar, 30)
+	for i := range bars {
+		bars[i] = domain.Bar{
+			Time:     time.Unix(int64(i+1), 0).UTC().Format(time.RFC3339),
+			Open:     100.0,
+			High:     100.5,
+			Low:      99.5,
+			Close:    100.0,
+			ATR:      2.0,
+			ADX:      35.0,
+			RSI:      60.0,
+			EMA20:    101.0,
+			EMA50:    99.0,
+			BBUpper:  101.0,
+			BBLower:  99.0,
+			MACDHist: 0.2,
+		}
+	}
+	return bars
+}
+
+func breakoutPyramidBuyOrderBlockBarsForTests() []domain.Bar {
+	bars := breakoutPyramidBaseBarsForTests()
+	bars[13].High = 101.25
+	bars[13].Close = 100.8
+	bars[18] = domain.Bar{
+		Time:     bars[18].Time,
+		Open:     99.5,
+		High:     101.4,
+		Low:      99.4,
+		Close:    101.2,
+		ATR:      2.0,
+		ADX:      35.0,
+		RSI:      60.0,
+		EMA20:    101.0,
+		EMA50:    99.0,
+		BBUpper:  101.0,
+		BBLower:  99.0,
+		MACDHist: 0.2,
+	}
+	bars[19].High = 101.45
+	bars[19].Close = 101.3
+	bars[29].Close = 101.2
+	bars[29].EMA20 = 101.0
+	bars[29].EMA50 = 99.0
+	bars[29].BBUpper = 101.0
+	return bars
+}
+
+func breakoutPyramidSellOrderBlockBarsForTests() []domain.Bar {
+	bars := breakoutPyramidBaseBarsForTests()
+	bars[13].Low = 98.75
+	bars[13].Close = 99.2
+	bars[18] = domain.Bar{
+		Time:     bars[18].Time,
+		Open:     100.5,
+		High:     100.6,
+		Low:      98.6,
+		Close:    98.8,
+		ATR:      2.0,
+		ADX:      35.0,
+		RSI:      40.0,
+		EMA20:    99.0,
+		EMA50:    101.0,
+		BBUpper:  101.0,
+		BBLower:  99.0,
+		MACDHist: -0.2,
+	}
+	bars[19].Low = 98.55
+	bars[19].Close = 98.7
+	bars[29].Close = 98.8
+	bars[29].RSI = 40.0
+	bars[29].EMA20 = 99.0
+	bars[29].EMA50 = 101.0
+	bars[29].BBLower = 99.0
+	bars[29].MACDHist = -0.2
 	return bars
 }
 

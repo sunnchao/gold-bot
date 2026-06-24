@@ -1437,6 +1437,20 @@ func (e Engine) checkBreakoutPyramid(h1, m30 []domain.Bar, price, atr float64) (
 	}
 
 	if last.Close > last.BBUpper && last.EMA20 > last.EMA50 {
+		bearOBs := detectOrderBlocks(h1, "SELL", 20)
+		for _, ob := range bearOBs {
+			if !ob.Valid {
+				continue
+			}
+			if ob.High > last.BBUpper && ob.High < last.BBUpper+atr*2.0 {
+				return nil, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: name,
+					Message:  fmt.Sprintf("前方有空头OB %.2f (距离%.1f点), 突破风险高 ⏭", ob.High, ob.High-last.Close),
+				}
+			}
+		}
+
 		score := 6
 		details := make([]string, 0, 4)
 
@@ -1460,19 +1474,33 @@ func (e Engine) checkBreakoutPyramid(h1, m30 []domain.Bar, price, atr float64) (
 		}
 
 		signal := &domain.Signal{
-				Side:     "BUY",
-				Entry:    price,
-				StopLoss: round2(last.EMA20 - atr*cfg.BreakoutPyramidSLATR),
-				TP1:      round2(price + atr*2.0),
-				TP2:      round2(price + atr*5.0),
-				Score:    min(score, 10),
-				Strategy: "breakout_pyramid",
-			}
+			Side:     "BUY",
+			Entry:    price,
+			StopLoss: round2(last.EMA20 - atr*cfg.BreakoutPyramidSLATR),
+			TP1:      round2(price + atr*2.0),
+			TP2:      round2(price + atr*5.0),
+			Score:    min(score, 10),
+			Strategy: "breakout_pyramid",
+		}
 		message := fmt.Sprintf("🟢 BUY 评分=%d | 收盘价突破布林上轨=%.2f | %s", score, last.BBUpper, strings.Join(details, " | "))
 		return e.confirmBreakoutPyramid(name, "BUY", last.BBUpper, m30, signal, message)
 	}
 
 	if last.Close < last.BBLower && last.EMA20 < last.EMA50 {
+		bullOBs := detectOrderBlocks(h1, "BUY", 20)
+		for _, ob := range bullOBs {
+			if !ob.Valid {
+				continue
+			}
+			if ob.Low < last.BBLower && ob.Low > last.BBLower-atr*2.0 {
+				return nil, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: name,
+					Message:  fmt.Sprintf("前方有多头OB %.2f (距离%.1f点), 突破风险高 ⏭", ob.Low, last.Close-ob.Low),
+				}
+			}
+		}
+
 		score := 6
 		details := make([]string, 0, 4)
 
@@ -1496,14 +1524,14 @@ func (e Engine) checkBreakoutPyramid(h1, m30 []domain.Bar, price, atr float64) (
 		}
 
 		signal := &domain.Signal{
-				Side:     "SELL",
-				Entry:    price,
-				StopLoss: round2(last.EMA20 + atr*cfg.BreakoutPyramidSLATR),
-				TP1:      round2(price - atr*2.0),
-				TP2:      round2(price - atr*5.0),
-				Score:    min(score, 10),
-				Strategy: "breakout_pyramid",
-			}
+			Side:     "SELL",
+			Entry:    price,
+			StopLoss: round2(last.EMA20 + atr*cfg.BreakoutPyramidSLATR),
+			TP1:      round2(price - atr*2.0),
+			TP2:      round2(price - atr*5.0),
+			Score:    min(score, 10),
+			Strategy: "breakout_pyramid",
+		}
 		message := fmt.Sprintf("🔴 SELL 评分=%d | 收盘价突破布林下轨=%.2f | %s", score, last.BBLower, strings.Join(details, " | "))
 		return e.confirmBreakoutPyramid(name, "SELL", last.BBLower, m30, signal, message)
 	}
@@ -1524,20 +1552,20 @@ func (e Engine) confirmBreakoutPyramid(name, side string, bbLevel float64, m30 [
 	cache := e.BreakoutCache
 	if cache == nil || strings.TrimSpace(e.Symbol) == "" {
 		return signal, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
+			Level:    "signal",
+			Strategy: name,
 			Message:  signalMessage,
-			}
+		}
 	}
 
 	pendingLevel, ok, err := cache.Get(e.Symbol, side)
 	if err != nil {
 		log.Printf("[STRATEGY] Redis breakout cache get failed, direct signal fallback: %v", err)
 		return signal, domain.AnalysisLog{
-				Level:    "signal",
-				Strategy: name,
+			Level:    "signal",
+			Strategy: name,
 			Message:  signalMessage,
-			}
+		}
 	}
 
 	if ok {
@@ -1775,6 +1803,203 @@ func (e Engine) checkMomentumScalp(m15, m5, m1 []domain.Bar, price float64) (*do
 		Strategy: name,
 		Message:  fmt.Sprintf("%s %s 评分=%d | M15 ADX=%.1f | %s", sideIcon(side), side, score, lastM15.ADX, strings.Join(details, " | ")),
 	}
+}
+
+type SwingPoint struct {
+	Index int
+	Price float64
+}
+
+type BOS struct {
+	Index     int
+	Direction string
+	Level     float64
+}
+
+type OrderBlock struct {
+	Index int
+	Side  string
+	High  float64
+	Low   float64
+	Valid bool
+}
+
+func findSwingPoints(bars []domain.Bar, left, right int) (swingHighs, swingLows []SwingPoint) {
+	if left < 1 {
+		left = 1
+	}
+	if right < 1 {
+		right = 1
+	}
+	if len(bars) < left+right+1 {
+		return nil, nil
+	}
+
+	for i := left; i < len(bars)-right; i++ {
+		high := bars[i].High
+		low := bars[i].Low
+		isSwingHigh := true
+		isSwingLow := true
+
+		for j := i - left; j <= i+right; j++ {
+			if j == i {
+				continue
+			}
+			if bars[j].High >= high {
+				isSwingHigh = false
+			}
+			if bars[j].Low <= low {
+				isSwingLow = false
+			}
+			if !isSwingHigh && !isSwingLow {
+				break
+			}
+		}
+
+		if isSwingHigh {
+			swingHighs = append(swingHighs, SwingPoint{Index: i, Price: high})
+		}
+		if isSwingLow {
+			swingLows = append(swingLows, SwingPoint{Index: i, Price: low})
+		}
+	}
+
+	return swingHighs, swingLows
+}
+
+func detectBOS(bars []domain.Bar, lookback int) []BOS {
+	if len(bars) == 0 {
+		return nil
+	}
+	if lookback <= 0 || lookback > len(bars) {
+		lookback = len(bars)
+	}
+
+	start := len(bars) - lookback
+	window := bars[start:]
+	swingHighs, swingLows := findSwingPoints(window, 3, 3)
+	if len(swingHighs) == 0 && len(swingLows) == 0 {
+		return nil
+	}
+	for i := range swingHighs {
+		swingHighs[i].Index += start
+	}
+	for i := range swingLows {
+		swingLows[i].Index += start
+	}
+
+	events := make([]BOS, 0)
+	highCursor := 0
+	lowCursor := 0
+	for i := start; i < len(bars); i++ {
+		for highCursor < len(swingHighs) && swingHighs[highCursor].Index < i {
+			highCursor++
+		}
+		for lowCursor < len(swingLows) && swingLows[lowCursor].Index < i {
+			lowCursor++
+		}
+
+		if highCursor > 0 {
+			level := swingHighs[highCursor-1].Price
+			if bars[i].Close > level && (i == 0 || bars[i-1].Close <= level) {
+				events = append(events, BOS{Index: i, Direction: "UP", Level: level})
+			}
+		}
+		if lowCursor > 0 {
+			level := swingLows[lowCursor-1].Price
+			if bars[i].Close < level && (i == 0 || bars[i-1].Close >= level) {
+				events = append(events, BOS{Index: i, Direction: "DOWN", Level: level})
+			}
+		}
+	}
+
+	return events
+}
+
+func detectOrderBlocks(bars []domain.Bar, side string, lookback int) []OrderBlock {
+	if len(bars) == 0 {
+		return nil
+	}
+	if lookback <= 0 || lookback > len(bars) {
+		lookback = len(bars)
+	}
+
+	side = strings.ToUpper(strings.TrimSpace(side))
+	start := len(bars) - lookback
+	bosEvents := detectBOS(bars, lookback)
+	if len(bosEvents) == 0 {
+		return nil
+	}
+
+	seen := make(map[int]bool)
+	blocks := make([]OrderBlock, 0)
+	for i := len(bosEvents) - 1; i >= 0; i-- {
+		bos := bosEvents[i]
+		var obIndex int
+		switch {
+		case side == "BUY" && bos.Direction == "DOWN":
+			obIndex = findLastOrderBlockCandle(bars, bos.Index, start, false)
+		case side == "SELL" && bos.Direction == "UP":
+			obIndex = findLastOrderBlockCandle(bars, bos.Index, start, true)
+		default:
+			continue
+		}
+		if obIndex < 0 || seen[obIndex] {
+			continue
+		}
+		seen[obIndex] = true
+
+		block := OrderBlock{
+			Index: obIndex,
+			Side:  side,
+			High:  bars[obIndex].High,
+			Low:   bars[obIndex].Low,
+			Valid: true,
+		}
+		block.Valid = orderBlockStillValid(bars, block)
+		blocks = append(blocks, block)
+	}
+
+	return blocks
+}
+
+func findLastOrderBlockCandle(bars []domain.Bar, beforeIndex, start int, bullish bool) int {
+	if beforeIndex > len(bars) {
+		beforeIndex = len(bars)
+	}
+	if start < 0 {
+		start = 0
+	}
+	for i := beforeIndex - 1; i >= start; i-- {
+		body := math.Abs(bars[i].Close - bars[i].Open)
+		barRange := bars[i].High - bars[i].Low
+		if barRange <= 0 || body <= barRange*0.60 {
+			continue
+		}
+		if bullish && bars[i].Close > bars[i].Open {
+			return i
+		}
+		if !bullish && bars[i].Close < bars[i].Open {
+			return i
+		}
+	}
+	return -1
+}
+
+func orderBlockStillValid(bars []domain.Bar, ob OrderBlock) bool {
+	for i := ob.Index + 1; i < len(bars); i++ {
+		switch ob.Side {
+		case "BUY":
+			if bars[i].Close < ob.Low {
+				return false
+			}
+		case "SELL":
+			if bars[i].Close > ob.High {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (e Engine) checkScaleIn(h1 []domain.Bar, price, atr float64, positions []domain.Position) (*domain.Signal, domain.AnalysisLog) {
