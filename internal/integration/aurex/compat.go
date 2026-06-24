@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"gold-bot/internal/domain"
+	"gold-bot/internal/strategy/engine"
 	"gold-bot/internal/strategy/indicator"
 	"gold-bot/internal/strategy/marketfilter"
-	"gold-bot/internal/strategy/engine"
 )
 
 type AnalysisPayload struct {
@@ -94,20 +94,20 @@ type MarketStatus struct {
 	MarketOpen     bool   `json:"market_open"`
 	IsTradeAllowed bool   `json:"is_trade_allowed"`
 	MT4ServerTime  string `json:"mt4_server_time"`
-		Tradeable      bool   `json:"tradeable"`
-	}
+	Tradeable      bool   `json:"tradeable"`
+}
 
-	// TrendContextPayload is the JSON-serializable trend context for LLM consumption.
-	type TrendContextPayload struct {
-		D1Direction        string  `json:"d1_direction"`
-		H4Direction        string  `json:"h4_direction"`
-		H1Direction        string  `json:"h1_direction"`
-		M30Direction       string  `json:"m30_direction"`
-		ConsensusDirection string  `json:"consensus_direction"`
-		ConsensusStrength  float64 `json:"consensus_strength"`
-	}
+// TrendContextPayload is the JSON-serializable trend context for LLM consumption.
+type TrendContextPayload struct {
+	D1Direction        string  `json:"d1_direction"`
+	H4Direction        string  `json:"h4_direction"`
+	H1Direction        string  `json:"h1_direction"`
+	M30Direction       string  `json:"m30_direction"`
+	ConsensusDirection string  `json:"consensus_direction"`
+	ConsensusStrength  float64 `json:"consensus_strength"`
+}
 
-	var defaultStrategyMapping = map[string]string{
+var defaultStrategyMapping = map[string]string{
 	"20250231": "pullback",
 	"20250232": "breakout_retest",
 	"20250233": "divergence",

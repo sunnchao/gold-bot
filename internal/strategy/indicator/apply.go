@@ -131,5 +131,11 @@ func EnrichBars(bars []domain.Bar) []domain.Bar {
 		}
 	}
 
+	// Candlestick Pattern Detection
+	for i := range out {
+		patterns := DetectAll(out, i)
+		out[i].CandlestickPatterns = patterns
+	}
+
 	return out
 }

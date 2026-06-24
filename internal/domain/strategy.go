@@ -52,6 +52,9 @@ type Bar struct {
 	// Divergence indicators
 	MACDDivergence string `json:"macd_divergence,omitempty"` // "bullish" | "bearish" | ""
 	RSIDivergence  string `json:"rsi_divergence,omitempty"`  // "bullish" | "bearish" | ""
+
+	// Candlestick patterns detected on this bar
+	CandlestickPatterns []string `json:"candlestick_patterns,omitempty"`
 }
 
 func (b *Bar) UnmarshalJSON(data []byte) error {
@@ -98,6 +101,8 @@ func (b *Bar) UnmarshalJSON(data []byte) error {
 
 		MACDDivergence string `json:"macd_divergence,omitempty"`
 		RSIDivergence  string `json:"rsi_divergence,omitempty"`
+
+		CandlestickPatterns []string `json:"candlestick_patterns,omitempty"`
 	}
 
 	var raw rawBar
@@ -106,41 +111,42 @@ func (b *Bar) UnmarshalJSON(data []byte) error {
 	}
 
 	*b = Bar{
-		Open:       raw.Open,
-		High:       raw.High,
-		Low:        raw.Low,
-		Close:      raw.Close,
-		Volume:     raw.Volume,
-		EMA20:      raw.EMA20,
-		EMA50:      raw.EMA50,
-		EMA200:     raw.EMA200,
-		ATR:        raw.ATR,
-		RSI:        raw.RSI,
-		MACD:       raw.MACD,
-		MACDSignal: raw.MACDSignal,
-		MACDHist:   raw.MACDHist,
-		ADX:        raw.ADX,
-		BBUpper:    raw.BBUpper,
-		BBLower:    raw.BBLower,
-		BBMid:      raw.BBMid,
-		StochK:     raw.StochK,
-		StochD:     raw.StochD,
-		VolSMA:     raw.VolSMA,
-		Fib236:     raw.Fib236,
-		Fib382:     raw.Fib382,
-		Fib500:     raw.Fib500,
-		Fib618:     raw.Fib618,
-		Fib786:     raw.Fib786,
-		Fib1272:    raw.Fib1272,
-		Fib1618:    raw.Fib1618,
-		Fib2618:    raw.Fib2618,
-		PP:         raw.PP,
-		R1:         raw.R1,
-		R2:         raw.R2,
-		S1:         raw.S1,
-		S2:         raw.S2,
-		MACDDivergence: raw.MACDDivergence,
-		RSIDivergence:  raw.RSIDivergence,
+		Open:                raw.Open,
+		High:                raw.High,
+		Low:                 raw.Low,
+		Close:               raw.Close,
+		Volume:              raw.Volume,
+		EMA20:               raw.EMA20,
+		EMA50:               raw.EMA50,
+		EMA200:              raw.EMA200,
+		ATR:                 raw.ATR,
+		RSI:                 raw.RSI,
+		MACD:                raw.MACD,
+		MACDSignal:          raw.MACDSignal,
+		MACDHist:            raw.MACDHist,
+		ADX:                 raw.ADX,
+		BBUpper:             raw.BBUpper,
+		BBLower:             raw.BBLower,
+		BBMid:               raw.BBMid,
+		StochK:              raw.StochK,
+		StochD:              raw.StochD,
+		VolSMA:              raw.VolSMA,
+		Fib236:              raw.Fib236,
+		Fib382:              raw.Fib382,
+		Fib500:              raw.Fib500,
+		Fib618:              raw.Fib618,
+		Fib786:              raw.Fib786,
+		Fib1272:             raw.Fib1272,
+		Fib1618:             raw.Fib1618,
+		Fib2618:             raw.Fib2618,
+		PP:                  raw.PP,
+		R1:                  raw.R1,
+		R2:                  raw.R2,
+		S1:                  raw.S1,
+		S2:                  raw.S2,
+		MACDDivergence:      raw.MACDDivergence,
+		RSIDivergence:       raw.RSIDivergence,
+		CandlestickPatterns: raw.CandlestickPatterns,
 	}
 
 	if len(raw.Time) == 0 || bytes.Equal(raw.Time, []byte("null")) {
