@@ -69,27 +69,12 @@ extern bool     EnableScaleIn       = true;     // ➕ 浮亏加仓策略
 extern int      ScaleInMagic        = 20250239; // 浮亏加仓 Magic
 
 //+------------------------------------------------------------------+
-//| 原油对冲套利配置                                                   |
-//+------------------------------------------------------------------+
-input group "===== 原油对冲套利 ====="
-extern bool     EnableSpread        = false;    // 🛢️ 启用原油对冲套利
-extern int      SpreadMagicNumber   = 20250224; // 原油策略魔术号
-extern string   SpreadSymbol1       = "UKOilCash";  // 腿 1: Brent (布伦特)
-extern string   SpreadSymbol2       = "USOilCash";  // 腿 2: WTI (美国)
-extern double   SpreadLots          = 0.05;     // 每腿交易手数
-// 自动价差交易参数
-extern bool     EnableAutoSpreadTrade = true;    // 🛢️ 启用自动价差交易
-extern int      SpreadEntryPts       = 150;      // 开仓阈值（点数），价差偏离超过此值开仓
-extern int      SpreadExitPts        = 50;       // 平仓阈值（点数），价差回归到此时平仓
-extern int      SpreadTradeInterval  = 60;       // 检查间隔（秒）
-
-//+------------------------------------------------------------------+
 //| 通信参数配置                                                       |
 //+------------------------------------------------------------------+
 extern int      PollInterval    = 5;        // 轮询间隔（秒）
 extern int      BarInterval     = 60;       // K 线发送间隔（秒）
 extern int      BarCount        = 50;  // K 线数量      // K 线数量
-extern string   Symbols         = "XAUUSD"; // 交易品种（逗号分隔多个，如 XAUUSD,XAGUSD,USOIL）
+extern string   Symbols         = "XAUUSD"; // 交易品种（逗号分隔多个）
 extern string   SymbolSuffix    = "";       // 经纪商品种后缀（如 .m, m#, _m），留空=无后缀
 extern int      Slippage        = 3;        // 滑点（点数）
 
@@ -98,7 +83,6 @@ datetime lastPollTime   = 0;
 datetime lastBarTime    = 0;
 double   dailyStartEquity = 0;
 int      httpTimeout    = 5000;
-bool     spreadSymbolsReady = false;  // 原油品种是否可用
 
 // ========== 多品种支持 ==========
 string   g_symbols[];          // 解析后的品种列表
@@ -207,18 +191,9 @@ bool IsPrimarySymbol(string sym)
 }
 
 //+------------------------------------------------------------------+
-bool IsSpreadSymbol(string sym)
-{
-   if(StringLen(sym) == 0)
-      return false;
-
-   return (sym == SpreadSymbol1 || sym == SpreadSymbol2);
-}
-
-//+------------------------------------------------------------------+
 bool IsAllowedSymbol(string sym)
 {
-   return (IsPrimarySymbol(sym) || IsSpreadSymbol(sym));
+   return IsPrimarySymbol(sym);
 }
 
 //+------------------------------------------------------------------+
@@ -233,7 +208,6 @@ bool IsOurMagic(int magic)
    if(magic == MomentumScalpMagic) return true;
    if(magic == AISignalMagic) return true;
    if(magic == ScaleInMagic) return true;
-   if(magic == SpreadMagicNumber) return true;
    return false;
 }
 
@@ -363,36 +337,10 @@ int OnInit()
       Print("   EA 仍可运行，但建议挂载已配置品种的图表以获取最佳报价");
    }
    
-   // 原油对冲套利配置
-   if(EnableSpread)
-   {
-      Print("🛢️ 原油对冲套利：启用");
-      Print("   Magic: ", SpreadMagicNumber);
-      Print("   腿 1: ", SpreadSymbol1, " (BUY)");
-      Print("   腿 2: ", SpreadSymbol2, " (SELL)");
-      Print("   手数：", SpreadLots);
-      
-      // 检查品种是否可用
-      if(IsSymbolAvailable(SpreadSymbol1) && IsSymbolAvailable(SpreadSymbol2))
-      {
-         spreadSymbolsReady = true;
-         Print("   ✅ 品种可用");
-      }
-      else
-      {
-         spreadSymbolsReady = false;
-         Print("   ⚠️ 品种不可用，请检查经纪商是否支持");
-      }
-   }
-   else
-   {
-      Print("🛢️ 原油对冲套利：禁用");
-   }
-   
    // 扫描已有持仓（按策略分类）
    Print("📊 扫描已有持仓...");
    int pullbackCount = 0, breakoutCount = 0, divergenceCount = 0;
-   int pyramidCount = 0, counterCount = 0, rangeCount = 0, momentumScalpCount = 0, aiSignalCount = 0, spreadCount = 0, scaleInCount = 0;
+   int pyramidCount = 0, counterCount = 0, rangeCount = 0, momentumScalpCount = 0, aiSignalCount = 0, scaleInCount = 0;
    
    for(int i = 0; i < OrdersTotal(); i++)
    {
@@ -414,13 +362,11 @@ int OnInit()
          else if(magic == MomentumScalpMagic){ momentumScalpCount++; Print("   ⚡ 动量剥头皮: ", info); }
          else if(magic == AISignalMagic){ aiSignalCount++; Print("   🤖 AI信号: ", info); }
          else if(magic == ScaleInMagic){ scaleInCount++; Print("   ➕ 加仓: ", info); }
-         else if(magic == SpreadMagicNumber){ spreadCount++; Print("   🛢️ 原油对冲: ", info); }
       }
    }
    
    Print("   趋势回调: ", pullbackCount, " 单 | 突破回踩: ", breakoutCount, " 单 | RSI背离: ", divergenceCount, " 单");
    Print("   突破加仓: ", pyramidCount, " 单 | 反向回调: ", counterCount, " 单 | 震荡区间: ", rangeCount, " 单 | 动量剥头皮: ", momentumScalpCount, " 单 | AI信号: ", aiSignalCount, " 单 | 加仓: ", scaleInCount, " 单");
-   Print("   原油对冲: ", spreadCount, " 单");
    Print("=============================================");
    
    dailyStartEquity = AccountEquity();
@@ -477,7 +423,6 @@ void OnTick()
        PollAndExecute();
        PollIndicatorAlerts();  // 🆕 轮询背离/谐波信号
        CheckForUpdate();
-       AutoSpreadTrade();
        lastPollTime = now;
     }
     
@@ -528,7 +473,6 @@ bool RegisterAccount()
       "\"account_type\":\"%s\","
       "\"currency\":\"%s\","
       "\"leverage\":%d,"
-      "\"spread_enabled\":%s,"
       "\"strategy_mapping\":{"
       "\"pullback\":\"pullback\","
       "\"breakout_retest\":\"breakout_retest\","
@@ -539,8 +483,7 @@ bool RegisterAccount()
       "\"momentum_scalp\":\"momentum_scalp\""
       "}"
       "}",
-      AccountID, g_symbols[0], PullbackMagic, broker, server, name, type, currency, leverage,
-      (EnableSpread ? "true" : "false")
+      AccountID, g_symbols[0], PullbackMagic, broker, server, name, type, currency, leverage
    );
    
    string resp = HttpPost("/register", json);
@@ -734,7 +677,7 @@ void SendPositions()
    magics[4] = CounterMagic;
    magics[5] = RangeMagic;
    magics[6] = MomentumScalpMagic;
-   magics[7] = SpreadMagicNumber;
+   magics[7] = AISignalMagic;
    
    for(int s = 0; s < g_symbolCount; s++)
    {
@@ -821,14 +764,6 @@ void PollAndExecute()
             ExecuteModify(cmd, cmd_id);
          else if(action == "CLOSE")
             ExecuteClose(cmd, cmd_id);
-         else if(action == "CLOSE_PARTIAL")
-            ExecuteClosePartial(cmd, cmd_id);
-         else if(action == "CLOSE_ALL")
-            ExecuteCloseAll(cmd, cmd_id);
-         else if(action == "OPEN")
-            ExecuteOpen(cmd, cmd_id);
-         else if(action == "ADD")
-            ExecuteAdd(cmd, cmd_id);
          else if(action == "PENDING")
             ExecutePending(cmd, cmd_id);
          else if(action == "CANCEL_PENDING")
@@ -836,264 +771,6 @@ void PollAndExecute()
          else
             Print("未知指令类型：", action);
       }
-   }
-}
-
-// ============================================================
-// 执行开仓指令 (用于价差交易)
-// ============================================================
-void ExecuteOpen(string cmd, string cmd_id)
-{
-   string symbol = GetJsonStringSafe(cmd, "symbol");
-   string side   = GetJsonStringSafe(cmd, "side");
-   double lots   = GetJsonDouble(cmd, "lots");
-   string reason = GetJsonStringSafe(cmd, "reason");
-    
-   Print("🛢️ 价差开仓：", symbol, " ", side, " ", lots, "手 | ", reason);
-
-   if(!EnableSpread)
-   {
-      Print("❌ 原油对冲套利未启用");
-      ReportResult(cmd_id, "ERROR", 0, "spread_disabled");
-      return;
-   }
-
-   if(!IsSpreadSymbol(symbol))
-   {
-      Print("❌ 非法价差腿品种：", symbol);
-      ReportResult(cmd_id, "ERROR", 0, "spread_symbol_not_allowed");
-      return;
-   }
-    
-   // 检查品种是否可用
-   if(!IsSymbolAvailable(symbol))
-   {
-      Print("❌ 品种不可用：", symbol);
-      ReportResult(cmd_id, "ERROR", 0, "symbol_not_available");
-      return;
-   }
-
-   if(side != "BUY" && side != "SELL")
-   {
-      Print("❌ 非法价差开仓方向：", side);
-      ReportResult(cmd_id, "ERROR", 0, "invalid_side");
-      return;
-   }
-   
-   int op_type = OP_BUY;
-   double price = 0.0;
-   if(side == "BUY")
-   {
-      op_type = OP_BUY;
-      price = MarketInfo(symbol, MODE_ASK);
-   }
-   else if(side == "SELL")
-   {
-      op_type = OP_SELL;
-      price = MarketInfo(symbol, MODE_BID);
-   }
-   
-   lots = NormalizeVolume(symbol, lots);
-   string comment = "GB_SPREAD_" + reason;
-    
-   int ticket = OrderSend(symbol, op_type, lots, price, Slippage, 0, 0, comment, SpreadMagicNumber, 0,
-                          (side == "BUY") ? clrGreen : clrRed);
-   
-   if(ticket > 0)
-   {
-      Print("✅ 价差开仓成功：#", ticket, " ", symbol, " ", side, " ", lots, "手 @ ", price);
-      ReportResult(cmd_id, "OK", ticket, "");
-   }
-   else
-   {
-      int err = GetLastError();
-      Print("❌ 价差开仓失败：Error#", err);
-      ReportResult(cmd_id, "ERROR", 0, IntegerToString(err));
-   }
-}
-
-// ============================================================
-// 执行加仓指令 (用于价差交易)
-// ============================================================
-void ExecuteAdd(string cmd, string cmd_id)
-{
-   ExecuteOpen(cmd, cmd_id);  // 加仓本质也是开仓
-}
-
-// ============================================================
-// 执行部分平仓指令 (用于价差交易)
-// ============================================================
-void ExecuteClosePartial(string cmd, string cmd_id)
-{
-   string symbol = GetJsonStringSafe(cmd, "symbol");
-   double lots   = GetJsonDouble(cmd, "lots");
-   string reason = GetJsonStringSafe(cmd, "reason");
-    
-   Print("🛢️ 价差部分平仓：", symbol, " ", lots, "手 | ", reason);
-
-   if(!EnableSpread)
-   {
-      Print("❌ 原油对冲套利未启用");
-      ReportResult(cmd_id, "ERROR", 0, "spread_disabled");
-      return;
-   }
-
-   if(!IsSpreadSymbol(symbol))
-   {
-      Print("❌ 非法价差腿品种：", symbol);
-      ReportResult(cmd_id, "ERROR", 0, "spread_symbol_not_allowed");
-      return;
-   }
-
-   double remainingLots = lots;
-   bool matchedPosition = false;
-   bool closedAny = false;
-   bool closeFailed = false;
-   int lastTicket = 0;
-   int failedTicket = 0;
-
-   for(int i = OrdersTotal() - 1; i >= 0 && remainingLots > 0.0000001; i--)
-   {
-      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
-      {
-          if(OrderSymbol() != symbol) continue;
-
-          if(OrderMagicNumber() != SpreadMagicNumber) continue;
-
-          matchedPosition = true;
-
-          double closeLots = MathMin(remainingLots, OrderLots());
-          closeLots = NormalizeCloseVolume(symbol, closeLots);
-          if(closeLots <= 0)
-             continue;
-
-         int ticket = OrderTicket();
-         bool result = OrderClose(ticket, closeLots,
-                                  (OrderType() == OP_BUY) ? MarketInfo(symbol, MODE_BID) : MarketInfo(symbol, MODE_ASK),
-                                  Slippage,
-                                  (OrderType() == OP_BUY) ? clrRed : clrGreen);
-          if(result)
-          {
-             remainingLots -= closeLots;
-             closedAny = true;
-             lastTicket = ticket;
-             Print("✅ 部分平仓成功：#", ticket, " ", symbol, " ", closeLots, "手 | 剩余=", DoubleToString(MathMax(0.0, remainingLots), 2));
-          }
-          else
-          {
-             int err = GetLastError();
-             closeFailed = true;
-             failedTicket = ticket;
-             Print("❌ 部分平仓失败：#", ticket, " ", symbol, " ", closeLots, "手 | Error#", err);
-             break;
-          }
-       }
-   }
-
-   if(!matchedPosition)
-   {
-      Print("❌ 未找到对应持仓");
-      ReportResult(cmd_id, "ERROR", 0, "position_not_found");
-      return;
-   }
-
-   if(closeFailed)
-   {
-      ReportResult(cmd_id, "ERROR", failedTicket, "close_failed");
-      return;
-   }
-
-   if(remainingLots <= 0.0000001)
-   {
-      ReportResult(cmd_id, "OK", lastTicket, "");
-      return;
-   }
-
-   if(closedAny)
-   {
-      Print("⚠️ 部分平仓未完成：剩余 ", DoubleToString(MathMax(0.0, remainingLots), 2), " 手未成交");
-      ReportResult(cmd_id, "ERROR", lastTicket, "partial_close_incomplete");
-      return;
-   }
-
-   Print("⚠️ 部分平仓未完成：请求手数无法完全执行，剩余 ", DoubleToString(MathMax(0.0, remainingLots), 2), " 手");
-   ReportResult(cmd_id, "ERROR", 0, "partial_close_incomplete");
-}
-
-// ============================================================
-// 执行全部平仓指令 (用于价差交易)
-// ============================================================
-void ExecuteCloseAll(string cmd, string cmd_id)
-{
-   string symbol = GetJsonStringSafe(cmd, "symbol");
-   double lots   = GetJsonDouble(cmd, "lots");
-   string reason = GetJsonStringSafe(cmd, "reason");
-    
-   Print("🛢️ 价差全部平仓：", symbol, " ", lots, "手 | ", reason);
-
-   if(!EnableSpread)
-   {
-      Print("❌ 原油对冲套利未启用");
-      ReportResult(cmd_id, "ERROR", 0, "spread_disabled");
-      return;
-   }
-
-   if(!IsSpreadSymbol(symbol))
-   {
-      Print("❌ 非法价差腿品种：", symbol);
-      ReportResult(cmd_id, "ERROR", 0, "spread_symbol_not_allowed");
-      return;
-   }
-    
-   int closedCount = 0;
-   bool matchedPosition = false;
-   bool closeFailed = false;
-   int failedTicket = 0;
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-   {
-      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
-      {
-          if(OrderSymbol() != symbol) continue;
-
-          if(OrderMagicNumber() != SpreadMagicNumber) continue;
-
-          matchedPosition = true;
-           
-          int ticket = OrderTicket();
-          bool result = OrderClose(ticket, OrderLots(),
-                                   (OrderType() == OP_BUY) ? MarketInfo(symbol, MODE_BID) : MarketInfo(symbol, MODE_ASK),
-                                   Slippage,
-                                   (OrderType() == OP_BUY) ? clrRed : clrGreen);
-          if(result)
-          {
-             Print("✅ 平仓成功：#", ticket, " ", symbol);
-             closedCount++;
-          }
-          else
-          {
-             int err = GetLastError();
-             closeFailed = true;
-             failedTicket = ticket;
-             Print("❌ 全部平仓失败：#", ticket, " ", symbol, " | Error#", err);
-          }
-       }
-   }
-
-   if(!matchedPosition)
-   {
-      ReportResult(cmd_id, "ERROR", 0, "no_position_found");
-      return;
-   }
-
-   if(closeFailed)
-   {
-      ReportResult(cmd_id, "ERROR", failedTicket, "close_failed");
-      return;
-   }
-
-   if(closedCount > 0)
-   {
-      ReportResult(cmd_id, "OK", closedCount, "");
    }
 }
 
@@ -1956,210 +1633,6 @@ string GetArrayElement(string array_str, int index)
    }
    
    return "";
-}
-
-//+------------------------------------------------------------------+
-//| 计算波动率加权手数（使用 H1 ATR）                                 |
-//+------------------------------------------------------------------+
-void CalculateVolWeightedLots(double &brentLots, double &wtiLots)
-{
-   double brentATR = iATR(SpreadSymbol1, PERIOD_H1, 14, 0);
-   double wtiATR   = iATR(SpreadSymbol2, PERIOD_H1, 14, 0);
-
-   // 如果 ATR 数据不可用，回退到原始手数
-   if(brentATR <= 0 || wtiATR <= 0)
-   {
-      brentLots = NormalizeVolume(SpreadSymbol1, SpreadLots);
-      wtiLots   = NormalizeVolume(SpreadSymbol2, SpreadLots);
-      return;
-   }
-
-   double avgATR = (brentATR + wtiATR) / 2.0;
-
-   // 调整：波动率大的腿手数缩小，波动率小的腿手数放大
-   brentLots = SpreadLots * (avgATR / brentATR);
-   wtiLots   = SpreadLots * (avgATR / wtiATR);
-
-   // 归一化到经纪商步长
-   brentLots = NormalizeVolume(SpreadSymbol1, brentLots);
-   wtiLots   = NormalizeVolume(SpreadSymbol2, wtiLots);
-
-   // 确保不小于最小手数
-   double brentMin = MarketInfo(SpreadSymbol1, MODE_MINLOT);
-   double wtiMin   = MarketInfo(SpreadSymbol2, MODE_MINLOT);
-   if(brentMin > 0 && brentLots < brentMin) brentLots = brentMin;
-   if(wtiMin > 0 && wtiLots < wtiMin)       wtiLots   = wtiMin;
-}
-
-//+------------------------------------------------------------------+
-//| 自动价差交易（Brent-WTI spread）                                  |
-//+------------------------------------------------------------------+
-void AutoSpreadTrade()
-{
-   if(!EnableAutoSpreadTrade) return;
-   if(!EnableSpread) return;
-   if(!spreadSymbolsReady) return;
-
-   static datetime lastCheck = 0;
-   if(TimeCurrent() - lastCheck < SpreadTradeInterval) return;
-   lastCheck = TimeCurrent();
-
-   // 输出波动率信息便于监控
-   double debugBrentATR = iATR(SpreadSymbol1, PERIOD_H1, 14, 0);
-   double debugWtiATR = iATR(SpreadSymbol2, PERIOD_H1, 14, 0);
-   if(debugBrentATR > 0 && debugWtiATR > 0)
-      Print("🛢️ 波动率 Brent ATR=", debugBrentATR, " WTI ATR=", debugWtiATR, " 比例=", (debugBrentATR/debugWtiATR));
-
-   double brentBid = MarketInfo(SpreadSymbol1, MODE_BID);
-   double brentAsk = MarketInfo(SpreadSymbol1, MODE_ASK);
-   double wtiBid   = MarketInfo(SpreadSymbol2, MODE_BID);
-   double wtiAsk   = MarketInfo(SpreadSymbol2, MODE_ASK);
-
-   if(brentBid <= 0 || brentAsk <= 0 || wtiBid <= 0 || wtiAsk <= 0)
-   {
-      Print("🛢️ 原油价差：价格数据不可用");
-      return;
-   }
-
-   double brentMid = (brentBid + brentAsk) / 2;
-   double wtiMid   = (wtiBid + wtiAsk) / 2;
-   double spread = brentMid - wtiMid;
-
-   double wtiPoint = MarketInfo(SpreadSymbol2, MODE_POINT);
-   if(wtiPoint <= 0)
-   {
-      Print("🛢️ 原油价差：WTI 点值不可用");
-      return;
-   }
-
-   int spreadLongCount = 0;
-   int spreadShortCount = 0;
-   double ukLongLots = 0, usShortLots = 0;
-   double ukShortLots = 0, usLongLots = 0;
-
-   for(int i = 0; i < OrdersTotal(); i++)
-   {
-      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderMagicNumber() != SpreadMagicNumber) continue;
-
-      string sym = OrderSymbol();
-      int type = OrderType();
-
-      if(sym == SpreadSymbol1)
-      {
-         if(type == OP_BUY)  { spreadLongCount++;  ukLongLots  += OrderLots(); }
-         if(type == OP_SELL) { spreadShortCount++; ukShortLots += OrderLots(); }
-      }
-      else if(sym == SpreadSymbol2)
-      {
-         if(type == OP_BUY)  { spreadShortCount++; usLongLots  += OrderLots(); }
-         if(type == OP_SELL) { spreadLongCount++;  usShortLots += OrderLots(); }
-      }
-   }
-
-   double spreadPoints = spread / wtiPoint;
-   int spreadPointsInt = (int)MathRound(spreadPoints);
-
-   if(spreadLongCount == 0 && spreadShortCount == 0)
-   {
-      if(spreadPointsInt > SpreadEntryPts)
-      {
-         Print("🛢️ 价差过大 ", spreadPointsInt, "点 > ", SpreadEntryPts, "点 → 做窄价差：SELL ", SpreadSymbol1, " + BUY ", SpreadSymbol2);
-
-         double sellPrice = MarketInfo(SpreadSymbol1, MODE_BID);
-         double buyPrice  = MarketInfo(SpreadSymbol2, MODE_ASK);
-
-         double volBrentLots = SpreadLots;
-         double volWtiLots = SpreadLots;
-         CalculateVolWeightedLots(volBrentLots, volWtiLots);
-
-         int ticket1 = OrderSend(SpreadSymbol1, OP_SELL, volBrentLots, sellPrice, Slippage, 0, 0,
-                                 "GB_SPREAD_SELL", SpreadMagicNumber, 0, clrRed);
-         if(ticket1 > 0)
-            Print("✅ 价差开仓：#", ticket1, " ", SpreadSymbol1, " SELL ", volBrentLots, "手 @ ", sellPrice);
-         else
-            Print("❌ 价差开仓失败 SELL ", SpreadSymbol1, " Error#", GetLastError());
-
-         int ticket2 = OrderSend(SpreadSymbol2, OP_BUY, volWtiLots, buyPrice, Slippage, 0, 0,
-                                 "GB_SPREAD_BUY", SpreadMagicNumber, 0, clrGreen);
-         if(ticket2 > 0)
-            Print("✅ 价差开仓：#", ticket2, " ", SpreadSymbol2, " BUY ", volWtiLots, "手 @ ", buyPrice);
-         else
-            Print("❌ 价差开仓失败 BUY ", SpreadSymbol2, " Error#", GetLastError());
-      }
-      else if(spreadPointsInt < -SpreadEntryPts)
-      {
-         Print("🛢️ 价差过小 ", spreadPointsInt, "点 < -", SpreadEntryPts, "点 → 做阔价差：BUY ", SpreadSymbol1, " + SELL ", SpreadSymbol2);
-
-         double buyPrice  = MarketInfo(SpreadSymbol1, MODE_ASK);
-         double sellPrice = MarketInfo(SpreadSymbol2, MODE_BID);
-
-         double volBrentLots = SpreadLots;
-         double volWtiLots = SpreadLots;
-         CalculateVolWeightedLots(volBrentLots, volWtiLots);
-
-         int ticket1 = OrderSend(SpreadSymbol1, OP_BUY, volBrentLots, buyPrice, Slippage, 0, 0,
-                                 "GB_SPREAD_BUY", SpreadMagicNumber, 0, clrGreen);
-         if(ticket1 > 0)
-            Print("✅ 价差开仓：#", ticket1, " ", SpreadSymbol1, " BUY ", volBrentLots, "手 @ ", buyPrice);
-         else
-            Print("❌ 价差开仓失败 BUY ", SpreadSymbol1, " Error#", GetLastError());
-
-         int ticket2 = OrderSend(SpreadSymbol2, OP_SELL, volWtiLots, sellPrice, Slippage, 0, 0,
-                                 "GB_SPREAD_SELL", SpreadMagicNumber, 0, clrRed);
-         if(ticket2 > 0)
-            Print("✅ 价差开仓：#", ticket2, " ", SpreadSymbol2, " SELL ", volWtiLots, "手 @ ", sellPrice);
-         else
-            Print("❌ 价差开仓失败 SELL ", SpreadSymbol2, " Error#", GetLastError());
-      }
-   }
-
-   if(spreadLongCount > 0 && spreadShortCount == 0)
-   {
-      if(MathAbs(spreadPointsInt) <= SpreadExitPts)
-      {
-         Print("🛢️ 价差回归 ", spreadPointsInt, "点 ≤ ", SpreadExitPts, "点 → 平仓价差持仓");
-         CloseAllSpreadPositions();
-      }
-   }
-   else if(spreadShortCount > 0 && spreadLongCount == 0)
-   {
-      if(MathAbs(spreadPointsInt) <= SpreadExitPts)
-      {
-         Print("🛢️ 价差回归 ", spreadPointsInt, "点 ≤ ", SpreadExitPts, "点 → 平仓价差持仓");
-         CloseAllSpreadPositions();
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| 平仓所有价差持仓                                                  |
-//+------------------------------------------------------------------+
-void CloseAllSpreadPositions()
-{
-   int closed = 0;
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-   {
-      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderMagicNumber() != SpreadMagicNumber) continue;
-
-      int ticket = OrderTicket();
-      string symbol = OrderSymbol();
-      double lots = OrderLots();
-      double closePrice = (OrderType() == OP_BUY) ? MarketInfo(symbol, MODE_BID) : MarketInfo(symbol, MODE_ASK);
-      color clr = (OrderType() == OP_BUY) ? clrRed : clrGreen;
-
-      if(OrderClose(ticket, lots, closePrice, Slippage, clr))
-      {
-         Print("✅ 平仓成功：#", ticket, " ", symbol, " ", lots, "手");
-         closed++;
-      }
-      else
-      {
-         Print("❌ 平仓失败：#", ticket, " ", symbol, " Error#", GetLastError());
-      }
-   }
-   Print("🛢️ 价差平仓完成：共平 ", closed, " 单");
 }
 
 //+------------------------------------------------------------------+

@@ -61,13 +61,6 @@ STRATEGY = {
         "entry2_ratio": 0.6,
         "min_score": 6,
     },
-    "reversal": {
-        "enabled": False,
-        "name": "反转对冲",
-        "size_ratio": 0.3,
-        "max_hedge": 2,
-        "min_score": 5,
-    },
 }
 
 # ============================================

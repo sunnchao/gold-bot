@@ -250,6 +250,10 @@ func GetStrategyConfigBySymbol(baseSymbol string) StrategyConfig {
 		return GBPUSDStrategyConfig()
 	case "USDCAD":
 		return USDCADStrategyConfig()
+	case "US100CASH":
+		return US100CashStrategyConfig()
+	case "USOILCASH", "UKOILCASH":
+		return OilStrategyConfig()
 	default:
 		return DefaultStrategyConfig()
 	}
@@ -493,5 +497,78 @@ func USDCADStrategyConfig() StrategyConfig {
 	cfg.MomentumScalpMaxHoldingMin = 25
 	cfg.M15ConfirmRSIThreshold = 40.0
 	cfg.MinScore = 5
+	return cfg
+}
+
+func US100CashStrategyConfig() StrategyConfig {
+	cfg := DefaultStrategyConfig()
+	cfg.H4ADXThreshold = 22.0
+	cfg.H4RequireConsecutive = 2
+	cfg.PullbackMinADX = 22.0
+	cfg.PullbackDistATR = 0.6
+	cfg.PullbackSLATR = 1.0
+	cfg.PullbackTP1ATR = 1.5
+	cfg.PullbackTP2ATR = 3.0
+	cfg.BreakoutRetestSLATR = 1.2
+	cfg.BreakoutRetestTP1ATR = 2.0
+	cfg.BreakoutRetestTP2ATR = 4.0
+	cfg.DivergenceSLATR = 0.8
+	cfg.DivergenceTP1ATR = 1.5
+	cfg.DivergenceTP2ATR = 3.0
+	cfg.BreakoutPyramidMinADX = 25.0
+	cfg.BreakoutPyramidSLATR = 1.2
+	cfg.ScaleInSLATR = 1.0
+	cfg.ScaleInTP1ATR = 1.5
+	cfg.ScaleInTP2ATR = 3.0
+	cfg.MomentumScalpMinADX = 16.0
+	cfg.MomentumScalpSLATR = 0.3
+	cfg.MomentumScalpTP1ATR = 0.5
+	cfg.MomentumScalpTP2ATR = 0.8
+	cfg.MomentumScalpMaxHoldingMin = 30
+	cfg.MomentumScalpMinScore = 6
+	cfg.Trend.H4Weight = 0.30
+	cfg.Trend.H1Weight = 0.35
+	cfg.Trend.M30Weight = 0.30
+	cfg.Trend.D1Weight = 0.05
+	cfg.MinScore = 5
+	cfg.FibExtension.MinADX = 25.0
+	return cfg
+}
+
+func OilStrategyConfig() StrategyConfig {
+	cfg := DefaultStrategyConfig()
+	cfg.H4ADXThreshold = 22.0
+	cfg.H4RequireConsecutive = 2
+	cfg.PullbackMinADX = 20.0
+	cfg.PullbackDistATR = 0.8
+	cfg.PullbackSLATR = 2.0
+	cfg.PullbackTP1ATR = 2.5
+	cfg.PullbackTP2ATR = 4.0
+	cfg.BreakoutRetestLookback = 45
+	cfg.BreakoutRetestDistATR = 0.7
+	cfg.BreakoutRetestSLATR = 2.0
+	cfg.BreakoutRetestTP1ATR = 2.5
+	cfg.BreakoutRetestTP2ATR = 4.5
+	cfg.DivergenceSLATR = 1.5
+	cfg.DivergenceTP1ATR = 2.5
+	cfg.DivergenceTP2ATR = 4.5
+	cfg.BreakoutPyramidMinADX = 28.0
+	cfg.BreakoutPyramidSLATR = 2.0
+	cfg.BreakoutPyramidMinSpacingATR = 2.5
+	cfg.ScaleInMinADX = 22.0
+	cfg.ScaleInSLATR = 1.8
+	cfg.ScaleInTP1ATR = 2.0
+	cfg.ScaleInTP2ATR = 3.5
+	cfg.MomentumScalpMinADX = 15.0
+	cfg.MomentumScalpSLATR = 0.6
+	cfg.MomentumScalpTP1ATR = 0.8
+	cfg.MomentumScalpTP2ATR = 1.2
+	cfg.MomentumScalpMinScore = 7
+	cfg.MomentumScalpMaxHoldingMin = 45
+	cfg.M15ConfirmRSIThreshold = 42.0
+	cfg.MinScore = 5
+	cfg.FibExtension.MinADX = 28.0
+	cfg.PullbackFib.RetracementEnabled = true
+	cfg.PullbackFib.GoldenPocketBufferATR = 0.4
 	return cfg
 }

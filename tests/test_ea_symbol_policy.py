@@ -174,38 +174,6 @@ class EASymbolPolicySourceTests(unittest.TestCase):
                 f"{label} close all should guard spread legs",
             )
 
-    def test_configured_spread_symbols_remain_visible_for_management(self):
-        for label in self.sources:
-            is_spread_symbol = self.assert_function_exists(label, "IsSpreadSymbol")
-            is_allowed_symbol = self.assert_function_exists(label, "IsAllowedSymbol")
-            send_positions = self.assert_function_exists(label, "SendPositions")
-
-            self.assertNotIn(
-                "EnableSpread",
-                is_spread_symbol,
-                f"{label} IsSpreadSymbol should keep configured spread legs visible even when spread entry is disabled",
-            )
-            self.assertIn(
-                "SpreadSymbol1",
-                is_spread_symbol,
-                f"{label} IsSpreadSymbol should match the first configured spread leg",
-            )
-            self.assertIn(
-                "SpreadSymbol2",
-                is_spread_symbol,
-                f"{label} IsSpreadSymbol should match the second configured spread leg",
-            )
-            self.assertIn(
-                "IsSpreadSymbol",
-                is_allowed_symbol,
-                f"{label} allowed symbol policy should include configured spread legs",
-            )
-            self.assertIn(
-                "IsAllowedSymbol",
-                send_positions,
-                f"{label} positions sync should keep using the shared allowed symbol policy",
-            )
-
     def test_modify_and_close_guard_selected_symbol(self):
         for label in self.sources:
             execute_modify = self.assert_function_exists(label, "ExecuteModify")

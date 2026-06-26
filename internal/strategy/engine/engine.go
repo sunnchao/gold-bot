@@ -68,7 +68,7 @@ func roundingPrecision(baseSymbol string) int {
 		return 5
 	case "GBPJPY", "EURJPY", "USDJPY":
 		return 3
-	case "XAUUSD", "XAGUSD", "GOLD", "UKOILCASH", "USOILCASH":
+	case "XAUUSD", "XAGUSD", "GOLD", "US100CASH", "USOILCASH", "UKOILCASH":
 		return 2
 	default:
 		return 2

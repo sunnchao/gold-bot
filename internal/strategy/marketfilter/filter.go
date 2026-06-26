@@ -73,16 +73,16 @@ func Evaluate(input Input) Result {
 	if input.State.Tick.Spread > maxSpreadForSymbol(input.Symbol) {
 		add("spread.too_wide", SeverityBlocking)
 	}
-	if isFridayCloseWindow(now) {
+	if isSymbolCloseWindow(now, input.Symbol) {
 		add("session.friday_close_window", SeverityBlocking)
 	}
-	if isRolloverWindow(now) {
+	if isSymbolRolloverWindow(now, input.Symbol) {
 		add("session.rollover_window", SeverityWarning)
 	}
-	if isLowLiquiditySession(now) {
+	if isSymbolLowLiquiditySession(now, input.Symbol) {
 		add("session.low_liquidity", SeverityWarning)
 	}
-		if hasATRExpansion(input.State.Bars["M30"]) {
+	if hasATRExpansion(input.State.Bars["M30"]) {
 		add("volatility.atr_expansion", SeverityWarning)
 	}
 
@@ -121,18 +121,40 @@ func maxSpreadForSymbol(symbol string) float64 {
 	}
 }
 
-func isFridayCloseWindow(now time.Time) bool {
-	return now.Weekday() == time.Friday && now.Hour() >= 20
+func isSymbolCloseWindow(now time.Time, symbol string) bool {
+	base := domain.BaseSymbol(symbol)
+	switch base {
+	case "US100CASH":
+		if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
+			return true
+		}
+		return false
+	default:
+		return now.Weekday() == time.Friday && now.Hour() >= 20
+	}
 }
 
-func isRolloverWindow(now time.Time) bool {
-	minuteOfDay := now.Hour()*60 + now.Minute()
-	return minuteOfDay >= 21*60+55 && minuteOfDay <= 22*60+10
+func isSymbolRolloverWindow(now time.Time, symbol string) bool {
+	base := domain.BaseSymbol(symbol)
+	switch base {
+	case "US100CASH":
+		return false
+	default:
+		minuteOfDay := now.Hour()*60 + now.Minute()
+		return minuteOfDay >= 21*60+55 && minuteOfDay <= 22*60+10
+	}
 }
 
-func isLowLiquiditySession(now time.Time) bool {
-	minuteOfDay := now.Hour()*60 + now.Minute()
-	return minuteOfDay > 22*60+10 || minuteOfDay < 1*60
+func isSymbolLowLiquiditySession(now time.Time, symbol string) bool {
+	base := domain.BaseSymbol(symbol)
+	switch base {
+	case "US100CASH":
+		h := now.Hour()
+		return h < 14 || h >= 21
+	default:
+		minuteOfDay := now.Hour()*60 + now.Minute()
+		return minuteOfDay > 22*60+10 || minuteOfDay < 1*60
+	}
 }
 
 func hasATRExpansion(bars []domain.Bar) bool {

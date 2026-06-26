@@ -690,6 +690,8 @@ func TestRoundToPrecisionAndRoundingPrecision(t *testing.T) {
 		{symbol: "GBPJPY", value: 198.4567, wantPrec: 3, wantRound: 198.457},
 		{symbol: "XAUUSD", value: 2345.678, wantPrec: 2, wantRound: 2345.68},
 		{symbol: "USOilCash", value: 72.345, wantPrec: 2, wantRound: 72.35},
+		{symbol: "UKOilCash", value: 75.123, wantPrec: 2, wantRound: 75.12},
+		{symbol: "US100Cash", value: 19876.54, wantPrec: 2, wantRound: 19876.54},
 	}
 
 	for _, tt := range tests {

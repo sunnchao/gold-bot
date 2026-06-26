@@ -312,6 +312,12 @@ func BaseSymbol(raw string) string {
 		return "USDJPY"
 	case "EURUSD":
 		return "EURUSD"
+	case "US100CASH", "US100", "NAS100":
+		return "US100CASH"
+	case "USOILCASH", "USOIL", "WTI":
+		return "USOILCASH"
+	case "UKOILCASH", "UKOIL", "BRENT":
+		return "UKOILCASH"
 	}
 	return s
 }

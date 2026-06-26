@@ -324,6 +324,12 @@ func metadataFor(symbol string) symbolMeta {
 			MinSLDistance: 0.0005,
 			MaxSLDistance: 0.05,
 		}
+	case "US100CASH":
+		return symbolMeta{Symbol: "US100CASH", ContractSize: 1, MinLot: 0.01, MaxLot: 20, LotStep: 0.01, MaxSpread: 80.0, MinSLDistance: 1.0, MaxSLDistance: 500.0}
+	case "USOILCASH":
+		return symbolMeta{Symbol: "USOILCASH", ContractSize: 100, MinLot: 0.01, MaxLot: 30, LotStep: 0.01, MaxSpread: 80.0, MinSLDistance: 0.05, MaxSLDistance: 10.0}
+	case "UKOILCASH":
+		return symbolMeta{Symbol: "UKOILCASH", ContractSize: 100, MinLot: 0.01, MaxLot: 30, LotStep: 0.01, MaxSpread: 80.0, MinSLDistance: 0.05, MaxSLDistance: 10.0}
 	default:
 		return symbolMeta{
 			Symbol:        "XAUUSD",
