@@ -1447,6 +1447,10 @@ double CalcLotsForStrategy(string strategy, string symbol, double sl_distance)
    else
       lots = CalcLots(sl_distance);
 
+   // US100Cash 指数CFD手数减半（标准手数 × 0.5）
+   if(StringFind(symbol, "US100") >= 0 || StringFind(symbol, "NAS100") >= 0)
+      lots = lots * 0.5;
+
    return lots;
 }
 
