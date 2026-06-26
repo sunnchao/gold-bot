@@ -78,6 +78,24 @@ extern string   Symbols         = "XAUUSD"; // 交易品种（逗号分隔多个
 extern string   SymbolSuffix    = "";       // 经纪商品种后缀（如 .m, m#, _m），留空=无后缀
 extern int      Slippage        = 3;        // 滑点（点数）
 
+input group "===== 可视化桥接 ====="
+extern bool     EnableVisualBridge       = true;
+extern int      VisualBridgePollSeconds  = 5;
+extern int      VisualBridgeTimeoutMs    = 1500;
+extern string   VisualBridgeTimeframes   = "M1,M5,M15,M30,H1,H4,D1";
+extern bool     VisualBridgeCommonFiles  = true;
+
+input group "===== 谐波指标可视化 ====="
+extern bool     EnableHarmonicVisuals   = true;    // 显示 Shepherd 谐波指标面板/图表对象
+extern bool     EnableHarmonicReport    = true;    // 将本地谐波快照上报到服务端
+extern string   HarmonicIndicatorName   = "Market\\Shepherd_Harmonic_Patterns";
+extern int      HarmonicPollSeconds     = 10;      // 本地指标读取间隔（秒）
+extern int      HarmonicLookbackShift   = 1;       // 默认读取已收盘K线
+extern int      HarmonicPanelCorner     = 1;       // CORNER_RIGHT_UPPER
+extern int      HarmonicPanelX          = 12;
+extern int      HarmonicPanelY          = 24;
+extern int      HarmonicMaxObjects      = 40;
+
 // ============ 全局变量 ============
 datetime lastPollTime   = 0;
 datetime lastBarTime    = 0;
@@ -94,6 +112,9 @@ datetime lastSuccessTime  = 0;            // 最后成功通信时间
 int      failCount        = 0;            // 连续失败次数
 datetime lastRegisterTry  = 0;            // 上次注册尝试时间（每5秒重试）
 bool     gbRegistered     = false;        // 注册是否成功
+datetime g_lastVisualBridgePollTime = 0;
+int      g_visualBridgeSymbolIndex = 0;
+int      g_visualBridgeTimeframeIndex = 0;
 
 //+------------------------------------------------------------------+
 //| 根据策略名称获取对应的 MagicNumber|
@@ -336,7 +357,7 @@ int OnInit()
       Print("⚠️ 图表品种 ", chartSym, " 未在配置列表中 | 已配置: ", Symbols);
       Print("   EA 仍可运行，但建议挂载已配置品种的图表以获取最佳报价");
    }
-   
+
    // 扫描已有持仓（按策略分类）
    Print("📊 扫描已有持仓...");
    int pullbackCount = 0, breakoutCount = 0, divergenceCount = 0;
@@ -421,11 +442,13 @@ void OnTick()
        SendHeartbeat();
        SendPositions();
        PollAndExecute();
-       PollIndicatorAlerts();  // 🆕 轮询背离/谐波信号
        CheckForUpdate();
        lastPollTime = now;
     }
-    
+
+    if(gbRegistered)
+       PollVisualBridge();
+
     // 定时发送 K 线（仅注册成功后执行）
     if(gbRegistered && now - lastBarTime >= BarInterval)
     {
@@ -1503,6 +1526,33 @@ string HttpPost(string path, string data)
 }
 
 // ============================================================
+// Visual bridge HTTP POST without retry or sleep
+// ============================================================
+string HttpPostBridge(string path, string data, int timeout)
+{
+   string url = ServerURL + path;
+
+   char post_data[];
+   StringToCharArray(data, post_data, 0, StringLen(data), CP_UTF8);
+
+   char result_data[];
+   string request_headers = "Content-Type: application/json\r\n";
+   if(ApiToken != "")
+      request_headers += "X-API-Token: " + ApiToken + "\r\n";
+
+   string response_headers = "";
+   int requestTimeout = timeout;
+   if(requestTimeout < 100)
+      requestTimeout = 100;
+
+   int code = WebRequest("POST", url, request_headers, requestTimeout, post_data, result_data, response_headers);
+   if(code >= 200 && code < 300)
+      return CharArrayToString(result_data);
+
+   return "";
+}
+
+// ============================================================
 // 检查更新
 // ============================================================
 void CheckForUpdate()
@@ -1746,49 +1796,596 @@ string GetJsonArraySafe(string json, string key)
 // 全局变量：跟踪已创建的对象数量
 int g_indicatorObjectCount = 0;
 string g_indicatorObjectPrefix = "GB_Alert_";
+int      g_harmonicObjectCount = 0;
+string   g_harmonicObjectPrefix = "GB_Harmonic_";
+string   g_lastHarmonicReportKey = "";
+datetime g_lastHarmonicPollTime = 0;
+datetime g_lastHarmonicMissingLogTime = 0;
+string   g_lastHarmonicReportState = "Idle";
+
+//+------------------------------------------------------------------+
+//| 谐波辅助函数                                                       |
+//+------------------------------------------------------------------+
+bool HasIndicatorValue(double v)
+{
+   return (v != EMPTY_VALUE && v != 0.0);
+}
+
+//+------------------------------------------------------------------+
+string TimeframeToString(int tf)
+{
+   if(tf == PERIOD_M1) return "M1";
+   if(tf == PERIOD_M5) return "M5";
+   if(tf == PERIOD_M15) return "M15";
+   if(tf == PERIOD_M30) return "M30";
+   if(tf == PERIOD_H1) return "H1";
+   if(tf == PERIOD_H4) return "H4";
+   if(tf == PERIOD_D1) return "D1";
+   if(tf == PERIOD_W1) return "W1";
+   if(tf == PERIOD_MN1) return "MN1";
+   return IntegerToString(tf);
+}
+
+//+------------------------------------------------------------------+
+string SanitizeVisualFilePart(string value)
+{
+   string sanitized = StringTrimLeft(StringTrimRight(value));
+   string disallowed = "\\/:*?\"<>| ,;";
+   for(int i = 0; i < StringLen(disallowed); i++)
+   {
+      string ch = StringSubstr(disallowed, i, 1);
+      StringReplace(sanitized, ch, "_");
+   }
+
+   if(StringLen(sanitized) == 0)
+      sanitized = "na";
+
+   return sanitized;
+}
+
+//+------------------------------------------------------------------+
+string VisualCacheFileName(string accountID, string symbol, string timeframe)
+{
+   return "GoldBoltVisual_" +
+          SanitizeVisualFilePart(accountID) + "_" +
+          SanitizeVisualFilePart(symbol) + "_" +
+          SanitizeVisualFilePart(timeframe) + ".json";
+}
+
+//+------------------------------------------------------------------+
+bool WriteVisualCache(string fileName, string payload)
+{
+   int flags = FILE_WRITE | FILE_TXT | FILE_ANSI;
+   if(VisualBridgeCommonFiles)
+      flags |= FILE_COMMON;
+
+   int handle = FileOpen(fileName, flags);
+   if(handle == INVALID_HANDLE)
+   {
+      Print("⚠️ Visual cache open failed: ", fileName, " error=", GetLastError());
+      return false;
+   }
+
+   FileWriteString(handle, payload, StringLen(payload));
+   FileClose(handle);
+   return true;
+}
+
+//+------------------------------------------------------------------+
+int ParseVisualBridgeTimeframes(string &frames[])
+{
+   ArrayResize(frames, 0);
+   string remaining = VisualBridgeTimeframes;
+   int count = 0;
+
+   while(StringLen(remaining) > 0)
+   {
+      int pos = StringFind(remaining, ",");
+      string token;
+      if(pos < 0)
+      {
+         token = remaining;
+         remaining = "";
+      }
+      else
+      {
+         token = StringSubstr(remaining, 0, pos);
+         remaining = StringSubstr(remaining, pos + 1);
+      }
+
+      token = StringTrimLeft(StringTrimRight(token));
+      if(StringLen(token) == 0)
+         continue;
+
+      ArrayResize(frames, count + 1);
+      frames[count] = token;
+      count++;
+   }
+
+   return count;
+}
+
+//+------------------------------------------------------------------+
+void PollVisualBridge()
+{
+   if(!EnableVisualBridge || !gbRegistered)
+      return;
+   if(g_symbolCount <= 0)
+      return;
+
+   int pollSeconds = VisualBridgePollSeconds;
+   if(pollSeconds < 1) pollSeconds = 1;
+
+   datetime now = TimeCurrent();
+   if(g_lastVisualBridgePollTime != 0 && now - g_lastVisualBridgePollTime < pollSeconds)
+      return;
+   g_lastVisualBridgePollTime = now;
+
+   string timeframes[];
+   int timeframeCount = ParseVisualBridgeTimeframes(timeframes);
+   if(timeframeCount <= 0)
+      return;
+
+   if(g_visualBridgeSymbolIndex < 0 || g_visualBridgeSymbolIndex >= g_symbolCount)
+      g_visualBridgeSymbolIndex = 0;
+   if(g_visualBridgeTimeframeIndex < 0 || g_visualBridgeTimeframeIndex >= timeframeCount)
+      g_visualBridgeTimeframeIndex = 0;
+
+   string baseSymbol = g_symbols[g_visualBridgeSymbolIndex];
+   string timeframe = timeframes[g_visualBridgeTimeframeIndex];
+
+   string json = "{";
+   json += "\"account_id\":\"" + JsonSafeText(AccountID) + "\",";
+   json += "\"symbol\":\"" + JsonSafeText(baseSymbol) + "\",";
+   json += "\"timeframe\":\"" + JsonSafeText(timeframe) + "\",";
+   json += "\"client\":\"mt4_visual_bridge\"";
+   json += "}";
+
+   string response = HttpPostBridge("/visual/poll", json, VisualBridgeTimeoutMs);
+   if(StringLen(response) > 0)
+   {
+      string fileName = VisualCacheFileName(AccountID, baseSymbol, timeframe);
+      WriteVisualCache(fileName, response);
+   }
+
+   g_visualBridgeTimeframeIndex++;
+   if(g_visualBridgeTimeframeIndex >= timeframeCount)
+   {
+      g_visualBridgeTimeframeIndex = 0;
+      g_visualBridgeSymbolIndex++;
+      if(g_visualBridgeSymbolIndex >= g_symbolCount)
+         g_visualBridgeSymbolIndex = 0;
+   }
+}
+
+//+------------------------------------------------------------------+
+datetime ParseAlertTime(string timeStr)
+{
+   string raw = StringTrimLeft(StringTrimRight(timeStr));
+   if(StringLen(raw) == 0) return 0;
+
+   bool digitsOnly = true;
+   for(int i = 0; i < StringLen(raw); i++)
+   {
+      ushort c = StringGetChar(raw, i);
+      if(c < '0' || c > '9')
+      {
+         digitsOnly = false;
+         break;
+      }
+   }
+   if(digitsOnly) return (datetime)StrToInteger(raw);
+
+   string normalized = raw;
+   int tzPos = StringFind(normalized, "+", 10);
+   if(tzPos < 0)
+   {
+      for(int j = 10; j < StringLen(normalized); j++)
+      {
+         if(StringGetChar(normalized, j) == '-')
+         {
+            tzPos = j;
+            break;
+         }
+      }
+   }
+   if(tzPos > 0)
+      normalized = StringSubstr(normalized, 0, tzPos);
+
+   StringReplace(normalized, "T", " ");
+   StringReplace(normalized, "Z", "");
+   StringReplace(normalized, "/", ".");
+   StringReplace(normalized, "-", ".");
+
+   return StrToTime(StringTrimRight(normalized));
+}
+
+//+------------------------------------------------------------------+
+string JsonSafeText(string text)
+{
+   string safe = text;
+   StringReplace(safe, "\\", "\\\\");
+   StringReplace(safe, "\"", "\\\"");
+   StringReplace(safe, "\r", "\\r");
+   StringReplace(safe, "\n", "\\n");
+   StringReplace(safe, "\t", "\\t");
+   return safe;
+}
+
+//+------------------------------------------------------------------+
+void CleanOldHarmonicObjects()
+{
+   int removed = 0;
+   int total = ObjectsTotal(0, -1, -1);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i);
+      if(StringFind(name, g_harmonicObjectPrefix) == 0)
+      {
+         if(ObjectDelete(0, name))
+            removed++;
+      }
+   }
+   g_harmonicObjectCount = 0;
+   if(removed > 0)
+      Print("🧹 清理谐波对象: ", removed);
+}
+
+//+------------------------------------------------------------------+
+void UpdateHarmonicPanel(string symbol, string timeframe, string signalState, string divergenceState,
+                         bool hasPriceAction, double slValue, double tp1Value, double tp2Value,
+                         double tp3Value, string reportState)
+{
+   string panelName = g_harmonicObjectPrefix + "Panel";
+   if(ObjectFind(0, panelName) < 0)
+   {
+      if(!ObjectCreate(0, panelName, OBJ_LABEL, 0, 0, 0))
+         return;
+      ObjectSetInteger(0, panelName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, panelName, OBJPROP_SELECTED, false);
+      ObjectSetString(0, panelName, OBJPROP_FONT, "Tahoma");
+   }
+
+   color panelColor = clrSilver;
+   if(signalState == "bullish")
+      panelColor = clrDeepSkyBlue;
+   else if(signalState == "bearish")
+      panelColor = clrTomato;
+   else if(signalState == "Price action only")
+      panelColor = clrKhaki;
+
+   string text = "GoldBolt Harmonic\n";
+   text += symbol + " / " + timeframe + "\n";
+   text += "Signal: " + signalState + "\n";
+   text += "Divergence: " + divergenceState + "\n";
+   text += "PA: " + (hasPriceAction ? "true" : "false") + "\n";
+   if(slValue != EMPTY_VALUE && slValue > 0) text += "SL: " + DoubleToString(slValue, Digits) + "\n";
+   if(tp1Value != EMPTY_VALUE && tp1Value > 0) text += "TP1: " + DoubleToString(tp1Value, Digits) + "\n";
+   if(tp2Value != EMPTY_VALUE && tp2Value > 0) text += "TP2: " + DoubleToString(tp2Value, Digits) + "\n";
+   if(tp3Value != EMPTY_VALUE && tp3Value > 0) text += "TP3: " + DoubleToString(tp3Value, Digits) + "\n";
+   text += "Report: " + reportState;
+
+   ObjectSetInteger(0, panelName, OBJPROP_CORNER, HarmonicPanelCorner);
+   ObjectSetInteger(0, panelName, OBJPROP_XDISTANCE, HarmonicPanelX);
+   ObjectSetInteger(0, panelName, OBJPROP_YDISTANCE, HarmonicPanelY);
+   ObjectSetInteger(0, panelName, OBJPROP_COLOR, panelColor);
+   ObjectSetInteger(0, panelName, OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, panelName, OBJPROP_TEXT, text);
+}
+
+//+------------------------------------------------------------------+
+void DrawHarmonicSignalArrow(datetime signalTime, double signalPrice, string direction, string sourceTag)
+{
+   if(signalPrice <= 0) return;
+
+   string objName = g_harmonicObjectPrefix + "Signal_" + sourceTag + "_" + direction + "_" + IntegerToString((int)signalTime);
+   bool exists = (ObjectFind(0, objName) >= 0);
+   if(!exists)
+   {
+      if(!ObjectCreate(0, objName, OBJ_ARROW, 0, signalTime, signalPrice))
+         return;
+      g_harmonicObjectCount++;
+   }
+
+   color arrowColor = (direction == "bullish") ? clrDeepSkyBlue : clrTomato;
+   int arrowCode = (direction == "bullish") ? 233 : 234;
+   int anchor = (direction == "bullish") ? ANCHOR_BOTTOM : ANCHOR_TOP;
+
+   ObjectMove(0, objName, 0, signalTime, signalPrice);
+   ObjectSetInteger(0, objName, OBJPROP_ARROWCODE, arrowCode);
+   ObjectSetInteger(0, objName, OBJPROP_COLOR, arrowColor);
+   ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, objName, OBJPROP_ANCHOR, anchor);
+   ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, objName, OBJPROP_SELECTED, false);
+
+   int maxObjects = HarmonicMaxObjects;
+   if(maxObjects < 5) maxObjects = 5;
+   if(g_harmonicObjectCount > maxObjects)
+      CleanOldHarmonicObjects();
+}
+
+//+------------------------------------------------------------------+
+void DrawHarmonicDivergenceMarker(datetime signalTime, double signalPrice, string direction)
+{
+   if(signalPrice <= 0) return;
+
+   string objName = g_harmonicObjectPrefix + "Div_" + direction + "_" + IntegerToString((int)signalTime);
+   bool exists = (ObjectFind(0, objName) >= 0);
+   if(!exists)
+   {
+      if(!ObjectCreate(0, objName, OBJ_ARROW, 0, signalTime, signalPrice))
+         return;
+      g_harmonicObjectCount++;
+   }
+
+   color markerColor = (direction == "bullish") ? clrYellow : clrOrange;
+   int arrowCode = (direction == "bullish") ? 241 : 242;
+   int anchor = (direction == "bullish") ? ANCHOR_BOTTOM : ANCHOR_TOP;
+
+   ObjectMove(0, objName, 0, signalTime, signalPrice);
+   ObjectSetInteger(0, objName, OBJPROP_ARROWCODE, arrowCode);
+   ObjectSetInteger(0, objName, OBJPROP_COLOR, markerColor);
+   ObjectSetInteger(0, objName, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, objName, OBJPROP_ANCHOR, anchor);
+   ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, objName, OBJPROP_SELECTED, false);
+
+   int maxObjects = HarmonicMaxObjects;
+   if(maxObjects < 5) maxObjects = 5;
+   if(g_harmonicObjectCount > maxObjects)
+      CleanOldHarmonicObjects();
+}
+
+//+------------------------------------------------------------------+
+void DrawHarmonicLevelLine(string levelName, double levelValue, color levelColor)
+{
+   string objName = g_harmonicObjectPrefix + levelName;
+   if(levelValue == EMPTY_VALUE || levelValue <= 0)
+   {
+      if(ObjectFind(0, objName) >= 0)
+         ObjectDelete(0, objName);
+      return;
+   }
+
+   if(ObjectFind(0, objName) < 0)
+   {
+      if(!ObjectCreate(0, objName, OBJ_HLINE, 0, 0, levelValue))
+         return;
+   }
+
+   ObjectSetDouble(0, objName, OBJPROP_PRICE, levelValue);
+   ObjectSetInteger(0, objName, OBJPROP_COLOR, levelColor);
+   ObjectSetInteger(0, objName, OBJPROP_STYLE, STYLE_DASH);
+   ObjectSetInteger(0, objName, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, objName, OBJPROP_SELECTED, false);
+}
+
+//+------------------------------------------------------------------+
+void ReportHarmonicSnapshot(string symbol, string timeframe, string direction, datetime signalTime,
+                            double signalPrice, double slValue, double tp1Value, double tp2Value,
+                            double tp3Value, bool hasPriceAction)
+{
+   if(!EnableHarmonicReport) return;
+   if(direction != "bullish" && direction != "bearish") return;
+
+   string reportKey = symbol + "_" + timeframe + "_" + direction + "_" +
+                      IntegerToString((int)signalTime) + "_" + DoubleToString(signalPrice, Digits);
+
+   if(reportKey == g_lastHarmonicReportKey)
+   {
+      g_lastHarmonicReportState = "Duplicate local snapshot";
+      return;
+   }
+
+   string description = StringFormat("SL=%s TP1=%s TP2=%s TP3=%s PA=%s",
+                                     (slValue != EMPTY_VALUE && slValue > 0) ? DoubleToString(slValue, Digits) : "n/a",
+                                     (tp1Value != EMPTY_VALUE && tp1Value > 0) ? DoubleToString(tp1Value, Digits) : "n/a",
+                                     (tp2Value != EMPTY_VALUE && tp2Value > 0) ? DoubleToString(tp2Value, Digits) : "n/a",
+                                     (tp3Value != EMPTY_VALUE && tp3Value > 0) ? DoubleToString(tp3Value, Digits) : "n/a",
+                                     hasPriceAction ? "true" : "false");
+
+   string json = "{";
+   json += "\"id\":\"" + JsonSafeText(reportKey) + "\",";
+   json += "\"type\":\"harmonic\",";
+   json += "\"indicator\":\"shepherd_harmonic\",";
+   json += "\"direction\":\"" + JsonSafeText(direction) + "\",";
+   json += "\"symbol\":\"" + JsonSafeText(symbol) + "\",";
+   json += "\"timeframe\":\"" + JsonSafeText(timeframe) + "\",";
+   json += "\"time\":\"" + JsonSafeText(TimeToStr(signalTime, TIME_DATE|TIME_MINUTES)) + "\",";
+   json += "\"price\":" + DoubleToString(signalPrice, Digits) + ",";
+   json += "\"strength\":\"local\",";
+   json += "\"confidence\":0,";
+   json += "\"description\":\"" + JsonSafeText(description) + "\"";
+   json += "}";
+
+   string response = HttpPost("/indicator_alert/store", json);
+   g_lastHarmonicReportKey = reportKey;
+   if(StringLen(response) > 0)
+      g_lastHarmonicReportState = "Reported local snapshot";
+   else
+      g_lastHarmonicReportState = "Local report failed";
+}
+
+//+------------------------------------------------------------------+
+void DrawServerHarmonicAlert(string symbol, string indicator, string direction, string timeframe,
+                             double price, string strength, double confidence, string description,
+                             datetime alertTime)
+{
+   if(StringLen(symbol) == 0) symbol = Symbol();
+   if(StringLen(timeframe) == 0) timeframe = TimeframeToString(Period());
+   if(price <= 0) price = Close[0];
+   if(alertTime == 0) alertTime = TimeCurrent();
+
+   if(direction == "bullish" || direction == "bearish")
+      DrawHarmonicSignalArrow(alertTime, price, direction, "Server");
+
+   g_lastHarmonicReportState = "Server alert";
+   UpdateHarmonicPanel(symbol, timeframe, direction == "" ? "Server alert" : direction,
+                       "server", false, EMPTY_VALUE, EMPTY_VALUE, EMPTY_VALUE, EMPTY_VALUE,
+                       g_lastHarmonicReportState);
+}
+
+//+------------------------------------------------------------------+
+void PollLocalHarmonicIndicator()
+{
+   if(!EnableHarmonicVisuals && !EnableHarmonicReport)
+      return;
+
+   int pollSeconds = HarmonicPollSeconds;
+   if(pollSeconds < 1) pollSeconds = 1;
+
+   datetime now = TimeCurrent();
+   if(g_lastHarmonicPollTime != 0 && now - g_lastHarmonicPollTime < pollSeconds)
+      return;
+   g_lastHarmonicPollTime = now;
+
+   int shift = HarmonicLookbackShift;
+   if(shift < 0) shift = 0;
+
+   ResetLastError();
+   double buy_signal      = iCustom(NULL, 0, HarmonicIndicatorName, 0, shift);
+   double sell_signal     = iCustom(NULL, 0, HarmonicIndicatorName, 1, shift);
+   double bull_divergence = iCustom(NULL, 0, HarmonicIndicatorName, 2, shift);
+   double bear_divergence = iCustom(NULL, 0, HarmonicIndicatorName, 3, shift);
+   double sl_Value        = iCustom(NULL, 0, HarmonicIndicatorName, 4, shift);
+   double tp1_Value       = iCustom(NULL, 0, HarmonicIndicatorName, 5, shift);
+   double tp2_Value       = iCustom(NULL, 0, HarmonicIndicatorName, 6, shift);
+   double tp3_Value       = iCustom(NULL, 0, HarmonicIndicatorName, 7, shift);
+   double price_Action    = iCustom(NULL, 0, HarmonicIndicatorName, 8, shift);
+   int indicatorError = GetLastError();
+
+   bool hasBuy = HasIndicatorValue(buy_signal);
+   bool hasSell = HasIndicatorValue(sell_signal);
+   bool hasBullDiv = HasIndicatorValue(bull_divergence);
+   bool hasBearDiv = HasIndicatorValue(bear_divergence);
+   bool hasPriceAction = HasIndicatorValue(price_Action);
+
+   string direction = "";
+   if(hasBuy || hasBullDiv)
+      direction = "bullish";
+   else if(hasSell || hasBearDiv)
+      direction = "bearish";
+
+   double signalPrice = Close[shift];
+   if(hasBuy) signalPrice = buy_signal;
+   else if(hasSell) signalPrice = sell_signal;
+   else if(hasBullDiv) signalPrice = bull_divergence;
+   else if(hasBearDiv) signalPrice = bear_divergence;
+
+   datetime signalTime = iTime(Symbol(), Period(), shift);
+   if(signalTime == 0) signalTime = TimeCurrent();
+
+   string timeframe = TimeframeToString(Period());
+   string divergenceState = "none";
+   if(hasBullDiv) divergenceState = "bullish";
+   else if(hasBearDiv) divergenceState = "bearish";
+
+   bool hasDirectionalSignal = (hasBuy || hasSell || hasBullDiv || hasBearDiv);
+   bool hasAnySignal = (hasDirectionalSignal || hasPriceAction);
+
+   if(!hasAnySignal)
+   {
+      g_lastHarmonicReportState = EnableHarmonicReport ? g_lastHarmonicReportState : "Not reporting";
+      if(EnableHarmonicVisuals)
+      {
+         DrawHarmonicLevelLine("SL", sl_Value, clrOrangeRed);
+         DrawHarmonicLevelLine("TP1", tp1_Value, clrLimeGreen);
+         DrawHarmonicLevelLine("TP2", tp2_Value, clrDeepSkyBlue);
+         DrawHarmonicLevelLine("TP3", tp3_Value, clrDodgerBlue);
+         UpdateHarmonicPanel(Symbol(), timeframe, "No local signal", "none", false,
+                             sl_Value, tp1_Value, tp2_Value, tp3_Value, g_lastHarmonicReportState);
+      }
+
+      if(now - g_lastHarmonicMissingLogTime >= 300)
+      {
+         if(indicatorError != 0)
+            Print("⚠️ Harmonic indicator read failed: ", HarmonicIndicatorName, " error=", indicatorError);
+         else
+            Print("ℹ️ Harmonic indicator has no local signal");
+         g_lastHarmonicMissingLogTime = now;
+      }
+      return;
+   }
+
+   if(EnableHarmonicVisuals)
+   {
+      if(direction == "bullish" || direction == "bearish")
+         DrawHarmonicSignalArrow(signalTime, signalPrice, direction, "Local");
+
+      if(hasBullDiv)
+         DrawHarmonicDivergenceMarker(signalTime, bull_divergence, "bullish");
+      if(hasBearDiv)
+         DrawHarmonicDivergenceMarker(signalTime, bear_divergence, "bearish");
+
+      DrawHarmonicLevelLine("SL", sl_Value, clrOrangeRed);
+      DrawHarmonicLevelLine("TP1", tp1_Value, clrLimeGreen);
+      DrawHarmonicLevelLine("TP2", tp2_Value, clrDeepSkyBlue);
+      DrawHarmonicLevelLine("TP3", tp3_Value, clrDodgerBlue);
+   }
+
+   if(hasDirectionalSignal)
+      ReportHarmonicSnapshot(Symbol(), timeframe, direction, signalTime, signalPrice,
+                             sl_Value, tp1_Value, tp2_Value, tp3_Value, hasPriceAction);
+
+   string signalState = direction;
+   if(StringLen(signalState) == 0)
+      signalState = hasPriceAction ? "Price action only" : "No local signal";
+
+   if(EnableHarmonicVisuals)
+      UpdateHarmonicPanel(Symbol(), timeframe, signalState, divergenceState, hasPriceAction,
+                          sl_Value, tp1_Value, tp2_Value, tp3_Value, g_lastHarmonicReportState);
+}
 
 //+------------------------------------------------------------------+
 //| 轮询并显示指标背离信号                                             |
 //+------------------------------------------------------------------+
 void PollIndicatorAlerts()
 {
-   for(int s = 0; s < g_symbolCount; s++)
+   string json = StringFormat("{\"account_id\":\"%s\"}", AccountID);
+   string response = HttpPost("/indicator_alert/poll", json);
+
+   if(StringLen(response) == 0) return;
+
+   int count = GetJsonInt(response, "count");
+   if(count == 0) return;
+
+   Print("📊 收到 ", count, " 条指标警报");
+   string alerts_str = GetJsonArraySafe(response, "alerts");
+
+   for(int i = 0; i < count; i++)
    {
-      string baseSymbol = g_symbols[s];
-      string json = StringFormat("{\"account_id\":\"%s\"}", AccountID);
-      string response = HttpPost("/indicator_alert/poll", json);
-      
-      if(StringLen(response) == 0) continue;
-      
-      int count = GetJsonInt(response, "count");
-      if(count == 0) continue;
-      
-      Print("📊 [", baseSymbol, "] 收到 ", count, " 条指标警报");
-      string alerts_str = GetJsonArraySafe(response, "alerts");
-      
-      for(int i = 0; i < count; i++)
+      string alert = GetArrayElement(alerts_str, i);
+      if(StringLen(alert) == 0) continue;
+
+      string alertType = GetJsonStringSafe(alert, "type");
+      string indicator = GetJsonStringSafe(alert, "indicator");
+      string direction = GetJsonStringSafe(alert, "direction");
+      string symbol = GetJsonStringSafe(alert, "symbol");
+      string timeframe = GetJsonStringSafe(alert, "timeframe");
+      double price = GetJsonDouble(alert, "price");
+      string strength = GetJsonStringSafe(alert, "strength");
+      double confidence = GetJsonDouble(alert, "confidence");
+      string description = GetJsonStringSafe(alert, "description");
+
+      if(StringLen(symbol) == 0 && g_symbolCount > 0)
+         symbol = g_symbols[0];
+
+      string timeStr = GetJsonStringSafe(alert, "time");
+      datetime alertTime = ParseAlertTime(timeStr);
+      if(alertTime == 0) alertTime = TimeCurrent();
+
+      if(alertType == "harmonic")
       {
-         string alert = GetArrayElement(alerts_str, i);
-         if(StringLen(alert) == 0) continue;
-         
-         string indicator = GetJsonStringSafe(alert, "indicator");
-         string direction = GetJsonStringSafe(alert, "direction");
-         string timeframe = GetJsonStringSafe(alert, "timeframe");
-         double price = GetJsonDouble(alert, "price");
-         string strength = GetJsonStringSafe(alert, "strength");
-         double confidence = GetJsonDouble(alert, "confidence");
-         string description = GetJsonStringSafe(alert, "description");
-         
-         // 获取时间
-         string timeStr = GetJsonStringSafe(alert, "time");
-         datetime alertTime = StrToTime(timeStr);
-         if(alertTime == 0) alertTime = TimeCurrent();
-         
-         // 绘制到图表
-         DrawDivergenceArrow(baseSymbol, indicator, direction, price, strength, confidence, alertTime);
-         
-         Print("📈 指标警报: ", indicator, " ", direction, " @", price, " [", strength, "]");
+         DrawServerHarmonicAlert(symbol, indicator, direction, timeframe, price, strength, confidence, description, alertTime);
       }
+      else
+      {
+         DrawDivergenceArrow(symbol, indicator, direction, price, strength, confidence, alertTime);
+      }
+
+      Print("📈 指标警报: ", indicator, " ", direction, " @", price, " [", strength, "]");
    }
 }
 

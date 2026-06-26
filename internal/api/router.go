@@ -90,8 +90,10 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 
 	// Indicator alert endpoints
 	indicatorHandler := newIndicatorAlertHandler()
+	visualHandler := newVisualHandler(deps.Accounts, deps.Tokens, indicatorHandler.cache)
 	mux.Handle("/indicator_alert/poll", auth.requireToken(http.HandlerFunc(indicatorHandler.pollHandler)))
 	mux.Handle("/indicator_alert/store", auth.requireToken(http.HandlerFunc(indicatorHandler.alertStoreHandler)))
+	mux.Handle("/visual/poll", auth.requireToken(http.HandlerFunc(visualHandler.poll)))
 
 	// Arbitration endpoints
 	mux.Handle("/api/pending_signal/", auth.requireToken(http.HandlerFunc(arbitrationHandler.getPendingSignals)))
