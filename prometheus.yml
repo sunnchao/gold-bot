@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'gold-bot'
+    environment: 'production'
+
+# 加载告警规则
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  - job_name: 'gold-bot'
+    static_configs:
+      - targets: ['app:8880']
+        labels:
+          service: 'gold-bot-server'
+    metrics_path: '/metrics'
+    scrape_interval: 15s

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gold-bot/internal/domain"
+	"gold-bot/internal/metrics"
 )
 
 type TickHandler struct {
@@ -91,6 +92,10 @@ func (h *TickHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// Update metrics
+	metrics.EATickCounter.WithLabelValues(accountID, symbol).Inc()
+	metrics.SpreadGauge.WithLabelValues(accountID, symbol).Set(req.Spread)
 
 	writeJSON(w, http.StatusOK, map[string]any{"status": "OK"})
 }

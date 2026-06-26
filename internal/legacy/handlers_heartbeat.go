@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gold-bot/internal/domain"
+	"gold-bot/internal/metrics"
 )
 
 type HeartbeatHandler struct {
@@ -89,6 +90,12 @@ func (h *HeartbeatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// Update metrics
+	metrics.EAHeartbeatCounter.WithLabelValues(accountID).Inc()
+	metrics.EAHeartbeatTimestamp.WithLabelValues(accountID).Set(float64(now.Unix()))
+	metrics.AccountEquity.WithLabelValues(accountID).Set(req.Equity)
+	metrics.AccountBalance.WithLabelValues(accountID).Set(req.Balance)
 
 	log.Printf("[HEARTBEAT] ✅ account=%s | 已更新", accountID)
 	writeJSON(w, http.StatusOK, map[string]any{

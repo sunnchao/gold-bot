@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gold-bot/internal/domain"
+	"gold-bot/internal/metrics"
 )
 
 type OrderResultHandler struct {
@@ -86,6 +87,13 @@ func (h *OrderResultHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// Update metrics
+	resultStatus := "success"
+	if req.Result == "ERROR" || req.Error != "" {
+		resultStatus = "error"
+	}
+	metrics.OrderCounter.WithLabelValues(accountID, "", "", resultStatus).Inc()
 
 	log.Printf("[ORDER_RESULT] ✅ cmd=%s | 已处理", req.CommandID)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "OK"})

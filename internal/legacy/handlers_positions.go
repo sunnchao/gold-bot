@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gold-bot/internal/domain"
+	"gold-bot/internal/metrics"
 )
 
 type PositionsHandler struct {
@@ -107,6 +108,16 @@ func (h *PositionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[POSITIONS] ⚠️ account=%s/%s | live trading 降级跳过: %v", accountID, symbol, err)
 		}
 	}
+
+	// Update metrics
+	metrics.AccountPositions.WithLabelValues(accountID, symbol).Set(float64(len(req.Positions)))
+
+	// Calculate floating P/L
+	var totalFloatingPL float64
+	for _, pos := range req.Positions {
+		totalFloatingPL += pos.Profit
+	}
+	metrics.AccountFloatingPL.WithLabelValues(accountID).Set(totalFloatingPL)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "OK",

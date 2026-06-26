@@ -60,6 +60,9 @@ web/dashboard/.next/
 web/dashboard/dist/
 data/goldbot.db*
 
-docs
 .commandcode*.db
 .commandcode
+
+# Monitoring data
+prometheus_data/
+grafana_data/

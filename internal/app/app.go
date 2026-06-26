@@ -9,11 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"gold-bot/internal/api"
 	"gold-bot/internal/config"
 	"gold-bot/internal/domain"
 	"gold-bot/internal/ea"
 	"gold-bot/internal/legacy"
+	"gold-bot/internal/metrics"
 	"gold-bot/internal/realtime"
 	"gold-bot/internal/scheduler"
 	"gold-bot/internal/store"
@@ -21,8 +24,9 @@ import (
 )
 
 type App struct {
-	db     *sql.DB
-	server *http.Server
+	db            *sql.DB
+	server        *http.Server
+	statsCollector *metrics.DBStatsCollector
 }
 
 type arbitrationStoreAdapter struct {
@@ -69,6 +73,8 @@ func New(cfg config.Config) (*App, error) {
 	now := time.Now().UTC()
 
 	mux := http.NewServeMux()
+
+	// Health check endpoint
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := db.PingContext(r.Context()); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -78,6 +84,10 @@ func New(cfg config.Config) (*App, error) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// Prometheus metrics endpoint
+	mux.Handle("/metrics", promhttp.Handler())
+	log.Printf("[APP] ✅ Prometheus metrics 端点已启用: /metrics")
 
 	accounts := sqlitestore.NewAccountRepository(db)
 	tokens := sqlitestore.NewTokenRepository(db)
@@ -119,17 +129,25 @@ func New(cfg config.Config) (*App, error) {
 	log.Printf("[APP] ✅ 路由注册完成 | API: /api/analysis_payload, /api/ai_result, /api/tokens, /api/v1/overview")
 	log.Printf("[APP] ✅ 路由注册完成 | Dashboard: /")
 
+	// Wrap with metrics middleware
+	handler := metrics.NewHTTPMetricsMiddleware(mux)
+
 	server := &http.Server{
 		Addr:         cfg.HTTPAddr,
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
+	// Start database stats collector
+	statsCollector := metrics.NewDBStatsCollector(db, 15*time.Second)
+	go statsCollector.Start(context.Background())
+
 	return &App{
-		db:     db,
-		server: server,
+		db:             db,
+		server:         server,
+		statsCollector: statsCollector,
 	}, nil
 }
 
@@ -141,6 +159,9 @@ func (a *App) Run() error {
 func (a *App) Close() error {
 	var err error
 
+	if a.statsCollector != nil {
+		a.statsCollector.Stop()
+	}
 	if a.server != nil {
 		err = errors.Join(err, a.server.Close())
 	}
