@@ -858,7 +858,7 @@ void ExecuteSignal(string cmd, string cmd_id)
    }
     
    double sl_distance = MathAbs(price - sl);
-   double lots = CalcLotsForStrategy(strategy, sl_distance);
+   double lots = CalcLotsForStrategy(strategy, baseSymbol, sl_distance);
    // AI 信号使用服务端计算的手数（含减半逻辑）
    if(strategy == "ai_signal")
    {
@@ -1126,7 +1126,7 @@ void ExecutePending(string cmd, string cmd_id)
    // 计算手数
    double currentPrice = (type_str == "BUY") ? MarketInfo(brokerSymbol, MODE_ASK) : MarketInfo(brokerSymbol, MODE_BID);
    double sl_distance = MathAbs(currentPrice - sl);
-   double lots = CalcLotsForStrategy(strategy, sl_distance);
+   double lots = CalcLotsForStrategy(strategy, baseSymbol, sl_distance);
    lots = NormalizeVolume(brokerSymbol, lots);
 
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);
@@ -1416,12 +1416,19 @@ double CalcLots(double sl_distance)
    return CalcLotsWithConfig(UseFixedLots, FixedLots, MaxRiskPercent, sl_distance);
 }
 
-double CalcLotsForStrategy(string strategy, double sl_distance)
+double CalcLotsForStrategy(string strategy, string symbol, double sl_distance)
 {
+   double lots;
    if(strategy == "momentum_scalp")
-      return CalcLotsWithConfig(MomentumScalpUseFixedLots, MomentumScalpFixedLots, MomentumScalpRiskPercent, sl_distance);
+      lots = CalcLotsWithConfig(MomentumScalpUseFixedLots, MomentumScalpFixedLots, MomentumScalpRiskPercent, sl_distance);
+   else
+      lots = CalcLots(sl_distance);
 
-   return CalcLots(sl_distance);
+   // US100Cash 指数CFD手数减半（标准手数 × 0.5）
+   if(StringFind(symbol, "US100") >= 0 || StringFind(symbol, "NAS100") >= 0)
+      lots = lots * 0.5;
+
+   return lots;
 }
 
 // ============================================================
