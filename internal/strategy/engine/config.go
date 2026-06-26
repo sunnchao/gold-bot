@@ -502,34 +502,51 @@ func USDCADStrategyConfig() StrategyConfig {
 
 func US100CashStrategyConfig() StrategyConfig {
 	cfg := DefaultStrategyConfig()
-	cfg.H4ADXThreshold = 22.0
-	cfg.H4RequireConsecutive = 2
+	cfg.H4ADXThreshold = 25.0          // was 22 — NAS100 trend quality is high
+	cfg.H4RequireConsecutive = 3       // was 2 — require stronger confirmation for index
+
+	// Pullback — shallow retracements, keep SL moderate, expand TP
 	cfg.PullbackMinADX = 22.0
 	cfg.PullbackDistATR = 0.6
-	cfg.PullbackSLATR = 1.0
-	cfg.PullbackTP1ATR = 1.5
-	cfg.PullbackTP2ATR = 3.0
-	cfg.BreakoutRetestSLATR = 1.2
-	cfg.BreakoutRetestTP1ATR = 2.0
-	cfg.BreakoutRetestTP2ATR = 4.0
-	cfg.DivergenceSLATR = 0.8
-	cfg.DivergenceTP1ATR = 1.5
-	cfg.DivergenceTP2ATR = 3.0
+	cfg.PullbackSLATR = 1.0            // industry range 1.0-1.5x
+	cfg.PullbackTP1ATR = 2.0           // was 1.5 → RR 1.5→2.0
+	cfg.PullbackTP2ATR = 3.5           // was 3.0
+
+	// BreakoutRetest — rare false breakouts, tighter SL, larger TP
+	cfg.BreakoutRetestLookback = 45    // was 50 — S/R changes faster on index
+	cfg.BreakoutRetestDistATR = 0.6    // was 0.5
+	cfg.BreakoutRetestSLATR = 1.0      // was 1.2 — NAS100 false breakouts rare
+	cfg.BreakoutRetestTP1ATR = 2.5     // was 2.0 → RR 1.67→2.5
+	cfg.BreakoutRetestTP2ATR = 5.0     // was 4.0 — strong trends support wider TP
+
+	// Divergence — RSI divergence reliable on index, tight SL, wider TP
+	cfg.DivergenceSLATR = 0.6          // was 0.8 — divergence signal quality higher
+	cfg.DivergenceTP1ATR = 2.0         // was 1.5 → RR 1.88→3.33
+	cfg.DivergenceTP2ATR = 4.0         // was 3.0
+
+	// BreakoutPyramid
 	cfg.BreakoutPyramidMinADX = 25.0
-	cfg.BreakoutPyramidSLATR = 1.2
+	cfg.BreakoutPyramidSLATR = 1.0     // was 1.2
+
+	// ScaleIn
 	cfg.ScaleInSLATR = 1.0
-	cfg.ScaleInTP1ATR = 1.5
-	cfg.ScaleInTP2ATR = 3.0
+	cfg.ScaleInTP1ATR = 2.0            // was 1.5 → RR 1.5→2.0
+	cfg.ScaleInTP2ATR = 3.5            // was 3.0
+
+	// MomentumScalp — wider SL to survive M1 noise, longer holding
 	cfg.MomentumScalpMinADX = 16.0
-	cfg.MomentumScalpSLATR = 0.3
-	cfg.MomentumScalpTP1ATR = 0.5
-	cfg.MomentumScalpTP2ATR = 0.8
-	cfg.MomentumScalpMaxHoldingMin = 30
+	cfg.MomentumScalpSLATR = 0.5       // was 0.3 — prevent premature stop-outs
+	cfg.MomentumScalpTP1ATR = 0.8      // was 0.5
+	cfg.MomentumScalpTP2ATR = 1.2      // was 0.8
+	cfg.MomentumScalpMaxHoldingMin = 60 // was 30 — NASDAQ momentum takes longer
 	cfg.MomentumScalpMinScore = 6
-	cfg.Trend.H4Weight = 0.30
+
+	// Trend weights — NASDAQ trends strong, shift weight to H4
+	cfg.Trend.H4Weight = 0.35          // was 0.30
 	cfg.Trend.H1Weight = 0.35
-	cfg.Trend.M30Weight = 0.30
+	cfg.Trend.M30Weight = 0.25         // was 0.30
 	cfg.Trend.D1Weight = 0.05
+
 	cfg.MinScore = 5
 	cfg.FibExtension.MinADX = 25.0
 	return cfg

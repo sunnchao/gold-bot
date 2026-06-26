@@ -125,10 +125,12 @@ func isSymbolCloseWindow(now time.Time, symbol string) bool {
 	base := domain.BaseSymbol(symbol)
 	switch base {
 	case "US100CASH":
+		// NASDAQ cash CFD: closed on weekends and after US market close (04:00 CST)
 		if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
 			return true
 		}
-		return false
+		h := now.Hour()
+		return h >= 4 // US market closed after 04:00 CST (16:00 ET)
 	default:
 		return now.Weekday() == time.Friday && now.Hour() >= 20
 	}
@@ -138,7 +140,7 @@ func isSymbolRolloverWindow(now time.Time, symbol string) bool {
 	base := domain.BaseSymbol(symbol)
 	switch base {
 	case "US100CASH":
-		return false
+		return false // index CFDs have no daily rollover
 	default:
 		minuteOfDay := now.Hour()*60 + now.Minute()
 		return minuteOfDay >= 21*60+55 && minuteOfDay <= 22*60+10
@@ -149,8 +151,28 @@ func isSymbolLowLiquiditySession(now time.Time, symbol string) bool {
 	base := domain.BaseSymbol(symbol)
 	switch base {
 	case "US100CASH":
-		h := now.Hour()
-		return h < 14 || h >= 21
+		h, m := now.Hour(), now.Minute()
+		minuteOfDay := h*60 + m
+		// US market opens at 21:30 CST (summer time)
+		openMin := 21*60 + 30  // 21:30
+		closeMin := 4 * 60     // 04:00
+		// Pre-open 30min — wait for session to stabilise
+		if minuteOfDay >= openMin-30 && minuteOfDay < openMin {
+			return true
+		}
+		// First 20min after open — gap-fill period, not for entry
+		if minuteOfDay >= openMin && minuteOfDay < openMin+20 {
+			return true
+		}
+		// Last 15min before close — reduced liquidity
+		if minuteOfDay >= closeMin-15 && minuteOfDay < closeMin {
+			return true
+		}
+		// Outside US market hours
+		if minuteOfDay < openMin-30 || minuteOfDay >= closeMin {
+			return true
+		}
+		return false
 	default:
 		minuteOfDay := now.Hour()*60 + now.Minute()
 		return minuteOfDay > 22*60+10 || minuteOfDay < 1*60
