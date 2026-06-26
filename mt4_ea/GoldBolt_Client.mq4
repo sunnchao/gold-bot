@@ -86,10 +86,10 @@ extern string   VisualBridgeTimeframes   = "M1,M5,M15,M30,H1,H4,D1";
 extern bool     VisualBridgeCommonFiles  = true;
 
 input group "===== 谐波指标可视化 ====="
-extern bool     EnableHarmonicVisuals   = true;    // 显示 Shepherd 谐波指标面板/图表对象
-extern bool     EnableHarmonicReport    = true;    // 将本地谐波快照上报到服务端
-extern string   HarmonicIndicatorName   = "Market\\Shepherd_Harmonic_Patterns";
-extern int      HarmonicPollSeconds     = 10;      // 本地指标读取间隔（秒）
+extern bool     EnableHarmonicVisuals   = false;   // 可选：显示本地 Shepherd 谐波对象，需安装指标文件并手动启用
+extern bool     EnableHarmonicReport    = false;   // 可选：上报本地 Shepherd 快照，需安装指标文件并手动启用
+extern string   HarmonicIndicatorName   = "Market\\Shepherd_Harmonic_Patterns"; // 可配置：需 MQL4/Indicators/Market/Shepherd_Harmonic_Patterns.ex4
+extern int      HarmonicPollSeconds     = 10;      // 本地 Shepherd 指标读取间隔（秒，仅启用上方可选项时读取）
 extern int      HarmonicLookbackShift   = 1;       // 默认读取已收盘K线
 extern int      HarmonicPanelCorner     = 1;       // CORNER_RIGHT_UPPER
 extern int      HarmonicPanelX          = 12;

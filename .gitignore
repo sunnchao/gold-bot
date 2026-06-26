@@ -37,9 +37,10 @@ Thumbs.db
 .augment/
 .gemini/
 .hermes/
+.planning/
 
 # Task files
-CODEX_TASK.md
+CODEX_TASK*.md
 CODEX_EA_FIX.md
 
 # Go / SQLite artifacts

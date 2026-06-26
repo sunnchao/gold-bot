@@ -10,7 +10,7 @@
 extern string AccountID = "account_A";
 extern bool   UseCommonFiles = true;
 extern bool   EnableServerVisuals = true;
-extern bool   EnableLocalHarmonic = true;
+extern bool   EnableLocalHarmonic = false; // 可选：本地 Shepherd buffers 需 MQL4/Indicators/Market/Shepherd_Harmonic_Patterns.ex4，安装后手动启用
 extern string HarmonicIndicatorName = "Market\\Shepherd_Harmonic_Patterns";
 extern int    HarmonicLookbackShift = 1;
 extern int    PanelCorner = 1;
@@ -257,6 +257,9 @@ void DrawServerAlerts(string payload)
 
 void DrawLocalHarmonic()
 {
+   if(!EnableLocalHarmonic)
+      return;
+
    DeleteObjectsByPrefix(g_localPrefix);
 
    int shift = HarmonicLookbackShift;
