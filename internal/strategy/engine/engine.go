@@ -10,6 +10,7 @@ import (
 	"gold-bot/internal/domain"
 	"gold-bot/internal/strategy/breakoutcache"
 	"gold-bot/internal/strategy/indicator"
+	"gold-bot/internal/strategy/smc"
 )
 
 type Engine struct {
@@ -517,6 +518,18 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	// Build multi-timeframe trend context (before signal generation, after H4 check)
 	tc := BuildTrendContext(d1, h4, h1, m30, m15, e.Config.Trend)
 	LogTrendContext(tc)
+	smcCtx := smc.BuildSMCContext(h4, h1, m30)
+	smcSummary := fmt.Sprintf(
+		"H4=%s breaks=%d OBs=%d FVGs=%d sweeps=%d | H1=%s breaks=%d OBs=%d FVGs=%d sweeps=%d",
+		smcCtx.H4TrendDirection, len(smcCtx.H4Breaks), len(smcCtx.H4OBs), len(smcCtx.H4FVGs), len(smcCtx.H4Sweeps),
+		smcCtx.H1TrendDirection, len(smcCtx.H1Breaks), len(smcCtx.H1OBs), len(smcCtx.H1FVGs), len(smcCtx.H1Sweeps),
+	)
+	logs = append(logs, domain.AnalysisLog{
+		Level:    "info",
+		Strategy: "SMC",
+		Message:  smcSummary,
+	})
+	log.Printf("[STRATEGY] [SMC] %s", smcSummary)
 
 	signals := make([]domain.Signal, 0, 4)
 
@@ -1437,7 +1450,8 @@ func (e Engine) checkBreakoutPyramid(h1, m30 []domain.Bar, price, atr float64) (
 	}
 
 	if last.Close > last.BBUpper && last.EMA20 > last.EMA50 {
-		bearOBs := detectOrderBlocks(h1, "SELL", 20)
+		bearOBs := smc.DetectOrderBlocks(h1, "SELL", 20, "BULL")
+		bearOBs = append(bearOBs, breakoutPyramidContinuationOrderBlocks(h1, "SELL", 20, "BULL")...)
 		for _, ob := range bearOBs {
 			if !ob.Valid {
 				continue
@@ -1487,7 +1501,8 @@ func (e Engine) checkBreakoutPyramid(h1, m30 []domain.Bar, price, atr float64) (
 	}
 
 	if last.Close < last.BBLower && last.EMA20 < last.EMA50 {
-		bullOBs := detectOrderBlocks(h1, "BUY", 20)
+		bullOBs := smc.DetectOrderBlocks(h1, "BUY", 20, "BEAR")
+		bullOBs = append(bullOBs, breakoutPyramidContinuationOrderBlocks(h1, "BUY", 20, "BEAR")...)
 		for _, ob := range bullOBs {
 			if !ob.Valid {
 				continue
@@ -1805,118 +1820,7 @@ func (e Engine) checkMomentumScalp(m15, m5, m1 []domain.Bar, price float64) (*do
 	}
 }
 
-type SwingPoint struct {
-	Index int
-	Price float64
-}
-
-type BOS struct {
-	Index     int
-	Direction string
-	Level     float64
-}
-
-type OrderBlock struct {
-	Index int
-	Side  string
-	High  float64
-	Low   float64
-	Valid bool
-}
-
-func findSwingPoints(bars []domain.Bar, left, right int) (swingHighs, swingLows []SwingPoint) {
-	if left < 1 {
-		left = 1
-	}
-	if right < 1 {
-		right = 1
-	}
-	if len(bars) < left+right+1 {
-		return nil, nil
-	}
-
-	for i := left; i < len(bars)-right; i++ {
-		high := bars[i].High
-		low := bars[i].Low
-		isSwingHigh := true
-		isSwingLow := true
-
-		for j := i - left; j <= i+right; j++ {
-			if j == i {
-				continue
-			}
-			if bars[j].High >= high {
-				isSwingHigh = false
-			}
-			if bars[j].Low <= low {
-				isSwingLow = false
-			}
-			if !isSwingHigh && !isSwingLow {
-				break
-			}
-		}
-
-		if isSwingHigh {
-			swingHighs = append(swingHighs, SwingPoint{Index: i, Price: high})
-		}
-		if isSwingLow {
-			swingLows = append(swingLows, SwingPoint{Index: i, Price: low})
-		}
-	}
-
-	return swingHighs, swingLows
-}
-
-func detectBOS(bars []domain.Bar, lookback int) []BOS {
-	if len(bars) == 0 {
-		return nil
-	}
-	if lookback <= 0 || lookback > len(bars) {
-		lookback = len(bars)
-	}
-
-	start := len(bars) - lookback
-	window := bars[start:]
-	swingHighs, swingLows := findSwingPoints(window, 3, 3)
-	if len(swingHighs) == 0 && len(swingLows) == 0 {
-		return nil
-	}
-	for i := range swingHighs {
-		swingHighs[i].Index += start
-	}
-	for i := range swingLows {
-		swingLows[i].Index += start
-	}
-
-	events := make([]BOS, 0)
-	highCursor := 0
-	lowCursor := 0
-	for i := start; i < len(bars); i++ {
-		for highCursor < len(swingHighs) && swingHighs[highCursor].Index < i {
-			highCursor++
-		}
-		for lowCursor < len(swingLows) && swingLows[lowCursor].Index < i {
-			lowCursor++
-		}
-
-		if highCursor > 0 {
-			level := swingHighs[highCursor-1].Price
-			if bars[i].Close > level && (i == 0 || bars[i-1].Close <= level) {
-				events = append(events, BOS{Index: i, Direction: "UP", Level: level})
-			}
-		}
-		if lowCursor > 0 {
-			level := swingLows[lowCursor-1].Price
-			if bars[i].Close < level && (i == 0 || bars[i-1].Close >= level) {
-				events = append(events, BOS{Index: i, Direction: "DOWN", Level: level})
-			}
-		}
-	}
-
-	return events
-}
-
-func detectOrderBlocks(bars []domain.Bar, side string, lookback int) []OrderBlock {
+func breakoutPyramidContinuationOrderBlocks(bars []domain.Bar, side string, lookback int, trendDirection string) []smc.OrderBlock {
 	if len(bars) == 0 {
 		return nil
 	}
@@ -1926,21 +1830,21 @@ func detectOrderBlocks(bars []domain.Bar, side string, lookback int) []OrderBloc
 
 	side = strings.ToUpper(strings.TrimSpace(side))
 	start := len(bars) - lookback
-	bosEvents := detectBOS(bars, lookback)
-	if len(bosEvents) == 0 {
+	breaks := smc.DetectStructureBreaks(bars, lookback, trendDirection)
+	if len(breaks) == 0 {
 		return nil
 	}
 
 	seen := make(map[int]bool)
-	blocks := make([]OrderBlock, 0)
-	for i := len(bosEvents) - 1; i >= 0; i-- {
-		bos := bosEvents[i]
+	blocks := make([]smc.OrderBlock, 0)
+	for i := len(breaks) - 1; i >= 0; i-- {
+		brk := breaks[i]
 		var obIndex int
 		switch {
-		case side == "BUY" && bos.Direction == "DOWN":
-			obIndex = findLastOrderBlockCandle(bars, bos.Index, start, false)
-		case side == "SELL" && bos.Direction == "UP":
-			obIndex = findLastOrderBlockCandle(bars, bos.Index, start, true)
+		case side == "SELL" && brk.Direction == "UP":
+			obIndex = breakoutPyramidDirectionalCandle(bars, brk.Index, start, true)
+		case side == "BUY" && brk.Direction == "DOWN":
+			obIndex = breakoutPyramidDirectionalCandle(bars, brk.Index, start, false)
 		default:
 			continue
 		}
@@ -1949,21 +1853,21 @@ func detectOrderBlocks(bars []domain.Bar, side string, lookback int) []OrderBloc
 		}
 		seen[obIndex] = true
 
-		block := OrderBlock{
+		block := smc.OrderBlock{
 			Index: obIndex,
 			Side:  side,
 			High:  bars[obIndex].High,
 			Low:   bars[obIndex].Low,
 			Valid: true,
 		}
-		block.Valid = orderBlockStillValid(bars, block)
+		block.Valid = breakoutPyramidOrderBlockStillValid(bars, block)
 		blocks = append(blocks, block)
 	}
 
 	return blocks
 }
 
-func findLastOrderBlockCandle(bars []domain.Bar, beforeIndex, start int, bullish bool) int {
+func breakoutPyramidDirectionalCandle(bars []domain.Bar, beforeIndex, start int, bullish bool) int {
 	if beforeIndex > len(bars) {
 		beforeIndex = len(bars)
 	}
@@ -1986,7 +1890,7 @@ func findLastOrderBlockCandle(bars []domain.Bar, beforeIndex, start int, bullish
 	return -1
 }
 
-func orderBlockStillValid(bars []domain.Bar, ob OrderBlock) bool {
+func breakoutPyramidOrderBlockStillValid(bars []domain.Bar, ob smc.OrderBlock) bool {
 	for i := ob.Index + 1; i < len(bars); i++ {
 		switch ob.Side {
 		case "BUY":
