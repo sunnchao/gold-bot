@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gold-bot/internal/domain"
+	"gold-bot/internal/strategy/smc"
 )
 
 func TestDefaultStrategyConfigIncludesMomentumScalpDefaults(t *testing.T) {
@@ -272,7 +273,7 @@ func TestCheckBreakoutPyramidBlocksBuyAheadOfBearishOrderBlock(t *testing.T) {
 	h1 := breakoutPyramidBuyOrderBlockBarsForTests()
 	price := h1[len(h1)-1].Close
 
-	signal, detail := e.checkBreakoutPyramid(h1, nil, price, 2.0)
+	signal, detail := e.checkBreakoutPyramid(h1, nil, price, 2.0, smc.SMCContext{})
 
 	if signal != nil {
 		t.Fatalf("signal = %+v, want nil", signal)
@@ -290,7 +291,7 @@ func TestCheckBreakoutPyramidBlocksSellAheadOfBullishOrderBlock(t *testing.T) {
 	h1 := breakoutPyramidSellOrderBlockBarsForTests()
 	price := h1[len(h1)-1].Close
 
-	signal, detail := e.checkBreakoutPyramid(h1, nil, price, 2.0)
+	signal, detail := e.checkBreakoutPyramid(h1, nil, price, 2.0, smc.SMCContext{})
 
 	if signal != nil {
 		t.Fatalf("signal = %+v, want nil", signal)

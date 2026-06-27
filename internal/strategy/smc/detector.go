@@ -576,9 +576,24 @@ func BuildSMCContext(h4, h1, m30 []domain.Bar) SMCContext {
 		ctx.H1OBs = append(ctx.H1OBs, DetectOrderBlocks(h1, "SELL", 50, ctx.H1TrendDirection)...)
 		ctx.H1FVGs = DetectFVGs(h1, 50)
 		ctx.H1Sweeps = DetectLiquiditySweeps(h1, h1Highs, h1Lows, 3)
+
+		// Short-lookback OBs for breakout_pyramid (lookback=20)
+		ctx.H1ShortOBs = DetectOrderBlocks(h1, "BUY", 20, ctx.H1TrendDirection)
+		ctx.H1ShortOBs = append(ctx.H1ShortOBs, DetectOrderBlocks(h1, "SELL", 20, ctx.H1TrendDirection)...)
 	}
 
 	return ctx
+}
+
+// FilterOBsBySide returns order blocks matching the given side ("BUY" or "SELL").
+func FilterOBsBySide(obs []OrderBlock, side string) []OrderBlock {
+	result := make([]OrderBlock, 0, len(obs))
+	for _, ob := range obs {
+		if ob.Side == side {
+			result = append(result, ob)
+		}
+	}
+	return result
 }
 
 // --------------- Helper: Unfilled FVGs near price ---------------

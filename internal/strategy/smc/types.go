@@ -50,6 +50,7 @@ type LiquiditySweep struct {
 type SMCContext struct {
 	H4OBs    []OrderBlock
 	H1OBs    []OrderBlock
+	H1ShortOBs []OrderBlock // lookback=20 for breakout_pyramid strategy
 	H4FVGs   []FVG
 	H1FVGs   []FVG
 	H4Breaks []StructureBreak

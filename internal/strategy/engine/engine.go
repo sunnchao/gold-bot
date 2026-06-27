@@ -9,6 +9,7 @@ import (
 
 	"gold-bot/internal/domain"
 	"gold-bot/internal/strategy/breakoutcache"
+	"gold-bot/internal/strategy/harmonic"
 	"gold-bot/internal/strategy/indicator"
 	"gold-bot/internal/strategy/smc"
 )
@@ -531,6 +532,25 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	})
 	log.Printf("[STRATEGY] [SMC] %s", smcSummary)
 
+	// Harmonic pattern context (Gartley/Bat/Butterfly/Crab/AB=CD)
+	harmCtx := harmonic.BuildContext(h4, h1, m30)
+	harmSummary := fmt.Sprintf(
+		"bias=%s score=%d active=%v | H4=%d H1=%d M30=%d patterns",
+		harmCtx.DirectionBias, harmCtx.Score, harmCtx.ActivePattern != nil,
+		len(harmCtx.H4Patterns), len(harmCtx.H1Patterns), len(harmCtx.M30Patterns),
+	)
+	if harmCtx.ActivePattern != nil {
+		harmSummary += fmt.Sprintf(" | best=%s %s %s PRZ=%.2f-%.2f",
+			harmCtx.ActivePattern.Timeframe, harmCtx.ActivePattern.Direction,
+			harmCtx.ActivePattern.Type, harmCtx.ActivePattern.PRZLow, harmCtx.ActivePattern.PRZHigh)
+	}
+	logs = append(logs, domain.AnalysisLog{
+		Level:    "info",
+		Strategy: "Harmonic",
+		Message:  harmSummary,
+	})
+	log.Printf("[STRATEGY] [Harmonic] %s", harmSummary)
+
 	signals := make([]domain.Signal, 0, 4)
 
 	if signal, detail := e.checkPullback(h1, price, atr, h4, m30); signal != nil {
@@ -557,7 +577,15 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		logs = append(logs, detail)
 	}
 
-	if signal, detail := e.checkBreakoutPyramid(h1, m30, price, atr); signal != nil {
+	if signal, detail := e.checkCounterPullback(h1, price, atr, smcCtx); signal != nil {
+		signals = append(signals, *signal)
+		logs = append(logs, detail)
+		log.Printf("[STRATEGY] %s", detail.Message)
+	} else {
+		logs = append(logs, detail)
+	}
+
+	if signal, detail := e.checkBreakoutPyramid(h1, m30, price, atr, smcCtx); signal != nil {
 		signals = append(signals, *signal)
 		logs = append(logs, detail)
 		log.Printf("[STRATEGY] %s", detail.Message)
@@ -680,6 +708,63 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 					Message:  fmt.Sprintf("⏭ %s | %s", signal.Strategy, detail),
 				})
 			}
+		}
+	}
+
+	// Harmonic context scoring: boost signals aligned with active harmonic pattern
+	if harmCtx.ActivePattern != nil && harmCtx.ActivePattern.Score >= 5 {
+		harmDir := strings.ToUpper(harmCtx.ActivePattern.Direction)
+		for i, signal := range signals {
+			if signal.Side == harmDir {
+				boost := 1
+				if harmCtx.ActivePattern.Score >= 8 {
+					boost = 2
+				}
+				signals[i].Score = min(signal.Score+boost, 10)
+				logs = append(logs, domain.AnalysisLog{
+					Level:    "info",
+					Strategy: "Harmonic确认",
+					Message:  fmt.Sprintf("🎵 %s | %s %s 同向 | 评分+%d→%d", signal.Strategy, harmCtx.ActivePattern.Type, harmDir, boost, signals[i].Score),
+				})
+			}
+		}
+	}
+
+	// SMC context scoring: boost signals with SMC confirmation
+	smcBoostSMC := func(strategy, side string) (int, string) {
+		boost := 0
+		reasons := make([]string, 0)
+		smcSide := "BULL"
+		if side == "SELL" {
+			smcSide = "BEAR"
+		}
+		// CHoCH in signal direction
+		if smc.HasCHOCHInDirection(smcCtx.H1Breaks, smcSide) {
+			boost++
+			reasons = append(reasons, "CHoCH")
+		}
+		// Recent liquidity sweep in signal direction
+		if len(h1) > 0 && smc.RecentSweepInDirection(smcCtx.H1Sweeps, smcSide, len(h1)-1, 10) {
+			boost++
+			reasons = append(reasons, "Sweep")
+		}
+		// Price near valid OB
+		nearOB := smc.ValidOBsNearPrice(append(smcCtx.H1OBs, smcCtx.H4OBs...), price, atr*1.5)
+		if len(nearOB) > 0 {
+			boost++
+			reasons = append(reasons, "OB")
+		}
+		return boost, strings.Join(reasons, "+")
+	}
+	for i, signal := range signals {
+		boost, reasons := smcBoostSMC(signal.Strategy, signal.Side)
+		if boost > 0 {
+			signals[i].Score = min(signal.Score+boost, 10)
+			logs = append(logs, domain.AnalysisLog{
+				Level:    "info",
+				Strategy: "SMC确认",
+				Message:  fmt.Sprintf("📐 %s | %s | 评分+%d→%d (%s)", signal.Strategy, signal.Side, boost, signals[i].Score, reasons),
+			})
 		}
 	}
 
@@ -1433,7 +1518,200 @@ func (e Engine) checkDivergence(h1, _ []domain.Bar, price, atr float64) (*domain
 	return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: message}
 }
 
-func (e Engine) checkBreakoutPyramid(h1, m30 []domain.Bar, price, atr float64) (*domain.Signal, domain.AnalysisLog) {
+// checkCounterPullback detects counter-trend pullback entries based on CHoCH + Sweep.
+// It looks for SMC reversal signals: a liquidity sweep followed by a CHoCH,
+// then a pullback into the swept zone as an entry opportunity.
+func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx smc.SMCContext) (*domain.Signal, domain.AnalysisLog) {
+	name := "反转回调"
+	cfg := e.Config
+	precision := e.Precision
+	if precision <= 0 {
+		precision = 2
+	}
+
+	if len(h1) < 20 {
+		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "数据不足 ⏭"}
+	}
+
+	// Find the most recent CHoCH events
+	var recentCHoCH *smc.StructureBreak
+	for i := len(smcCtx.H1Breaks) - 1; i >= 0; i-- {
+		if smcCtx.H1Breaks[i].Type == "CHoCH" {
+			br := smcCtx.H1Breaks[i]
+			recentCHoCH = &br
+			break
+		}
+	}
+	if recentCHoCH == nil {
+		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "无CHoCH信号 ⏭"}
+	}
+
+	// Check if CHoCH is recent enough (within last 10 bars)
+	lastBarIdx := len(h1) - 1
+	if lastBarIdx-recentCHoCH.Index > 10 {
+		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: fmt.Sprintf("CHoCH在%d根前,太旧 ⏭", lastBarIdx-recentCHoCH.Index)}
+	}
+
+	// Find the most recent sweep in the same direction as CHoCH
+	var recentSweep *smc.LiquiditySweep
+	for i := len(smcCtx.H1Sweeps) - 1; i >= 0; i-- {
+		sw := smcCtx.H1Sweeps[i]
+		// Sweep direction must match CHoCH reversal direction
+		// CHoCH UP + Sweep BULL = swept lows then reversed up → bullish
+		// CHoCH DOWN + Sweep BEAR = swept highs then reversed down → bearish
+		if (recentCHoCH.Direction == "UP" && sw.Side == "BULL") ||
+			(recentCHoCH.Direction == "DOWN" && sw.Side == "BEAR") {
+			recentSweep = &sw
+			break
+		}
+	}
+	if recentSweep == nil {
+		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "CHoCH无对应Sweep确认 ⏭"}
+	}
+
+	last := h1[len(h1)-1]
+
+	// Bullish counter-pullback: CHoCH UP + BULL sweep, price pulls back near sweep level
+	if recentCHoCH.Direction == "UP" && recentSweep.Side == "BULL" {
+		sweepLevel := recentSweep.Level
+		// Price should be near or slightly below the sweep level (pullback into zone)
+		pullbackZone := sweepLevel + atr*0.5
+		if price > pullbackZone {
+			return nil, domain.AnalysisLog{
+				Level:    "info",
+				Strategy: name,
+				Message:  fmt.Sprintf("看涨CHoCH+Sweep | 价格%.2f > 回调区%.2f,未到位 ⏭", price, pullbackZone),
+			}
+		}
+
+		score := 5
+		details := make([]string, 0, 4)
+		details = append(details, fmt.Sprintf("CHoCH@%d", recentCHoCH.Index))
+		details = append(details, fmt.Sprintf("Sweep@%.2f", sweepLevel))
+
+		// Bonus: RSI not overbought
+		if last.RSI < 45 {
+			score++
+			details = append(details, fmt.Sprintf("RSI=%.1f", last.RSI))
+		}
+		// Bonus: near valid bullish OB
+		bullOBs := smc.FilterOBsBySide(smcCtx.H1OBs, "BUY")
+		nearOB := smc.ValidOBsNearPrice(bullOBs, price, atr*1.0)
+		if len(nearOB) > 0 {
+			score++
+			details = append(details, "OB确认")
+		}
+		// Bonus: MACD turning positive
+		if last.MACDHist > 0 {
+			score++
+			details = append(details, "MACD>0")
+		}
+		// Bonus: FVG in zone
+		nearFVG := smc.UnfilledFVGsNearPrice(smcCtx.H1FVGs, price, atr*1.0)
+		if len(nearFVG) > 0 {
+			score++
+			details = append(details, "FVG确认")
+		}
+
+		sl := roundToPrecision(sweepLevel-atr*0.5, precision)
+		tp1 := roundToPrecision(price+atr*2.0, precision)
+		tp2 := roundToPrecision(price+atr*4.0, precision)
+		if sl >= price {
+			sl = roundToPrecision(price-atr*1.5, precision)
+		}
+
+		signal := &domain.Signal{
+			Side:     "BUY",
+			Entry:    price,
+			StopLoss: sl,
+			TP1:      tp1,
+			TP2:      tp2,
+			Score:    min(score, 10),
+			Strategy: "counter_pullback",
+			ATRMult:  1.5,
+		}
+		if s, t1, t2, ok := pickSLTP("BUY", price, last, atr, precision, cfg, nil); ok {
+			signal.StopLoss = s
+			signal.TP1 = t1
+			signal.TP2 = t2
+		}
+		return signal, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message:  fmt.Sprintf("🟢 BUY 评分=%d | 看涨反转回调: CHoCH↑+Sweep@%.2f | %s", score, sweepLevel, strings.Join(details, " | ")),
+		}
+	}
+
+	// Bearish counter-pullback: CHoCH DOWN + BEAR sweep, price pulls back near sweep level
+	if recentCHoCH.Direction == "DOWN" && recentSweep.Side == "BEAR" {
+		sweepLevel := recentSweep.Level
+		pullbackZone := sweepLevel - atr*0.5
+		if price < pullbackZone {
+			return nil, domain.AnalysisLog{
+				Level:    "info",
+				Strategy: name,
+				Message:  fmt.Sprintf("看跌CHoCH+Sweep | 价格%.2f < 回调区%.2f,未到位 ⏭", price, pullbackZone),
+			}
+		}
+
+		score := 5
+		details := make([]string, 0, 4)
+		details = append(details, fmt.Sprintf("CHoCH@%d", recentCHoCH.Index))
+		details = append(details, fmt.Sprintf("Sweep@%.2f", sweepLevel))
+
+		if last.RSI > 55 {
+			score++
+			details = append(details, fmt.Sprintf("RSI=%.1f", last.RSI))
+		}
+		bearOBs := smc.FilterOBsBySide(smcCtx.H1OBs, "SELL")
+		nearOB := smc.ValidOBsNearPrice(bearOBs, price, atr*1.0)
+		if len(nearOB) > 0 {
+			score++
+			details = append(details, "OB确认")
+		}
+		if last.MACDHist < 0 {
+			score++
+			details = append(details, "MACD<0")
+		}
+		nearFVG := smc.UnfilledFVGsNearPrice(smcCtx.H1FVGs, price, atr*1.0)
+		if len(nearFVG) > 0 {
+			score++
+			details = append(details, "FVG确认")
+		}
+
+		sl := roundToPrecision(sweepLevel+atr*0.5, precision)
+		tp1 := roundToPrecision(price-atr*2.0, precision)
+		tp2 := roundToPrecision(price-atr*4.0, precision)
+		if sl <= price {
+			sl = roundToPrecision(price+atr*1.5, precision)
+		}
+
+		signal := &domain.Signal{
+			Side:     "SELL",
+			Entry:    price,
+			StopLoss: sl,
+			TP1:      tp1,
+			TP2:      tp2,
+			Score:    min(score, 10),
+			Strategy: "counter_pullback",
+			ATRMult:  1.5,
+		}
+		if s, t1, t2, ok := pickSLTP("SELL", price, last, atr, precision, cfg, nil); ok {
+			signal.StopLoss = s
+			signal.TP1 = t1
+			signal.TP2 = t2
+		}
+		return signal, domain.AnalysisLog{
+			Level:    "signal",
+			Strategy: name,
+			Message:  fmt.Sprintf("🔴 SELL 评分=%d | 看跌反转回调: CHoCH↓+Sweep@%.2f | %s", score, sweepLevel, strings.Join(details, " | ")),
+		}
+	}
+
+	return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "无CHoCH+Sweep组合 ⏭"}
+}
+
+func (e Engine) checkBreakoutPyramid(h1, m30 []domain.Bar, price, atr float64, smcCtx smc.SMCContext) (*domain.Signal, domain.AnalysisLog) {
 	cfg := e.Config
 	name := "突破加仓"
 	if len(h1) < 30 {
@@ -1450,7 +1728,8 @@ func (e Engine) checkBreakoutPyramid(h1, m30 []domain.Bar, price, atr float64) (
 	}
 
 	if last.Close > last.BBUpper && last.EMA20 > last.EMA50 {
-		bearOBs := smc.DetectOrderBlocks(h1, "SELL", 20, "BULL")
+		// Use pre-computed short-lookback OBs from smcCtx instead of re-detecting
+		bearOBs := smc.FilterOBsBySide(smcCtx.H1ShortOBs, "SELL")
 		bearOBs = append(bearOBs, breakoutPyramidContinuationOrderBlocks(h1, "SELL", 20, "BULL")...)
 		for _, ob := range bearOBs {
 			if !ob.Valid {
@@ -1501,7 +1780,8 @@ func (e Engine) checkBreakoutPyramid(h1, m30 []domain.Bar, price, atr float64) (
 	}
 
 	if last.Close < last.BBLower && last.EMA20 < last.EMA50 {
-		bullOBs := smc.DetectOrderBlocks(h1, "BUY", 20, "BEAR")
+		// Use pre-computed short-lookback OBs from smcCtx instead of re-detecting
+		bullOBs := smc.FilterOBsBySide(smcCtx.H1ShortOBs, "BUY")
 		bullOBs = append(bullOBs, breakoutPyramidContinuationOrderBlocks(h1, "BUY", 20, "BEAR")...)
 		for _, ob := range bullOBs {
 			if !ob.Valid {
