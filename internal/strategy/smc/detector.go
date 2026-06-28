@@ -554,8 +554,8 @@ func checkOrderBlockValidity(ob OrderBlock, bars []domain.Bar) OrderBlock {
 
 // --------------- SMC Context Builder ---------------
 
-// BuildSMCContext constructs a multi-timeframe SMC context from H4, H1, and M30 bars.
-func BuildSMCContext(h4, h1, m30 []domain.Bar) SMCContext {
+// BuildSMCContext constructs a multi-timeframe SMC context from H4, H1, M30, and M15 bars.
+func BuildSMCContext(h4, h1, m30, m15 []domain.Bar) SMCContext {
 	ctx := SMCContext{}
 
 	if len(h4) >= 20 {
@@ -580,6 +580,26 @@ func BuildSMCContext(h4, h1, m30 []domain.Bar) SMCContext {
 		// Short-lookback OBs for breakout_pyramid (lookback=20)
 		ctx.H1ShortOBs = DetectOrderBlocks(h1, "BUY", 20, ctx.H1TrendDirection)
 		ctx.H1ShortOBs = append(ctx.H1ShortOBs, DetectOrderBlocks(h1, "SELL", 20, ctx.H1TrendDirection)...)
+	}
+
+	if len(m30) >= 20 {
+		m30Highs, m30Lows := FindSwingPoints(m30, 3, 3)
+		ctx.M30TrendDirection = DetermineTrendDirection(m30Highs, m30Lows)
+		ctx.M30Breaks = DetectStructureBreaks(m30, 50, ctx.M30TrendDirection)
+		ctx.M30OBs = DetectOrderBlocks(m30, "BUY", 50, ctx.M30TrendDirection)
+		ctx.M30OBs = append(ctx.M30OBs, DetectOrderBlocks(m30, "SELL", 50, ctx.M30TrendDirection)...)
+		ctx.M30FVGs = DetectFVGs(m30, 50)
+		ctx.M30Sweeps = DetectLiquiditySweeps(m30, m30Highs, m30Lows, 3)
+	}
+
+	if len(m15) >= 20 {
+		m15Highs, m15Lows := FindSwingPoints(m15, 3, 3)
+		ctx.M15TrendDirection = DetermineTrendDirection(m15Highs, m15Lows)
+		ctx.M15Breaks = DetectStructureBreaks(m15, 30, ctx.M15TrendDirection)
+		ctx.M15OBs = DetectOrderBlocks(m15, "BUY", 30, ctx.M15TrendDirection)
+		ctx.M15OBs = append(ctx.M15OBs, DetectOrderBlocks(m15, "SELL", 30, ctx.M15TrendDirection)...)
+		ctx.M15FVGs = DetectFVGs(m15, 30)
+		ctx.M15Sweeps = DetectLiquiditySweeps(m15, m15Highs, m15Lows, 3)
 	}
 
 	return ctx

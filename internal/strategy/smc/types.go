@@ -51,14 +51,27 @@ type SMCContext struct {
 	H4OBs    []OrderBlock
 	H1OBs    []OrderBlock
 	H1ShortOBs []OrderBlock // lookback=20 for breakout_pyramid strategy
+	M30OBs   []OrderBlock
+	M15OBs   []OrderBlock
+
 	H4FVGs   []FVG
 	H1FVGs   []FVG
+	M30FVGs  []FVG
+	M15FVGs  []FVG
+
 	H4Breaks []StructureBreak
 	H1Breaks []StructureBreak
+	M30Breaks []StructureBreak
+	M15Breaks []StructureBreak
+
 	H4Sweeps []LiquiditySweep
 	H1Sweeps []LiquiditySweep
+	M30Sweeps []LiquiditySweep
+	M15Sweeps []LiquiditySweep
 
 	// Trend direction derived from structure breaks
 	H4TrendDirection string // "BULL", "BEAR", "NEUTRAL"
 	H1TrendDirection string // "BULL", "BEAR", "NEUTRAL"
+	M30TrendDirection string
+	M15TrendDirection string
 }

@@ -519,7 +519,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 	// Build multi-timeframe trend context (before signal generation, after H4 check)
 	tc := BuildTrendContext(d1, h4, h1, m30, m15, e.Config.Trend)
 	LogTrendContext(tc)
-	smcCtx := smc.BuildSMCContext(h4, h1, m30)
+	smcCtx := smc.BuildSMCContext(h4, h1, m30, m15)
 	smcSummary := fmt.Sprintf(
 		"H4=%s breaks=%d OBs=%d FVGs=%d sweeps=%d | H1=%s breaks=%d OBs=%d FVGs=%d sweeps=%d",
 		smcCtx.H4TrendDirection, len(smcCtx.H4Breaks), len(smcCtx.H4OBs), len(smcCtx.H4FVGs), len(smcCtx.H4Sweeps),
@@ -577,7 +577,7 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 		logs = append(logs, detail)
 	}
 
-	if signal, detail := e.checkCounterPullback(h1, price, atr, smcCtx); signal != nil {
+	if signal, detail := e.checkCounterPullback(m15, m30, price, atr, smcCtx); signal != nil {
 		signals = append(signals, *signal)
 		logs = append(logs, detail)
 		log.Printf("[STRATEGY] %s", detail.Message)
@@ -814,13 +814,19 @@ func (e Engine) Analyze(snapshot domain.AnalysisSnapshot) (*domain.Signal, []dom
 				}
 			}
 		} else {
-			// Reverse-direction: block if within 2 ATR (prevent hedging)
-			if dist < atr*2 {
-				log.Printf("[STRATEGY] 🔒 防对冲: 已有反向持仓 @ %.2f,距离 < 2.0 ATR", position.OpenPrice)
+			// Reverse-direction: only block if same strategy + same symbol within 2 ATR
+			// Different strategies (e.g. pullback SELL + counter_pullback BUY) are allowed to coexist
+			// as they represent different market views (trend continuation vs reversal)
+			posSymbol := domain.BaseSymbol(position.Symbol)
+			planSymbol := domain.BaseSymbol(e.Symbol)
+			sameStrategy := position.Strategy != "" && position.Strategy == best.Strategy
+			sameSymbol := posSymbol == planSymbol
+			if sameStrategy && sameSymbol && dist < atr*2 {
+				log.Printf("[STRATEGY] 🔒 防对冲: 同策略(%s)反向持仓 @ %.2f,距离 < 2.0 ATR", position.Strategy, position.OpenPrice)
 				logs = append(logs, domain.AnalysisLog{
 					Level:    "warn",
 					Strategy: "汇总",
-					Message:  fmt.Sprintf("防对冲: 已有反向持仓 @ %.2f,距离 < 2.0 ATR", position.OpenPrice),
+					Message:  fmt.Sprintf("防对冲: 同策略(%s)反向持仓 @ %.2f,距离 < 2.0 ATR", position.Strategy, position.OpenPrice),
 				})
 				return nil, logs
 			}
@@ -1518,10 +1524,11 @@ func (e Engine) checkDivergence(h1, _ []domain.Bar, price, atr float64) (*domain
 	return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: message}
 }
 
-// checkCounterPullback detects counter-trend pullback entries based on CHoCH + Sweep.
-// It looks for SMC reversal signals: a liquidity sweep followed by a CHoCH,
-// then a pullback into the swept zone as an entry opportunity.
-func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx smc.SMCContext) (*domain.Signal, domain.AnalysisLog) {
+// checkCounterPullback detects counter-trend pullback entries on M15+M30 using CHoCH + Sweep.
+// This strategy focuses on short-timeframe reversal signals — it does NOT use H1+ data.
+// Rationale: counter-pullback captures small-timeframe trend changes (reversals) that may
+// diverge from the major timeframe direction, enabling dual-direction trading.
+func (e Engine) checkCounterPullback(m15, m30 []domain.Bar, price, atr float64, smcCtx smc.SMCContext) (*domain.Signal, domain.AnalysisLog) {
 	name := "反转回调"
 	cfg := e.Config
 	precision := e.Precision
@@ -1529,15 +1536,31 @@ func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx
 		precision = 2
 	}
 
-	if len(h1) < 20 {
-		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "数据不足 ⏭"}
+	// Prefer M30 for structure detection (more reliable), fall back to M15
+	primaryBars := m30
+	secondaryBars := m15
+	primaryBreaks := smcCtx.M30Breaks
+	primarySweeps := smcCtx.M30Sweeps
+	primaryOBs := smcCtx.M30OBs
+	primaryFVGs := smcCtx.M30FVGs
+
+	if len(primaryBars) < 20 {
+		// Fall back to M15 if M30 data insufficient
+		if len(m15) < 20 {
+			return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "M30/M15数据均不足 ⏭"}
+		}
+		primaryBars = m15
+		primaryBreaks = smcCtx.M15Breaks
+		primarySweeps = smcCtx.M15Sweeps
+		primaryOBs = smcCtx.M15OBs
+		primaryFVGs = smcCtx.M15FVGs
 	}
 
 	// Find the most recent CHoCH events
 	var recentCHoCH *smc.StructureBreak
-	for i := len(smcCtx.H1Breaks) - 1; i >= 0; i-- {
-		if smcCtx.H1Breaks[i].Type == "CHoCH" {
-			br := smcCtx.H1Breaks[i]
+	for i := len(primaryBreaks) - 1; i >= 0; i-- {
+		if primaryBreaks[i].Type == "CHoCH" {
+			br := primaryBreaks[i]
 			recentCHoCH = &br
 			break
 		}
@@ -1546,16 +1569,16 @@ func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx
 		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "无CHoCH信号 ⏭"}
 	}
 
-	// Check if CHoCH is recent enough (within last 10 bars)
-	lastBarIdx := len(h1) - 1
+	// Check if CHoCH is recent enough (within last 10 bars on primary timeframe)
+	lastBarIdx := len(primaryBars) - 1
 	if lastBarIdx-recentCHoCH.Index > 10 {
 		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: fmt.Sprintf("CHoCH在%d根前,太旧 ⏭", lastBarIdx-recentCHoCH.Index)}
 	}
 
 	// Find the most recent sweep in the same direction as CHoCH
 	var recentSweep *smc.LiquiditySweep
-	for i := len(smcCtx.H1Sweeps) - 1; i >= 0; i-- {
-		sw := smcCtx.H1Sweeps[i]
+	for i := len(primarySweeps) - 1; i >= 0; i-- {
+		sw := primarySweeps[i]
 		// Sweep direction must match CHoCH reversal direction
 		// CHoCH UP + Sweep BULL = swept lows then reversed up → bullish
 		// CHoCH DOWN + Sweep BEAR = swept highs then reversed down → bearish
@@ -1569,7 +1592,7 @@ func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx
 		return nil, domain.AnalysisLog{Level: "info", Strategy: name, Message: "CHoCH无对应Sweep确认 ⏭"}
 	}
 
-	last := h1[len(h1)-1]
+	last := primaryBars[len(primaryBars)-1]
 
 	// Bullish counter-pullback: CHoCH UP + BULL sweep, price pulls back near sweep level
 	if recentCHoCH.Direction == "UP" && recentSweep.Side == "BULL" {
@@ -1580,13 +1603,17 @@ func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx
 			return nil, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: name,
-				Message:  fmt.Sprintf("看涨CHoCH+Sweep | 价格%.2f > 回调区%.2f,未到位 ⏭", price, pullbackZone),
+				Message:  fmt.Sprintf("看涨CHoCH+Sweep(M30) | 价格%.2f > 回调区%.2f,未到位 ⏭", price, pullbackZone),
 			}
 		}
 
 		score := 5
-		details := make([]string, 0, 4)
-		details = append(details, fmt.Sprintf("CHoCH@%d", recentCHoCH.Index))
+		details := make([]string, 0, 5)
+		tfLabel := "M30"
+		if len(m30) < 20 {
+			tfLabel = "M15"
+		}
+		details = append(details, fmt.Sprintf("CHoCH@%d(%s)", recentCHoCH.Index, tfLabel))
 		details = append(details, fmt.Sprintf("Sweep@%.2f", sweepLevel))
 
 		// Bonus: RSI not overbought
@@ -1594,8 +1621,8 @@ func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx
 			score++
 			details = append(details, fmt.Sprintf("RSI=%.1f", last.RSI))
 		}
-		// Bonus: near valid bullish OB
-		bullOBs := smc.FilterOBsBySide(smcCtx.H1OBs, "BUY")
+		// Bonus: near valid bullish OB (use primary timeframe OBs)
+		bullOBs := smc.FilterOBsBySide(primaryOBs, "BUY")
 		nearOB := smc.ValidOBsNearPrice(bullOBs, price, atr*1.0)
 		if len(nearOB) > 0 {
 			score++
@@ -1606,11 +1633,22 @@ func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx
 			score++
 			details = append(details, "MACD>0")
 		}
-		// Bonus: FVG in zone
-		nearFVG := smc.UnfilledFVGsNearPrice(smcCtx.H1FVGs, price, atr*1.0)
+		// Bonus: FVG in zone (use primary timeframe FVGs)
+		nearFVG := smc.UnfilledFVGsNearPrice(primaryFVGs, price, atr*1.0)
 		if len(nearFVG) > 0 {
 			score++
 			details = append(details, "FVG确认")
+		}
+		// Bonus: M15 secondary confirmation (if M30 is primary)
+		if len(m30) >= 20 && len(secondaryBars) >= 20 {
+			m15Breaks := smcCtx.M15Breaks
+			for _, br := range m15Breaks {
+				if br.Type == "CHoCH" && br.Direction == "UP" && len(primaryBars)-1-br.Index <= 10 {
+					score++
+					details = append(details, "M15-CHoCH↑共振")
+					break
+				}
+			}
 		}
 
 		sl := roundToPrecision(sweepLevel-atr*0.5, precision)
@@ -1638,7 +1676,7 @@ func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx
 		return signal, domain.AnalysisLog{
 			Level:    "signal",
 			Strategy: name,
-			Message:  fmt.Sprintf("🟢 BUY 评分=%d | 看涨反转回调: CHoCH↑+Sweep@%.2f | %s", score, sweepLevel, strings.Join(details, " | ")),
+			Message:  fmt.Sprintf("🟢 BUY 评分=%d | 看涨反转回调(%s): CHoCH↑+Sweep@%.2f | %s", score, tfLabel, sweepLevel, strings.Join(details, " | ")),
 		}
 	}
 
@@ -1650,20 +1688,24 @@ func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx
 			return nil, domain.AnalysisLog{
 				Level:    "info",
 				Strategy: name,
-				Message:  fmt.Sprintf("看跌CHoCH+Sweep | 价格%.2f < 回调区%.2f,未到位 ⏭", price, pullbackZone),
+				Message:  fmt.Sprintf("看跌CHoCH+Sweep(M30) | 价格%.2f < 回调区%.2f,未到位 ⏭", price, pullbackZone),
 			}
 		}
 
 		score := 5
-		details := make([]string, 0, 4)
-		details = append(details, fmt.Sprintf("CHoCH@%d", recentCHoCH.Index))
+		details := make([]string, 0, 5)
+		tfLabel := "M30"
+		if len(m30) < 20 {
+			tfLabel = "M15"
+		}
+		details = append(details, fmt.Sprintf("CHoCH@%d(%s)", recentCHoCH.Index, tfLabel))
 		details = append(details, fmt.Sprintf("Sweep@%.2f", sweepLevel))
 
 		if last.RSI > 55 {
 			score++
 			details = append(details, fmt.Sprintf("RSI=%.1f", last.RSI))
 		}
-		bearOBs := smc.FilterOBsBySide(smcCtx.H1OBs, "SELL")
+		bearOBs := smc.FilterOBsBySide(primaryOBs, "SELL")
 		nearOB := smc.ValidOBsNearPrice(bearOBs, price, atr*1.0)
 		if len(nearOB) > 0 {
 			score++
@@ -1673,10 +1715,21 @@ func (e Engine) checkCounterPullback(h1 []domain.Bar, price, atr float64, smcCtx
 			score++
 			details = append(details, "MACD<0")
 		}
-		nearFVG := smc.UnfilledFVGsNearPrice(smcCtx.H1FVGs, price, atr*1.0)
+		nearFVG := smc.UnfilledFVGsNearPrice(primaryFVGs, price, atr*1.0)
 		if len(nearFVG) > 0 {
 			score++
 			details = append(details, "FVG确认")
+		}
+		// M15 secondary confirmation
+		if len(m30) >= 20 && len(secondaryBars) >= 20 {
+			m15Breaks := smcCtx.M15Breaks
+			for _, br := range m15Breaks {
+				if br.Type == "CHoCH" && br.Direction == "DOWN" && len(primaryBars)-1-br.Index <= 10 {
+					score++
+					details = append(details, "M15-CHoCH↓共振")
+					break
+				}
+			}
 		}
 
 		sl := roundToPrecision(sweepLevel+atr*0.5, precision)

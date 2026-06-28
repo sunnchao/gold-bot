@@ -637,7 +637,7 @@ func TestBuildSMCContext(t *testing.T) {
 		makeBar(139, 141, 138, 140),
 	}
 
-	ctx := BuildSMCContext(h4, h1, nil)
+	ctx := BuildSMCContext(h4, h1, nil, nil)
 
 	if ctx.H4TrendDirection == "" {
 		t.Log("H4 trend direction is empty (may be NEUTRAL for monotonic data)")
@@ -653,7 +653,7 @@ func TestBuildSMCContext(t *testing.T) {
 }
 
 func TestBuildSMCContext_InsufficientData(t *testing.T) {
-	ctx := BuildSMCContext(nil, nil, nil)
+	ctx := BuildSMCContext(nil, nil, nil, nil)
 	if ctx.H4TrendDirection != "" || ctx.H1TrendDirection != "" {
 		t.Error("expected empty context for nil input")
 	}
