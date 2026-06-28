@@ -8,6 +8,7 @@ import (
 
 	"gold-bot/internal/domain"
 	"gold-bot/internal/strategy/engine"
+	"gold-bot/internal/strategy/harmonic"
 	"gold-bot/internal/strategy/indicator"
 	"gold-bot/internal/strategy/marketfilter"
 )
@@ -23,7 +24,8 @@ type AnalysisPayload struct {
 	MarketStatus    MarketStatus              `json:"market_status"`
 	MarketFilters   marketfilter.Result       `json:"market_filters"`
 	StrategyMapping map[string]string         `json:"strategy_mapping"`
-	TrendContext    *TrendContextPayload      `json:"trend_context,omitempty"`
+	TrendContext    *TrendContextPayload          `json:"trend_context,omitempty"`
+	HarmonicContext *harmonic.HarmonicContext     `json:"harmonic_context,omitempty"`
 }
 
 type AccountSummary struct {
@@ -256,6 +258,7 @@ func BuildAnalysisPayload(account domain.Account, runtime domain.AccountRuntime,
 		MarketFilters:   filters,
 		StrategyMapping: mapping,
 		TrendContext:    buildTrendContextPayload(state),
+		HarmonicContext: buildHarmonicContextPayload(payloadBars),
 	}
 }
 
@@ -274,6 +277,17 @@ func buildTrendContextPayload(state domain.AccountState) *TrendContextPayload {
 		ConsensusDirection: tc.ConsensusDirection,
 		ConsensusStrength:  tc.ConsensusStrength,
 	}
+}
+
+func buildHarmonicContextPayload(bars map[string][]domain.Bar) *harmonic.HarmonicContext {
+	h4 := bars["H4"]
+	h1 := bars["H1"]
+	m30 := bars["M30"]
+	if len(h4) < 10 || len(h1) < 10 {
+		return nil
+	}
+	ctx := harmonic.BuildContext(h4, h1, m30)
+	return &ctx
 }
 
 func recentSafeBars(bars []domain.Bar, limit int) []domain.Bar {

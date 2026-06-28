@@ -20,6 +20,8 @@ const (
 	patternButterfly = "butterfly"
 	patternCrab      = "crab"
 	patternABCD      = "abcd"
+	patternCypher    = "cypher"
+	patternShark     = "shark"
 )
 
 type swingPoint struct {
@@ -28,12 +30,24 @@ type swingPoint struct {
 	Kind  string
 }
 
+// structureType defines the geometric constraint for a harmonic pattern.
+//   "standard" — all pivots stay within the XA range (Gartley, Bat, Butterfly, Crab, ABCD)
+//   "cypher"   — C exceeds X (extension beyond the initial impulse leg)
+//   "shark"    — B exceeds X (AB extends beyond XA, i.e. AB/XA > 1.0)
+const (
+	structureStandard = "standard"
+	structureCypher   = "cypher"
+	structureShark    = "shark"
+)
+
 type patternSpec struct {
 	patternType string
-	abTargets   []ratioTarget
-	xdTargets   []ratioTarget
-	cdTargets   []ratioTarget
-	abcdTargets []ratioTarget
+	structure   string         // geometric constraint
+	abTargets   []ratioTarget  // AB/XA ratio
+	xdTargets   []ratioTarget  // XD/XA ratio (standard retrace)
+	xcTargets   []ratioTarget  // XD/XC ratio (Cypher retrace: D retrace of XC)
+	cdTargets   []ratioTarget  // CD/BC ratio
+	abcdTargets []ratioTarget  // CD/AB ratio
 }
 
 type ratioTarget struct {
@@ -48,8 +62,11 @@ var toleranceByRatio = map[float64]float64{
 	0.786: 0.04,
 	0.886: 0.04,
 	1.000: 0.06,
+	1.13:  0.07,
 	1.272: 0.08,
 	1.618: 0.10,
+	2.0:   0.12,
+	2.24:  0.13,
 	2.618: 0.15,
 }
 
@@ -74,6 +91,7 @@ type patternCandidate struct {
 var patternSpecs = []patternSpec{
 	{
 		patternType: patternGartley,
+		structure:   structureStandard,
 		abTargets:   []ratioTarget{target(0.618)},
 		xdTargets:   []ratioTarget{target(0.786)},
 		cdTargets:   []ratioTarget{target(1.272), target(1.618)},
@@ -81,6 +99,7 @@ var patternSpecs = []patternSpec{
 	},
 	{
 		patternType: patternBat,
+		structure:   structureStandard,
 		abTargets:   []ratioTarget{target(0.382), target(0.500)},
 		xdTargets:   []ratioTarget{target(0.886)},
 		cdTargets:   []ratioTarget{target(1.618), target(2.618)},
@@ -88,6 +107,7 @@ var patternSpecs = []patternSpec{
 	},
 	{
 		patternType: patternButterfly,
+		structure:   structureStandard,
 		abTargets:   []ratioTarget{target(0.786)},
 		xdTargets:   []ratioTarget{target(1.272), target(1.618)},
 		cdTargets:   []ratioTarget{target(1.618), target(2.618)},
@@ -95,6 +115,7 @@ var patternSpecs = []patternSpec{
 	},
 	{
 		patternType: patternCrab,
+		structure:   structureStandard,
 		abTargets:   []ratioTarget{target(0.382), target(0.618)},
 		xdTargets:   []ratioTarget{target(1.618)},
 		cdTargets:   []ratioTarget{target(2.618)},
@@ -102,9 +123,32 @@ var patternSpecs = []patternSpec{
 	},
 	{
 		patternType: patternABCD,
+		structure:   structureStandard,
 		abTargets:   nil,
 		xdTargets:   nil,
 		cdTargets:   nil,
+		abcdTargets: []ratioTarget{target(1.0)},
+	},
+	// Cypher: AB retraces 0.382-0.618 of XA, BC extends 1.272-2.0 of AB,
+	// C exceeds X (the defining structural feature), D at 0.786 retrace of XC.
+	// Note: Cypher uses XC retrace (xdXcRatio) not XA retrace (xdRatio).
+	{
+		patternType: patternCypher,
+		structure:   structureCypher,
+		abTargets:   []ratioTarget{target(0.382), target(0.618)},
+		xdTargets:   nil, // Cypher doesn't use XD/XA
+		xcTargets:   []ratioTarget{target(0.786)}, // D retrace of XC at 0.786
+		cdTargets:   []ratioTarget{target(1.272), target(2.0)},
+		abcdTargets: []ratioTarget{target(1.0)},
+	},
+	// Shark: AB extends 1.13-1.618 beyond X (B exceeds X), CD/BC=1.618-2.24,
+	// D at 0.886 retrace of the initial move.
+	{
+		patternType: patternShark,
+		structure:   structureShark,
+		abTargets:   []ratioTarget{target(1.13), target(1.618)},
+		xdTargets:   []ratioTarget{target(0.886)},
+		cdTargets:   []ratioTarget{target(1.618), target(2.24)},
 		abcdTargets: []ratioTarget{target(1.0)},
 	},
 }
@@ -142,24 +186,77 @@ func DetectPatterns(bars []domain.Bar, timeframe string) []HarmonicPattern {
 		}
 	}
 
+	// Try skip-1 5-swing windows: X, A, B, skip, C, D
+	// This handles the case where zigzag inserts a small noise swing
+	// between two significant same-direction pivots (e.g., between B and C
+	// in a Cypher pattern). We try skipping swing[i+3] and using swing[i+4]
+	// as C, swing[i+5] as D.
+	for i := start; i <= len(swings)-6; i++ {
+		x := swings[i]
+		a := swings[i+1]
+		b := swings[i+2]
+		// skip swings[i+3]
+		c := swings[i+4]
+		d := swings[i+5]
+		direction, ok := xabcdDirection(x, a, b, c, d)
+		if !ok {
+			continue
+		}
+
+		for _, spec := range patternSpecs {
+			candidate, ok := validateCandidate(spec, x, a, b, c, d, direction)
+			if !ok {
+				continue
+			}
+			// Deduplicate against existing patterns
+			dup := false
+			for _, existing := range patterns {
+				if existing.DIndex == d.Index && existing.Type == spec.patternType && existing.Direction == direction {
+					dup = true
+					break
+				}
+			}
+			if dup {
+				continue
+			}
+			patterns = append(patterns, buildPattern(candidate, timeframe))
+		}
+	}
+
 	// Try 4-swing windows: X, A, B, D where C is same-direction as D.
 	// This handles the common case where C and D are both lows (bullish)
 	// or both highs (bearish) and the zigzag merges them into one down/up leg.
 	// C is inferred by backtracking from D using each pattern's CD/BC target ratios.
+	// D can be at i+3, i+5, or i+7 (skipping noise swings) to handle patterns
+	// where zigzag inserts micro-reversals between B and D.
 	for i := start; i <= len(swings)-4; i++ {
 		x := swings[i]
 		a := swings[i+1]
 		b := swings[i+2]
-		d := swings[i+3]
+
+		// Try D at various offsets: i+3 (standard), i+5 (skip 1), i+7 (skip 2)
+		dOffsets := []int{3}
+		if i+5 < len(swings) {
+			dOffsets = append(dOffsets, 5)
+		}
+		if i+7 < len(swings) {
+			dOffsets = append(dOffsets, 7)
+		}
+
+		for _, dOff := range dOffsets {
+			d := swings[i+dOff]
 
 		// Check XAB direction
 		// Standard patterns: B must be strictly between X and A
 		// ABCD patterns: B can equal X (AB=CD allows B≈X)
+		// Shark/Cypher patterns: B can exceed X (AB extension beyond XA)
 		xabOkStandard := (x.Price > a.Price && b.Price > a.Price && b.Price < x.Price) ||
 			(x.Price < a.Price && b.Price < a.Price && b.Price > x.Price)
 		xabOkExtension := (x.Price >= a.Price && b.Price >= a.Price && b.Price <= x.Price) ||
 			(x.Price <= a.Price && b.Price <= a.Price && b.Price >= x.Price)
-		if !xabOkStandard && !xabOkExtension {
+		xabOkBeyond := (x.Price > a.Price && b.Price > x.Price) ||
+			(x.Price < a.Price && b.Price < x.Price)
+		if !xabOkStandard && !xabOkExtension && !xabOkBeyond {
 			continue
 		}
 
@@ -169,6 +266,14 @@ func DetectPatterns(bars []domain.Bar, timeframe string) []HarmonicPattern {
 			direction = directionBullish
 		} else if x.Price < a.Price && d.Price > b.Price {
 			direction = directionBearish
+		}
+		// For beyond-X patterns (Shark), also allow D < a (PRZ extends below A)
+		if direction == "" && xabOkBeyond {
+			if x.Price > a.Price && d.Price < a.Price {
+				direction = directionBullish
+			} else if x.Price < a.Price && d.Price > a.Price {
+				direction = directionBearish
+			}
 		}
 		if direction == "" {
 			continue
@@ -272,6 +377,7 @@ func DetectPatterns(bars []domain.Bar, timeframe string) []HarmonicPattern {
 				patterns = append(patterns, buildPattern(candidate, timeframe))
 			}
 		}
+		} // end dOff loop
 	}
 
 	sort.SliceStable(patterns, func(i, j int) bool {
@@ -430,6 +536,67 @@ func appendSwing(swings []swingPoint, point swingPoint) []swingPoint {
 	return swings
 }
 
+// filterNoiseSwings removes swings whose amplitude is insignificant compared
+// to their neighbors. A swing is "noise" if the move to reach it and leave it
+// is less than noiseRatio (default 0.20 = 20%) of the larger adjacent move.
+// This is critical for Cypher/Shark where zigzag inserts micro-reversals
+// between B and C that should be treated as a single leg.
+func filterNoiseSwings(swings []swingPoint) []swingPoint {
+	if len(swings) < 5 {
+		return swings
+	}
+
+	const noiseRatio = 0.25
+
+	// Compute move sizes between consecutive swings
+	type move struct {
+		from, to int
+		size     float64
+	}
+	moves := make([]move, len(swings)-1)
+	for i := 0; i < len(swings)-1; i++ {
+		moves[i] = move{from: i, to: i + 1, size: math.Abs(swings[i+1].Price - swings[i].Price)}
+	}
+
+	// Mark swings as noise: if BOTH the incoming and outgoing moves at a swing
+	// are < noiseRatio * max(incoming, outgoing neighbor moves), it's noise.
+	noise := make([]bool, len(swings))
+	for i := 1; i < len(swings)-1; i++ {
+		inMove := moves[i-1].size   // move arriving at swing[i]
+		outMove := moves[i].size    // move leaving swing[i]
+
+		// Find the largest adjacent move for context
+		maxAdjacent := inMove
+		if outMove > maxAdjacent {
+			maxAdjacent = outMove
+		}
+		// Also check one step further out for larger context
+		if i-2 >= 0 && moves[i-2].size > maxAdjacent {
+			maxAdjacent = moves[i-2].size
+		}
+		if i+1 < len(moves) && moves[i+1].size > maxAdjacent {
+			maxAdjacent = moves[i+1].size
+		}
+
+		if maxAdjacent == 0 {
+			continue
+		}
+		if inMove < noiseRatio*maxAdjacent && outMove < noiseRatio*maxAdjacent {
+			noise[i] = true
+		}
+	}
+
+	// Build filtered list, keeping first and last swings always
+	filtered := make([]swingPoint, 0, len(swings))
+	for i, s := range swings {
+		if !noise[i] || i == 0 || i == len(swings)-1 {
+			filtered = append(filtered, s)
+		}
+	}
+
+	return filtered
+}
+
 func typicalPrice(bar domain.Bar) float64 {
 	if bar.High != 0 || bar.Low != 0 {
 		return (bar.High + bar.Low) / 2
@@ -450,6 +617,14 @@ func xabcdDirection(x, a, b, c, d swingPoint) (string, bool) {
 	//   Bullish ABCD: X >= A, B >= A (or B ≈ X), C < B, D < C
 	//   Bearish ABCD: X <= A, B <= A (or B ≈ X), C > B, D > C
 	//
+	// Cypher (C exceeds X — the signature structural move):
+	//   Bullish: X > A, B between A and X, C > X (exceeds!), D between A and X
+	//   Bearish: X < A, B between A and X, C < X (exceeds!), D between A and X
+	//
+	// Shark (B exceeds X — AB extends beyond XA):
+	//   Bullish: X > A, B > X (exceeds!), C between B and A, D between A and X
+	//   Bearish: X < A, B < X (exceeds!), C between B and A, D between A and X
+	//
 	// We also accept "same-direction" C/D pairs (e.g., C and D both below B
 	// in bullish patterns) as long as D is the deeper retracement.
 
@@ -458,6 +633,26 @@ func xabcdDirection(x, a, b, c, d swingPoint) (string, bool) {
 		return directionBullish, true
 	}
 	if x.Price < a.Price && b.Price < a.Price && b.Price > x.Price && c.Price > b.Price && d.Price > b.Price {
+		return directionBearish, true
+	}
+
+	// Cypher patterns: C exceeds X (extension)
+	// Bullish Cypher: X > A, B between A and X, C > X, D < B (D in PRZ)
+	if x.Price > a.Price && b.Price > a.Price && b.Price <= x.Price && c.Price > x.Price && d.Price < b.Price {
+		return directionBullish, true
+	}
+	// Bearish Cypher: X < A, B between A and X, C < X, D > B (D in PRZ)
+	if x.Price < a.Price && b.Price < a.Price && b.Price >= x.Price && c.Price < x.Price && d.Price > b.Price {
+		return directionBearish, true
+	}
+
+	// Shark patterns: B exceeds X (AB extension beyond XA)
+	// Bullish Shark: X > A, B > X, C between B and X (pulling back), D < B
+	if x.Price > a.Price && b.Price > x.Price && c.Price < b.Price && c.Price >= x.Price && d.Price < b.Price && d.Price >= a.Price {
+		return directionBullish, true
+	}
+	// Bearish Shark: X < A, B < X, C between B and X (pulling back), D > B
+	if x.Price < a.Price && b.Price < x.Price && c.Price > b.Price && c.Price <= x.Price && d.Price > b.Price && d.Price <= a.Price {
 		return directionBearish, true
 	}
 
@@ -484,6 +679,50 @@ func alternates(points ...swingPoint) bool {
 }
 
 func validateCandidate(spec patternSpec, x, a, b, c, d swingPoint, direction string) (patternCandidate, bool) {
+	// Structure constraint check — must match before ratio validation.
+	switch spec.structure {
+	case structureStandard:
+		// Standard: all pivots within XA range
+		// Bullish: A < D < B < X, Bearish: A > D > B > X
+		// C must stay within XA (below X for bullish, above X for bearish)
+		if direction == directionBullish && c.Price > x.Price {
+			return patternCandidate{}, false
+		}
+		if direction == directionBearish && c.Price < x.Price {
+			return patternCandidate{}, false
+		}
+		// B must stay within XA (below X for bullish, above X for bearish)
+		if direction == directionBullish && b.Price > x.Price {
+			return patternCandidate{}, false
+		}
+		if direction == directionBearish && b.Price < x.Price {
+			return patternCandidate{}, false
+		}
+	case structureCypher:
+		// Cypher: C must exceed X (the defining structural move)
+		if direction == directionBullish && c.Price <= x.Price {
+			return patternCandidate{}, false
+		}
+		if direction == directionBearish && c.Price >= x.Price {
+			return patternCandidate{}, false
+		}
+		// B must stay within XA
+		if direction == directionBullish && b.Price > x.Price {
+			return patternCandidate{}, false
+		}
+		if direction == directionBearish && b.Price < x.Price {
+			return patternCandidate{}, false
+		}
+	case structureShark:
+		// Shark: B must exceed X (AB extension beyond XA)
+		if direction == directionBullish && b.Price <= x.Price {
+			return patternCandidate{}, false
+		}
+		if direction == directionBearish && b.Price >= x.Price {
+			return patternCandidate{}, false
+		}
+	}
+
 	xa := math.Abs(a.Price - x.Price)
 	ab := math.Abs(b.Price - a.Price)
 	bc := math.Abs(c.Price - b.Price)
@@ -506,6 +745,13 @@ func validateCandidate(spec patternSpec, x, a, b, c, d swingPoint, direction str
 		xdRatio:   math.Abs(d.Price-x.Price) / xa,
 	}
 
+	// XC retrace ratio: |D-X| / |C-X| (used by Cypher where D retrace is of XC, not XA)
+	xcRatio := 0.0
+	xc := math.Abs(c.Price - x.Price)
+	if xc > 0 {
+		xcRatio = math.Abs(d.Price - x.Price) / xc
+	}
+
 	var qualities []float64
 	if len(spec.abTargets) > 0 {
 		quality, ok := bestRatioQuality(candidate.abRatio, spec.abTargets)
@@ -516,6 +762,13 @@ func validateCandidate(spec patternSpec, x, a, b, c, d swingPoint, direction str
 	}
 	if len(spec.xdTargets) > 0 {
 		quality, ok := bestRatioQuality(candidate.xdRatio, spec.xdTargets)
+		if !ok {
+			return patternCandidate{}, false
+		}
+		qualities = append(qualities, quality)
+	}
+	if len(spec.xcTargets) > 0 {
+		quality, ok := bestRatioQuality(xcRatio, spec.xcTargets)
 		if !ok {
 			return patternCandidate{}, false
 		}
