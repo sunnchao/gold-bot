@@ -31,20 +31,22 @@ func newStateStore() *StateStore {
 
 // memoryAccountStore implements an in-memory store with 2D indexing: accountID -> symbol -> StateStore.
 type memoryAccountStore struct {
-	mu       sync.RWMutex
-	states   map[string]map[string]*StateStore // accountID -> symbol -> *StateStore
-	tokens   map[string]bool                   // token -> valid
-	accounts map[string]domain.Account         // accountID -> Account
-	runtimes map[string]domain.AccountRuntime  // accountID -> Runtime
+	mu        sync.RWMutex
+	states    map[string]map[string]*StateStore // accountID -> symbol -> *StateStore
+	aiSymbols map[string][]string               // accountID -> AI symbols
+	tokens    map[string]bool                   // token -> valid
+	accounts  map[string]domain.Account         // accountID -> Account
+	runtimes  map[string]domain.AccountRuntime  // accountID -> Runtime
 }
 
 // NewMemoryAccountStore creates a new in-memory account store.
 func NewMemoryAccountStore() *memoryAccountStore {
 	return &memoryAccountStore{
-		states:   make(map[string]map[string]*StateStore),
-		tokens:   make(map[string]bool),
-		accounts: make(map[string]domain.Account),
-		runtimes: make(map[string]domain.AccountRuntime),
+		states:    make(map[string]map[string]*StateStore),
+		aiSymbols: make(map[string][]string),
+		tokens:    make(map[string]bool),
+		accounts:  make(map[string]domain.Account),
+		runtimes:  make(map[string]domain.AccountRuntime),
 	}
 }
 
@@ -205,15 +207,30 @@ func (m *memoryAccountStore) ListSymbols(ctx context.Context, accountID string) 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	return m.listSymbolsLocked(accountID), nil
+}
+
+func (m *memoryAccountStore) listSymbolsLocked(accountID string) []string {
 	if m.states[accountID] == nil {
-		return []string{}, nil
+		return []string{}
 	}
 
 	symbols := make([]string, 0, len(m.states[accountID]))
 	for symbol := range m.states[accountID] {
 		symbols = append(symbols, symbol)
 	}
-	return symbols, nil
+	return symbols
+}
+
+func (m *memoryAccountStore) ListAISymbols(ctx context.Context, accountID string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if symbols, ok := m.aiSymbols[accountID]; ok && len(symbols) > 0 {
+		return append([]string(nil), symbols...), nil
+	}
+
+	return m.listSymbolsLocked(accountID), nil
 }
 
 // ListAccounts returns all accounts.

@@ -23,6 +23,7 @@ type AccountStore interface {
 	GetState(ctx context.Context, accountID string) (domain.AccountState, error)
 	GetStateSymbol(ctx context.Context, accountID, symbol string) (domain.AccountState, error)
 	ListSymbols(ctx context.Context, accountID string) ([]string, error)
+	ListAISymbols(ctx context.Context, accountID string) ([]string, error)
 	ListAccounts(ctx context.Context) ([]domain.Account, error)
 	SaveAIResult(ctx context.Context, accountID, symbol string, payload json.RawMessage, updatedAt time.Time) error
 }
@@ -85,6 +86,7 @@ func RegisterRoutes(mux *http.ServeMux, deps Dependencies) {
 
 	// New multi-symbol endpoints
 	mux.Handle("/api/symbols/", auth.requireToken(http.HandlerFunc(symbolHandler.listSymbols)))
+	mux.Handle("/api/ai_symbols/", auth.requireToken(http.HandlerFunc(symbolHandler.listAISymbols)))
 	mux.Handle("/api/v2/analysis_payload/", auth.requireToken(http.HandlerFunc(aiHandler.analysisPayloadSymbol)))
 	mux.Handle("/api/v2/ai_result/", auth.requireToken(http.HandlerFunc(aiHandler.aiResultSymbol)))
 

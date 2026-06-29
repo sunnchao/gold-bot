@@ -218,6 +218,10 @@ func (r *AccountRepository) ListSymbols(ctx context.Context, accountID string) (
 	return symbols, rows.Err()
 }
 
+func (r *AccountRepository) ListAISymbols(ctx context.Context, accountID string) ([]string, error) {
+	return r.ListSymbols(ctx, accountID)
+}
+
 func (r *AccountRepository) updateStateColumn(ctx context.Context, accountID, symbol, column, value string, updatedAt time.Time) error {
 	query := fmt.Sprintf(`
 		UPDATE account_state
