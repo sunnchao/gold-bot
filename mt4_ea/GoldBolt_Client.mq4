@@ -75,6 +75,7 @@ extern int      PollInterval    = 5;        // 轮询间隔（秒）
 extern int      BarInterval     = 60;       // K 线发送间隔（秒）
 extern int      BarCount        = 50;  // K 线数量      // K 线数量
 extern string   Symbols         = "XAUUSD"; // 交易品种（逗号分隔多个）
+extern string   AISymbols       = "";      // AI 分析品种（逗号分隔，留空=与交易品种相同）
 extern string   SymbolSuffix    = "";       // 经纪商品种后缀（如 .m, m#, _m），留空=无后缀
 extern int      Slippage        = 3;        // 滑点（点数）
 
@@ -105,6 +106,8 @@ int      httpTimeout    = 5000;
 // ========== 多品种支持 ==========
 string   g_symbols[];          // 解析后的品种列表
 int      g_symbolCount = 0;    // 品种数量
+string   g_ai_symbols[];       // AI 分析品种列表
+int      g_ai_symbol_count = 0; // AI 品种数量
 
 // ========== 连接状态跟踪（v2.8 新增） ==========
 bool     gbConnected      = false;        // 当前连接状态
@@ -184,6 +187,71 @@ void ParseSymbols(string symbolList)
          g_symbolCount++;
       }
    }
+}
+
+// 解析 AI 品种字符串
+void ParseAISymbols()
+{
+   string symbolList = AISymbols;
+   symbolList = StringTrimLeft(symbolList);
+   symbolList = StringTrimRight(symbolList);
+
+   // 如果 AISymbols 为空，使用交易品种
+   if(StringLen(symbolList) == 0)
+   {
+      g_ai_symbol_count = g_symbolCount;
+      ArrayResize(g_ai_symbols, g_ai_symbol_count);
+      for(int i = 0; i < g_symbolCount; i++)
+      {
+         g_ai_symbols[i] = g_symbols[i];
+      }
+      Print("📋 AI 品种未配置，使用交易品种列表");
+      return;
+   }
+
+   g_ai_symbol_count = 0;
+   ArrayResize(g_ai_symbols, 0);
+
+   while(StringLen(symbolList) > 0)
+   {
+      int pos = StringFind(symbolList, ",");
+      string token;
+      if(pos < 0)
+      {
+         token = symbolList;
+         symbolList = "";
+      }
+      else
+      {
+         token = StringSubstr(symbolList, 0, pos);
+         symbolList = StringSubstr(symbolList, pos + 1);
+      }
+
+      token = StringTrimLeft(token);
+      token = StringTrimRight(token);
+
+      if(StringLen(token) > 0)
+      {
+         ArrayResize(g_ai_symbols, g_ai_symbol_count + 1);
+         g_ai_symbols[g_ai_symbol_count] = token;
+         g_ai_symbol_count++;
+      }
+   }
+
+   Print("📋 AI 品种解析完成: ", g_ai_symbol_count, " 个品种");
+}
+
+// 构建 AI 品种 JSON 数组
+string BuildAISymbolsJson()
+{
+   string json = "[";
+   for(int i = 0; i < g_ai_symbol_count; i++)
+   {
+      if(i > 0) json = json + ",";
+      json = json + "\"" + JsonSafeText(g_ai_symbols[i]) + "\"";
+   }
+   json = json + "]";
+   return json;
 }
 
 // 获取经纪商品种名称（加后缀）
@@ -325,6 +393,7 @@ int OnInit()
    
    // 解析多品种
    ParseSymbols(Symbols);
+   ParseAISymbols();
    Print("交易品种(", g_symbolCount, "):");
    for(int s = 0; s < g_symbolCount; s++)
    {
@@ -484,6 +553,7 @@ bool RegisterAccount()
    int leverage = AccountLeverage();
    string currency = AccountCurrency();
    if(StringLen(currency) == 0) currency = "USD";
+   string aiSymbolsJson = BuildAISymbolsJson();
    
    string json = StringFormat(
       "{"
@@ -504,9 +574,11 @@ bool RegisterAccount()
       "\"counter_pullback\":\"counter_pullback\","
       "\"range\":\"range\","
       "\"momentum_scalp\":\"momentum_scalp\""
-      "}"
+      "},"
+      "\"ai_symbols\":%s"
       "}",
-      AccountID, g_symbols[0], PullbackMagic, broker, server, name, type, currency, leverage
+      AccountID, g_symbols[0], PullbackMagic, broker, server, name, type, currency, leverage,
+      aiSymbolsJson
    );
    
    string resp = HttpPost("/register", json);
@@ -535,6 +607,7 @@ void SendHeartbeat()
    string serverTime = TimeToStr(TimeCurrent(), TIME_DATE|TIME_MINUTES);
    bool isTradeAllowed = IsTradeAllowed();
    bool marketOpen = (MarketInfo(GetBrokerSymbol(g_symbols[0]), MODE_TRADEALLOWED) != 0);
+   string aiSymbolsJson = BuildAISymbolsJson();
 
    // 计算各策略的持仓数量
    int pullbackPos = 0, breakoutPos = 0, divergencePos = 0;
@@ -580,7 +653,8 @@ void SendHeartbeat()
       "\"counter_pullback\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
       "\"range\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
       "\"momentum_scalp\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d}"
-      "}"
+      "},"
+      "\"ai_symbols\":%s"
       "}",
       AccountID, g_symbols[0], PullbackMagic, AccountBalance(), AccountEquity(), 
       AccountMargin(), AccountFreeMargin(), AccountCurrency(), serverTime,
@@ -593,6 +667,7 @@ void SendHeartbeat()
       (EnableCounter ? "true" : "false"), CounterMagic, counterPos,
       (EnableRange ? "true" : "false"), RangeMagic, rangePos,
       (EnableMomentumScalp ? "true" : "false"), MomentumScalpMagic, momentumScalpPos,
+      aiSymbolsJson,
       (EnableScaleIn ? "true" : "false"), ScaleInMagic, scaleInPos
    );
    
