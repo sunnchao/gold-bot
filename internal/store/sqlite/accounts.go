@@ -13,10 +13,15 @@ import (
 type AccountRepository struct {
 	db           *sql.DB
 	stateWriteMu sync.Mutex
+	aiSymbolMu   sync.RWMutex
+	aiSymbols    map[string][]string
 }
 
 func NewAccountRepository(db *sql.DB) *AccountRepository {
-	return &AccountRepository{db: db}
+	return &AccountRepository{
+		db:        db,
+		aiSymbols: make(map[string][]string),
+	}
 }
 
 func (r *AccountRepository) UpsertAccount(ctx context.Context, account domain.Account) error {

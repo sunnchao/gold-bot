@@ -233,6 +233,14 @@ func (m *memoryAccountStore) ListAISymbols(ctx context.Context, accountID string
 	return m.listSymbolsLocked(accountID), nil
 }
 
+func (m *memoryAccountStore) SaveAISymbols(ctx context.Context, accountID string, symbols []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.aiSymbols[accountID] = append([]string(nil), symbols...)
+	return nil
+}
+
 // ListAccounts returns all accounts.
 func (m *memoryAccountStore) ListAccounts(ctx context.Context) ([]domain.Account, error) {
 	m.mu.RLock()

@@ -20,6 +20,7 @@ type AccountStore interface {
 	SaveBars(ctx context.Context, accountID, symbol, timeframe string, bars []domain.Bar, updatedAt time.Time) error
 	SavePositions(ctx context.Context, accountID, symbol string, positions []domain.Position, updatedAt time.Time) error
 	SaveStrategyMapping(ctx context.Context, accountID, symbol string, mapping map[string]string, updatedAt time.Time) error
+	SaveAISymbols(ctx context.Context, accountID string, symbols []string) error
 	GetStateSymbol(ctx context.Context, accountID, symbol string) (domain.AccountState, error)
 	GetRuntime(ctx context.Context, accountID string) (domain.AccountRuntime, error)
 	TouchRuntime(ctx context.Context, accountID string, updatedAt time.Time) error

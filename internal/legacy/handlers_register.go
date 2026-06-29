@@ -23,6 +23,7 @@ type RegisterRequest struct {
 	Currency        string            `json:"currency"`
 	Leverage        int               `json:"leverage"`
 	StrategyMapping map[string]string `json:"strategy_mapping"`
+	AISymbols       []string          `json:"ai_symbols"`
 }
 
 func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +86,11 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"message": err.Error(),
 			})
 			return
+		}
+	}
+	if len(req.AISymbols) > 0 {
+		if err := h.accounts.SaveAISymbols(r.Context(), accountID, req.AISymbols); err != nil {
+			log.Printf("[REGISTER] ❌ account=%s | SaveAISymbols 失败: %v", accountID, err)
 		}
 	}
 

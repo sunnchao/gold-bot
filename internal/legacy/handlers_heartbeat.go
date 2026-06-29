@@ -24,6 +24,7 @@ type HeartbeatRequest struct {
 	ServerTime     string  `json:"server_time"`
 	MarketOpen     *bool   `json:"market_open"`
 	IsTradeAllowed *bool   `json:"is_trade_allowed"`
+	AISymbols      []string `json:"ai_symbols"`
 }
 
 func (h *HeartbeatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +90,11 @@ func (h *HeartbeatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"message": err.Error(),
 		})
 		return
+	}
+	if len(req.AISymbols) > 0 {
+		if err := h.accounts.SaveAISymbols(r.Context(), accountID, req.AISymbols); err != nil {
+			log.Printf("[HEARTBEAT] ❌ account=%s | SaveAISymbols 失败: %v", accountID, err)
+		}
 	}
 
 	// Update metrics

@@ -219,7 +219,23 @@ func (r *AccountRepository) ListSymbols(ctx context.Context, accountID string) (
 }
 
 func (r *AccountRepository) ListAISymbols(ctx context.Context, accountID string) ([]string, error) {
+	r.aiSymbolMu.RLock()
+	if symbols, ok := r.aiSymbols[accountID]; ok && len(symbols) > 0 {
+		result := append([]string(nil), symbols...)
+		r.aiSymbolMu.RUnlock()
+		return result, nil
+	}
+	r.aiSymbolMu.RUnlock()
+
 	return r.ListSymbols(ctx, accountID)
+}
+
+func (r *AccountRepository) SaveAISymbols(ctx context.Context, accountID string, symbols []string) error {
+	r.aiSymbolMu.Lock()
+	defer r.aiSymbolMu.Unlock()
+
+	r.aiSymbols[accountID] = append([]string(nil), symbols...)
+	return nil
 }
 
 func (r *AccountRepository) updateStateColumn(ctx context.Context, accountID, symbol, column, value string, updatedAt time.Time) error {
