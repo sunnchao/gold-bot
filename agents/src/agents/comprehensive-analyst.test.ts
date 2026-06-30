@@ -1,0 +1,263 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ComprehensiveAnalystService } from './comprehensive-analyst.js';
+import type { LlmClientService } from '../tools/llm-client.js';
+import type { GoldbotPayload } from '../types/goldbot.js';
+
+const loggerMock = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+
+vi.mock('../utils/logger.js', () => ({
+  getLogger: () => loggerMock,
+}));
+
+const markdownResponse = `## TECHNICAL
+- Bias: neutral
+- Confidence: 50
+- Phase: consolidation
+- Indicators Summary: 震荡整理 (Consolidation)
+- Support Levels:
+  - 2300 | support | strong | H1 | 3
+- Resistance Levels:
+  - 2400 | resistance | strong | H1 | 3
+- Recommendation: none
+- Rationale: 观望 (Hold)
+
+## WAVE
+- Confirmation: partial
+- Extension Wave: 3
+- Corrective Type: zigzag
+- Trend Strength: moderate
+- Target Level 1.618: 2380
+- Target Level 2.0: 2420
+- Confidence: 50
+- Rationale: 部分确认 (Partial)
+
+## CHANLUN
+- Trend: range
+- Strength: moderate
+- Latest Signal: hold
+- Hub State: active
+- Confidence: 50
+- Rationale: 中枢震荡 (Range)
+
+## HARMONIC
+- Detected Pattern: none
+- Direction: neutral
+- Timeframe: N/A
+- Completion: 0
+- Confidence: 0
+- D Zone Price: 0
+- Entry Zone: N/A
+- Stop Loss: 0
+- Take Profit 1: 0
+- Take Profit 2: 0
+- Rationale: 无形态 (None)
+
+## RISK
+- Risk Level: medium
+- Max Position Size: 0.1
+- Suggested SL: 2290
+- Suggested TP: 2410
+- Warnings: 无 (None)
+- Add On: false
+
+## ARBITRATION
+- Final Direction: hold
+- Confidence: 50
+- Action: hold
+- Primary Contradiction:
+- Phase: consolidation
+- United Front Analysis: 观望 (Hold)
+- Reasoning: 市场整理。波浪和缠论未形成一致突破。风险收益不明确。
+- Dow Primary Trend: neutral
+- Dow Primary Phase: accumulation
+- Dow Secondary Trend: neutral
+- Dow Short Term Trend: neutral
+- Dow Multi TF Confirm: false
+- Dow Rationale: neutral
+- Wave Current Wave: 3
+- Wave Direction: unclear
+- Wave Count: partial
+- Wave Next Target: 2380
+- Wave Confidence: 50
+- Wave Rationale: partial
+- Chanlun Trend: range
+- Chanlun Bi Direction: none
+- Chanlun Duan Direction: none
+- Chanlun Zhongshu State: active
+- Chanlun Buy Sell Point: none
+- Chanlun Confidence: 50
+- Chanlun Rationale: range
+- Harmonic Pattern: none
+- Harmonic Direction: neutral
+- Harmonic Confidence: 0
+- Harmonic Rationale: none
+- Trade Direction: hold
+- Trade Entry Price: 0
+- Trade Stop Loss: 0
+- Trade Take Profit 1: 0
+- Trade Take Profit 2: 0
+- Trade Risk Reward Ratio: 0
+- Trade Position Size Lots: 0.01
+- Trade Rationale: hold`;
+
+function indicator(close: number) {
+  return {
+    close,
+    open: close - 1,
+    high: close + 2,
+    low: close - 2,
+    ema20: close - 1,
+    ema50: close - 2,
+    ema200: close - 3,
+    rsi: 50,
+    adx: 20,
+    atr: 5,
+    macd: 1,
+    macd_signal: 0.5,
+    macd_hist: 0.5,
+    bb_upper: close + 10,
+    bb_middle: close,
+    bb_lower: close - 10,
+    stoch_k: 50,
+    stoch_d: 50,
+  };
+}
+
+function payloadWithLastBarClose(lastClose: number): GoldbotPayload {
+  return {
+    account: {
+      account_id: 'acc-001',
+      equity: 10000,
+      balance: 10000,
+      margin: 100,
+      free_margin: 9900,
+      currency: 'USD',
+      leverage: 100,
+    },
+    market: {
+      symbol: 'XAUUSD',
+      bid: lastClose,
+      ask: lastClose + 0.2,
+      spread: 0.2,
+    },
+    indicators: {
+      M15: indicator(lastClose),
+      M30: indicator(lastClose),
+      H1: indicator(lastClose),
+      H4: indicator(lastClose),
+    },
+    positions: [],
+    market_status: {
+      market_open: true,
+      is_trade_allowed: true,
+      tradeable: true,
+    },
+    strategy_mapping: {
+      trend: '10001',
+    },
+    bars: {
+      H1: [
+        { time: '2026-06-30T00:00:00Z', open: 2300, high: 2310, low: 2290, close: 2305 },
+        { time: '2026-06-30T01:00:00Z', open: 2305, high: 2320, low: 2300, close: 2315 },
+        { time: '2026-06-30T02:00:00Z', open: 2315, high: 2330, low: 2310, close: 2325 },
+        { time: '2026-06-30T03:00:00Z', open: 2325, high: 2340, low: 2320, close: lastClose },
+      ],
+    },
+    harmonic_context: {
+      h4_patterns: [],
+      h1_patterns: [],
+      m30_patterns: [],
+      active_pattern: null,
+      direction_bias: 'neutral',
+      score: 0,
+      summary: 'none',
+    },
+  };
+}
+
+function payloadWithOnlyOneClosedBar(lastClose: number): GoldbotPayload {
+  const payload = payloadWithLastBarClose(lastClose);
+  return {
+    ...payload,
+    bars: {
+      H1: [
+        { time: '2026-06-30T00:00:00Z', open: 2300, high: 2310, low: 2290, close: 2305 },
+        { time: '2026-06-30T01:00:00Z', open: 2305, high: 2320, low: 2300, close: lastClose },
+      ],
+    },
+  };
+}
+
+describe('ComprehensiveAnalystService prompt caching integration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('sends four prompt layers and keeps computed context stable when only the unclosed bar changes', async () => {
+    const streamLayered = vi.fn().mockResolvedValue({
+      content: markdownResponse,
+      cacheStats: {
+        readTokens: 0,
+        creationTokens: 0,
+        hitTokens: 0,
+        missTokens: 0,
+      },
+    });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = new ComprehensiveAnalystService(client);
+
+    await service.run(payloadWithLastBarClose(2335), 'XAUUSD');
+    await service.run(payloadWithLastBarClose(2348), 'XAUUSD');
+
+    expect(streamLayered).toHaveBeenCalledTimes(2);
+
+    const [firstSystemBlocks, firstUserLayers] = streamLayered.mock.calls[0];
+    const [secondSystemBlocks, secondUserLayers] = streamLayered.mock.calls[1];
+
+    expect(firstSystemBlocks).toHaveLength(2);
+    expect(firstSystemBlocks[0]).toMatchObject({ cacheable: true });
+    expect(firstSystemBlocks[1]).toMatchObject({ cacheable: true });
+    expect(firstSystemBlocks[0].text).not.toContain('XAUUSD');
+    expect(firstSystemBlocks[1].text).toContain('XAUUSD');
+    expect(firstUserLayers).toHaveLength(2);
+    expect(firstUserLayers[0]).toMatchObject({ cacheable: true });
+    expect(firstUserLayers[1]).toMatchObject({ cacheable: false });
+    expect(firstUserLayers[0].text).toBe(secondUserLayers[0].text);
+    expect(firstUserLayers[1].text).not.toBe(secondUserLayers[1].text);
+    expect(secondSystemBlocks[0].text).toBe(firstSystemBlocks[0].text);
+  });
+
+  it('does not use the unclosed bar in computed context when closed bars are insufficient', async () => {
+    const streamLayered = vi.fn().mockResolvedValue({
+      content: markdownResponse,
+      cacheStats: {
+        readTokens: 0,
+        creationTokens: 0,
+        hitTokens: 0,
+        missTokens: 0,
+      },
+    });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = new ComprehensiveAnalystService(client);
+
+    await service.run(payloadWithOnlyOneClosedBar(2335), 'XAUUSD');
+
+    const [, userLayers] = streamLayered.mock.calls[0];
+    expect(userLayers[0].text).not.toContain('2335');
+  });
+});
