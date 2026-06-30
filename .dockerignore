@@ -14,3 +14,10 @@ gold_bolt.db
 data/*.sqlite*
 web/dashboard/node_modules
 web/dashboard/.next
+web/dashboard/dist
+agents/node_modules
+agents/dist
+agents/data
+agents/.env
+agents/accounts.json
+agents/coverage

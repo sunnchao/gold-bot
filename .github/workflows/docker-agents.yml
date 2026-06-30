@@ -1,21 +1,15 @@
-name: Docker Publish
+name: Docker Publish (Agents)
 
 on:
   push:
     tags:
       - 'v*'
     paths:
-      - 'cmd/**'
-      - 'internal/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'web/dashboard/**'
-      - 'Dockerfile'
-      - '.github/workflows/docker.yml'
+      - 'agents/**'
   workflow_dispatch:
     inputs:
       push_image:
-        description: Push image to GHCR
+        description: Push agents image to GHCR
         required: true
         default: false
         type: boolean
@@ -25,34 +19,10 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
+  REGISTRY_IMAGE: ghcr.io/${{ github.repository }}/agents
 
 jobs:
-  build-dashboard:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/dashboard/package-lock.json
-
-      - run: npm ci
-        working-directory: web/dashboard
-
-      - run: npm run build
-        working-directory: web/dashboard
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dashboard-dist
-          path: web/dashboard/dist/
-          retention-days: 1
-
   build:
-    needs: build-dashboard
     strategy:
       fail-fast: false
       matrix:
@@ -64,11 +34,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: dashboard-dist
-          path: web/dashboard/dist
 
       - name: Prepare platform pair
         id: prep
@@ -86,12 +51,11 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./agents
           platforms: ${{ matrix.platform }}
-          build-args: PREBUILT_DASHBOARD=true
           outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.push_image == 'true') }}
-          cache-from: type=gha,scope=${{ steps.prep.outputs.pair }}
-          cache-to: type=gha,scope=${{ steps.prep.outputs.pair }},mode=max
+          cache-from: type=gha,scope=agents-${{ steps.prep.outputs.pair }}
+          cache-to: type=gha,scope=agents-${{ steps.prep.outputs.pair }},mode=max
 
       - name: Export digest
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.push_image == 'true')
@@ -103,7 +67,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.push_image == 'true')
         with:
-          name: digest-${{ steps.prep.outputs.pair }}
+          name: agents-digest-${{ steps.prep.outputs.pair }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -116,7 +80,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digest-*
+          pattern: agents-digest-*
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@v3
