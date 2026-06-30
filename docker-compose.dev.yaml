@@ -1,0 +1,22 @@
+# Local infrastructure only.
+# Usage: docker compose -f docker-compose.dev.yaml up -d
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: gold-bot-redis-dev
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    volumes:
+      - redis-dev-data:/data
+
+volumes:
+  redis-dev-data:
+
+networks: {}

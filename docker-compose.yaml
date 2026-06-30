@@ -17,15 +17,64 @@ services:
       - default
       - 1panel-network
 
+  agents:
+    build:
+      context: ./agents
+      dockerfile: Dockerfile
+    image: gold-analysis-agent:local
+    container_name: gold-analysis-agent
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - TZ=Asia/Shanghai
+      - GOLDBOT_API_URL=http://app:8880
+    ports:
+      - "127.0.0.1:3100:3100"
+    depends_on:
+      app:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3100/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - default
+      - 1panel-network
+    volumes:
+      - agent-data:/app/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: gold-bot-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    mem_limit: 256m
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks:
+      - default
+
   prometheus:
     image: prom/prometheus:latest
     container_name: gold-bot-prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -61,6 +110,8 @@ services:
 volumes:
   prometheus_data:
   grafana_data:
+  redis-data:
+  agent-data:
 
 networks:
   1panel-network:
