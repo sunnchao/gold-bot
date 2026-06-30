@@ -1093,12 +1093,13 @@ export class ComprehensiveAnalystService {
       result = normalizeComprehensive(parsed);
     }
 
-    // ── POST-PARSE VALIDATION: 3-layer price sanity check ──
-    // Catches LLM hallucinations where it outputs prices for a different instrument
-    // Layer 1: profile.priceRange — absolute min/max for the instrument (static, wide)
-    // Layer 2: currentPrice dynamic range — ±30% of live price (catches cross-instrument bleed
-    //          between instruments with overlapping static ranges, e.g., XAGUSD vs USOILCASH)
-    // Layer 3: (fallback) currentPrice ±50% — for unknown instruments without priceRange
+    // ── POST-PARSE VALIDATION: Dynamic price sanity check ──
+    // Catches LLM hallucinations where it outputs prices for a different instrument.
+    // Removed static priceRange check — prices evolve and static ranges become stale
+    // (e.g., XAGUSD rose above its historical [15,50] bound, causing false rejections).
+    // Instead, we rely on:
+    //   Layer 1: currentPrice dynamic range — 0.3x–2.0x of live price (wide, handles trends)
+    //   Layer 2: Cross-instrument collision detection (detects price matching another symbol)
     const priceFields: Array<{ obj: Record<string, any>; key: string; label: string }> = [
       { obj: result.risk as any, key: 'suggestedSL', label: 'risk.suggestedSL' },
       { obj: result.risk as any, key: 'suggestedTP', label: 'risk.suggestedTP' },
@@ -1114,19 +1115,10 @@ export class ComprehensiveAnalystService {
       let rejected = false;
       let reason = '';
 
-      // Layer 1: Static priceRange (catches grossly wrong instrument prices)
-      if (profile.priceRange) {
-        const [min, max] = profile.priceRange;
-        if (val < min || val > max) {
-          rejected = true;
-          reason = `超出${symbol}合理范围(${min}-${max})`;
-        }
-      }
-
-      // Layer 2: Dynamic currentPrice window (catches cross-instrument bleed within overlapping static ranges)
-      // This is critical for instruments whose priceRange overlaps with other instruments
-      // (e.g., XAGUSD $36 and USOILCASH $65 both fall in [20,120] static range)
-      if (!rejected && currentPrice > 0) {
+      // Layer 1: Dynamic currentPrice window
+      // 0.3x–2.0x covers strong trends while catching gross cross-instrument errors
+      // (e.g., XAUUSD SL=58 when XAUUSD is at $3300 — clearly wrong instrument price)
+      if (currentPrice > 0) {
         const dynamicLo = currentPrice * 0.3;  // -70% from current (very wide, handles strong trends)
         const dynamicHi = currentPrice * 2.0;  // +100% from current (allows for significant moves)
         if (val < dynamicLo || val > dynamicHi) {
@@ -1135,19 +1127,16 @@ export class ComprehensiveAnalystService {
         }
       }
 
-      // Layer 3: Fallback ±50% of current price (for unknown instruments without priceRange)
-      if (!rejected && !profile.priceRange && currentPrice > 0) {
-        const lo = currentPrice * 0.5;
-        const hi = currentPrice * 1.5;
-        if (val < lo || val > hi) {
-          rejected = true;
-          reason = `偏离当前价${currentPrice}超±50%(${lo.toFixed(2)}-${hi.toFixed(2)})`;
-        }
+      // Fallback: for unknown instruments with no currentPrice, use ±50% of the value itself
+      // (only triggers if currentPrice is 0, which is rare)
+      if (!rejected && currentPrice <= 0 && val <= 0) {
+        rejected = true;
+        reason = '无效价格(当前价和输出值均为0)';
       }
 
       if (rejected) {
         logger.warn(
-          { symbol, field: label, value: val, currentPrice, profileRange: profile.priceRange },
+          { symbol, field: label, value: val, currentPrice },
           `${label} ${reason} — zeroing`,
         );
         obj[key] = 0;
