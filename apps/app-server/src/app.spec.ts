@@ -633,6 +633,78 @@ describe('app-server scaffold', () => {
     });
   });
 
+  it('records oracle-backed shadow comparisons through POST /shadow/comparisons', async () => {
+    const store = createInMemoryEaStore();
+    const server = createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/shadow/comparisons',
+      body: {
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        source: 'ea_analysis',
+        protocol_ok: true,
+        node: {
+          signal: { strategy: 'pullback', side: 'BUY', entry: 3335.7 },
+          command: { action: 'SIGNAL', strategy: 'pullback', tp1: 3345 }
+        },
+        oracle: {
+          signal: { strategy: 'pullback', side: 'BUY', entry: 3335.7 },
+          command: { action: 'SIGNAL', strategy: 'pullback', tp1: 3350 }
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      status: 'OK',
+      comparison: {
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        protocol_ok: true,
+        signal_drift: false,
+        command_drift: true,
+        oracle_compared: true,
+        source: 'ea_analysis',
+        created_at: '2026-07-03T00:10:00.000Z'
+      }
+    });
+    expect(store.listShadowComparisons()).toEqual([
+      {
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        protocol_ok: true,
+        signal_drift: false,
+        command_drift: true,
+        oracle_compared: true,
+        source: 'ea_analysis',
+        created_at: '2026-07-03T00:10:00.000Z'
+      }
+    ]);
+  });
+
+  it('rejects invalid shadow comparison payloads', async () => {
+    const server = createAppServer();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/shadow/comparisons',
+      body: {
+        account_id: '90011087',
+        symbol: '',
+        node: {},
+        oracle: {}
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({
+      status: 'ERROR',
+      message: 'invalid shadow comparison payload'
+    });
+  });
+
   it('serves a dashboard-compatible SSE snapshot stream', async () => {
     const store = createInMemoryEaStore();
     const server = createAppServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });

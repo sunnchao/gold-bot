@@ -193,6 +193,49 @@ async function routeRequest(
     };
   }
 
+  if (method === 'POST' && path === '/shadow/comparisons') {
+    const parsed = parseJsonObject(request.rawBody);
+    if (!parsed.ok) {
+      return {
+        statusCode: 400,
+        body: { status: 'ERROR', message: 'invalid JSON' }
+      };
+    }
+    const accountId = stringFieldOrEmpty(parsed.body, 'account_id').trim();
+    const symbol = stringFieldOrEmpty(parsed.body, 'symbol').trim();
+    const source = stringFieldOrEmpty(parsed.body, 'source').trim();
+    const node = recordField(parsed.body, 'node');
+    const oracle = recordField(parsed.body, 'oracle');
+    if (accountId.length === 0 || symbol.length === 0 || node == null || oracle == null) {
+      return {
+        statusCode: 400,
+        body: { status: 'ERROR', message: 'invalid shadow comparison payload' }
+      };
+    }
+    const comparison = deps.shadow.recordOracleComparison({
+      account_id: accountId,
+      symbol,
+      source: source === 'position_review' || source === 'ai_result' ? source : 'ea_analysis',
+      protocol_ok: parsed.body.protocol_ok === true,
+      created_at: stringFieldOrEmpty(parsed.body, 'created_at') || undefined,
+      node: {
+        signal: recordField(node, 'signal'),
+        command: recordField(node, 'command')
+      },
+      oracle: {
+        signal: recordField(oracle, 'signal'),
+        command: recordField(oracle, 'command')
+      }
+    });
+    return {
+      statusCode: 200,
+      body: {
+        status: 'OK',
+        comparison
+      }
+    };
+  }
+
   if (path.startsWith('/api/')) {
     if (path.includes('/analysis_payload/') || path.includes('/ai_result/')) {
       return routeAI(
