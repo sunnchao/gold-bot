@@ -4,6 +4,7 @@ export type GoldBotEnv = {
   GB_APP_SERVER_PORT: number;
   GB_EA_STORE_SQLITE_PATH: string;
   GB_NODE_SHADOW_MODE: boolean;
+  GB_ADMIN_TOKEN: string;
 };
 
 type EnvSource = Partial<Record<string, string | undefined>>;
@@ -14,7 +15,8 @@ export function loadGoldBotEnv(source: EnvSource = process.env): GoldBotEnv {
     GB_APP_SERVER_HOST: source.GB_APP_SERVER_HOST ?? '127.0.0.1',
     GB_APP_SERVER_PORT: parsePort(source.GB_APP_SERVER_PORT),
     GB_EA_STORE_SQLITE_PATH: source.GB_EA_STORE_SQLITE_PATH ?? '',
-    GB_NODE_SHADOW_MODE: parseBoolean(source.GB_NODE_SHADOW_MODE, true)
+    GB_NODE_SHADOW_MODE: parseBoolean(source.GB_NODE_SHADOW_MODE, true),
+    GB_ADMIN_TOKEN: source.GB_ADMIN_TOKEN ?? source.ADMIN_TOKEN ?? ''
   };
 }
 

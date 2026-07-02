@@ -262,6 +262,8 @@ async function routeRequest(
         {
           method,
           path,
+          headers: request.headers,
+          url: request.url,
           rawBody: request.rawBody
         },
         deps,
@@ -274,7 +276,9 @@ async function routeRequest(
     return routeAdmin(
       {
         method,
-        path
+        path,
+        headers: request.headers,
+        url: request.url
       },
       deps,
       {

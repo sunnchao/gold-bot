@@ -2,12 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInMemoryEaStore, type EaCommand } from '@gold-bot/persistence';
-import { createAppServer } from './app.js';
+import { createAppServer, type AppServerOptions } from './app.js';
 import { authorizeRouteAccount, extractRouteToken } from './middleware/auth.js';
 
 const fixtureRoot = join(import.meta.dirname, '../../../tests/fixtures/earoutes');
 const adminFixtureRoot = join(import.meta.dirname, '../../../tests/fixtures/admin');
 const replayFixtureRoot = join(import.meta.dirname, '../../../tests/replay/testdata');
+const fixtureAccountId = '90011087';
+const fixtureUserToken = 'fixture-user-token';
+const fixtureAdminToken = 'fixture-admin-token';
+const apiUserHeaders = { 'X-API-Token': fixtureUserToken };
+const apiAdminHeaders = { 'X-API-Token': fixtureAdminToken };
+
+function createApiServer(options: AppServerOptions = {}) {
+  return createAppServer({
+    ...options,
+    validTokens: options.validTokens ?? [fixtureUserToken, fixtureAdminToken],
+    tokenAccounts: options.tokenAccounts ?? { [fixtureUserToken]: [fixtureAccountId] },
+    adminTokens: options.adminTokens ?? [fixtureAdminToken]
+  });
+}
 
 function readFixture(name: string) {
   return JSON.parse(readFileSync(join(fixtureRoot, `${name}.json`), 'utf8')) as {
@@ -477,9 +491,41 @@ describe('app-server scaffold', () => {
     expect(store.getRegistration('90022000')).toBeUndefined();
   });
 
+  it('rejects API routes when no Node token store is configured', async () => {
+    const server = createAppServer();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: { 'X-API-Token': 'unknown-token' }
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: 'invalid token' });
+  });
+
+  it('enforces Go-compatible API admin gates', async () => {
+    const server = createApiServer();
+
+    const missingToken = await server.inject({
+      method: 'GET',
+      url: '/api/v1/overview'
+    });
+    expect(missingToken.statusCode).toBe(401);
+    expect(JSON.parse(missingToken.body)).toEqual({ status: 'ERROR', message: 'invalid token' });
+
+    const userToken = await server.inject({
+      method: 'GET',
+      url: '/api/v1/overview',
+      headers: apiUserHeaders
+    });
+    expect(userToken.statusCode).toBe(403);
+    expect(JSON.parse(userToken.body)).toEqual({ status: 'ERROR', message: 'admin only' });
+  });
+
   it('serves read-only admin symbol and dashboard routes from Node snapshots', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
     const pendingFixture = readAdminFixture('pending-signal');
     const pendingSignal = (pendingFixture.response.body as unknown[])[0];
 
@@ -522,7 +568,7 @@ describe('app-server scaffold', () => {
 
   it('renders /api/v1/audit from persisted shadow state instead of placeholders', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-07-02T12:05:00.000Z' });
+    const server = createApiServer({ store, nowIso: () => '2026-07-02T12:05:00.000Z' });
 
     store.recordShadowComparison({
       account_id: '90011087',
@@ -537,7 +583,8 @@ describe('app-server scaffold', () => {
 
     const response = await server.inject({
       method: 'GET',
-      url: '/api/v1/audit'
+      url: '/api/v1/audit',
+      headers: apiAdminHeaders
     });
 
     expect(response.statusCode).toBe(200);
@@ -870,7 +917,7 @@ describe('app-server scaffold', () => {
 
   it('serves a dashboard-compatible SSE snapshot stream', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
     const fixture = readAdminStreamFixture('events-stream-sample');
 
     store.saveRegistration({ account_id: '90011087' });
@@ -889,7 +936,7 @@ describe('app-server scaffold', () => {
 
   it('serves analysis payloads and stores AI results in audit-only mode', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     for (const name of ['register', 'heartbeat', 'tick', 'bars', 'positions']) {
       const fixture = readFixture(name);
@@ -973,7 +1020,7 @@ describe('app-server scaffold', () => {
   it('keeps accepted AI trade-plan commands shadow_only while the account is in shadow mode', async () => {
     const store = createInMemoryEaStore();
     store.setRuntimeMode('90011087', 'shadow');
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     store.saveRegistration({ account_id: '90011087', leverage: 500 });
     store.saveHeartbeat({
@@ -995,6 +1042,7 @@ describe('app-server scaffold', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           schema_version: 'trade_plan.v1',
@@ -1044,7 +1092,7 @@ describe('app-server scaffold', () => {
   it('queues accepted AI trade-plan commands only for cutover accounts', async () => {
     const store = createInMemoryEaStore();
     store.setRuntimeMode('90011087', 'cutover');
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     store.saveRegistration({ account_id: '90011087', leverage: 500 });
     store.saveHeartbeat({
@@ -1066,6 +1114,7 @@ describe('app-server scaffold', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           schema_version: 'trade_plan.v1',
@@ -1095,7 +1144,7 @@ describe('app-server scaffold', () => {
 
   it('returns audit-only trade plan risk gate rejects without queueing poll commands', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     store.saveRegistration({ account_id: '90011087', leverage: 500 });
     store.saveHeartbeat({
@@ -1117,6 +1166,7 @@ describe('app-server scaffold', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           schema_version: 'trade_plan.v1',
@@ -1152,11 +1202,12 @@ describe('app-server scaffold', () => {
 
   it('returns Go-style invalid trade_plan validation without decision or risk gate', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           decision_id: 'tpv1_invalid',
@@ -1190,11 +1241,12 @@ describe('app-server scaffold', () => {
 
   it('rejects trade_plan fields whose JSON types do not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           schema_version: 'trade_plan.v1',
@@ -1229,11 +1281,12 @@ describe('app-server scaffold', () => {
 
   it('rejects top-level numeric trade_plan fields whose JSON types do not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           schema_version: 'trade_plan.v1',
@@ -1268,11 +1321,12 @@ describe('app-server scaffold', () => {
 
   it('rejects take_profit arrays whose element types do not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           schema_version: 'trade_plan.v1',
@@ -1307,11 +1361,12 @@ describe('app-server scaffold', () => {
 
   it('rejects reason_codes arrays whose element types do not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           schema_version: 'trade_plan.v1',
@@ -1346,11 +1401,12 @@ describe('app-server scaffold', () => {
 
   it('rejects add_on values whose JSON type does not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           schema_version: 'trade_plan.v1',
@@ -1386,11 +1442,12 @@ describe('app-server scaffold', () => {
 
   it('rejects entry_zone fields whose JSON types do not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           schema_version: 'trade_plan.v1',
@@ -1425,11 +1482,12 @@ describe('app-server scaffold', () => {
 
   it('rejects expires_at values whose JSON type does not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
       body: {
         trade_plan: {
           schema_version: 'trade_plan.v1',
@@ -1464,7 +1522,7 @@ describe('app-server scaffold', () => {
 
   it('builds analysis payload indicators and trend context from Node snapshot bars', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     store.saveRegistration({
       account_id: '90011087',
@@ -1505,7 +1563,8 @@ describe('app-server scaffold', () => {
 
     const response = await server.inject({
       method: 'GET',
-      url: '/api/analysis_payload/90011087'
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
     });
 
     expect(response.statusCode).toBe(200);
@@ -1548,7 +1607,7 @@ describe('app-server scaffold', () => {
 
   it('uses D1 bars for analysis trend context without exposing them in payload bars', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
     const trendingBars = Array.from({ length: 40 }, (_, index) => {
       const close = 1800 + index * 10;
       return {
@@ -1573,7 +1632,8 @@ describe('app-server scaffold', () => {
 
     const response = await server.inject({
       method: 'GET',
-      url: '/api/analysis_payload/90011087'
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
     });
 
     expect(response.statusCode).toBe(200);
@@ -1593,7 +1653,7 @@ describe('app-server scaffold', () => {
 
   it('preserves all approved EA strategy mappings in analysis payloads', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
     const strategyMapping = {
       '20250231': 'pullback',
       '20250232': 'breakout_retest',
@@ -1613,7 +1673,8 @@ describe('app-server scaffold', () => {
 
     const response = await server.inject({
       method: 'GET',
-      url: '/api/analysis_payload/90011087'
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
     });
 
     expect(response.statusCode).toBe(200);
@@ -1632,13 +1693,14 @@ describe('app-server scaffold', () => {
 
   it('defaults analysis payload strategy mapping to all approved EA strategies', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     store.saveRegistration({ account_id: '90011087' });
 
     const response = await server.inject({
       method: 'GET',
-      url: '/api/analysis_payload/90011087'
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
     });
 
     expect(response.statusCode).toBe(200);
@@ -1657,7 +1719,7 @@ describe('app-server scaffold', () => {
 
   it('builds analysis payload market filters from Node snapshots', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-06-05T20:45:00.000Z' });
+    const server = createApiServer({ store, nowIso: () => '2026-06-05T20:45:00.000Z' });
 
     store.saveRegistration({ account_id: '90011087' });
     store.saveHeartbeat({
@@ -1682,7 +1744,8 @@ describe('app-server scaffold', () => {
 
     const response = await server.inject({
       method: 'GET',
-      url: '/api/analysis_payload/90011087'
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
     });
 
     expect(response.statusCode).toBe(200);
@@ -1709,7 +1772,7 @@ describe('app-server scaffold', () => {
 
   it('marks analysis market status untradeable when the latest tick is stale', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-06-04T13:00:00.000Z' });
+    const server = createApiServer({ store, nowIso: () => '2026-06-04T13:00:00.000Z' });
 
     store.saveRegistration({ account_id: '90011087' });
     store.saveHeartbeat({
@@ -1729,7 +1792,8 @@ describe('app-server scaffold', () => {
 
     const response = await server.inject({
       method: 'GET',
-      url: '/api/analysis_payload/90011087'
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
     });
 
     expect(response.statusCode).toBe(200);
@@ -1753,13 +1817,14 @@ describe('app-server scaffold', () => {
 
   it('serves trading-core analysis from Node snapshots without enqueueing commands', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
     const snapshot = readReplayFixture('account_90011087_snapshot.json');
     const register = readFixture('register');
 
     await server.inject({
       method: 'POST',
       url: '/register',
+      headers: apiUserHeaders,
       body: {
         ...(register.request?.body as Record<string, unknown>),
         account_id: snapshot.account_id
@@ -1768,6 +1833,7 @@ describe('app-server scaffold', () => {
     await server.inject({
       method: 'POST',
       url: '/tick',
+      headers: apiUserHeaders,
       body: {
         account_id: snapshot.account_id,
         symbol: 'XAUUSD',
@@ -1780,6 +1846,7 @@ describe('app-server scaffold', () => {
     await server.inject({
       method: 'POST',
       url: '/bars',
+      headers: apiUserHeaders,
       body: {
         account_id: snapshot.account_id,
         symbol: 'XAUUSD',
@@ -1791,6 +1858,7 @@ describe('app-server scaffold', () => {
       await server.inject({
         method: 'POST',
         url: '/bars',
+        headers: apiUserHeaders,
         body: {
           account_id: snapshot.account_id,
           symbol: 'XAUUSD',
@@ -1802,6 +1870,7 @@ describe('app-server scaffold', () => {
     await server.inject({
       method: 'POST',
       url: '/positions',
+      headers: apiUserHeaders,
       body: {
         account_id: snapshot.account_id,
         symbol: 'XAUUSD',
@@ -1811,7 +1880,8 @@ describe('app-server scaffold', () => {
 
     const response = await server.inject({
       method: 'GET',
-      url: '/api/v1/analysis/90011087/XAUUSD/trading-core'
+      url: '/api/v1/analysis/90011087/XAUUSD/trading-core',
+      headers: apiUserHeaders
     });
 
     expect(response.statusCode).toBe(200);
@@ -1870,6 +1940,7 @@ describe('app-server scaffold', () => {
     const poll = await server.inject({
       method: 'POST',
       url: '/poll',
+      headers: apiUserHeaders,
       body: { account_id: '90011087' }
     });
     expect(JSON.parse(poll.body)).toEqual({ status: 'OK', commands: [], count: 0 });

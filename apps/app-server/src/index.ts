@@ -3,8 +3,11 @@ import { createSqliteEaStore } from '@gold-bot/persistence';
 import { createAppServer } from './app.js';
 
 const env = loadGoldBotEnv();
+const adminTokens = env.GB_ADMIN_TOKEN === '' ? [] : [env.GB_ADMIN_TOKEN];
 const app = createAppServer({
   store: env.GB_EA_STORE_SQLITE_PATH === '' ? undefined : createSqliteEaStore(env.GB_EA_STORE_SQLITE_PATH),
+  validTokens: adminTokens,
+  adminTokens,
   defaultRuntimeMode: env.GB_NODE_SHADOW_MODE ? 'shadow' : 'oracle'
 });
 
