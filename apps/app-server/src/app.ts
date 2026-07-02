@@ -284,6 +284,7 @@ async function routeRequest(
       deps,
       {
         tradingCoreAnalysis,
+        accountDetail,
         accountSummaries,
         overviewCards,
         buildAuditBody,
@@ -1272,6 +1273,27 @@ function accountSummaries(store: EaStore): EaRecord[] {
       server_name: stringFieldOrEmpty(registration, 'server_name')
     };
   });
+}
+
+function accountDetail(store: EaStore, accountId: string, timestamp: string): EaRecord {
+  const payload = analysisPayload(store, accountId, 'XAUUSD', timestamp);
+  const aiResults = store.getAIResults(accountId);
+  const latestAIResult = aiResults.length === 0 ? {} : stripNodeAIResultEnvelope(aiResults[aiResults.length - 1]);
+  return {
+    status: 'OK',
+    account: payload.account,
+    market: payload.market,
+    positions: payload.positions,
+    indicators: payload.indicators,
+    ai_result: latestAIResult
+  };
+}
+
+function stripNodeAIResultEnvelope(record: EaRecord): EaRecord {
+  const out = { ...record };
+  delete out.account_id;
+  delete out.symbol;
+  return out;
 }
 
 function overviewCards(accounts: EaRecord[]): EaRecord[] {

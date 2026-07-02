@@ -21,6 +21,7 @@ export type AdminRouteDeps = {
 
 export type AdminRouteHelpers = {
   tradingCoreAnalysis: (store: EaStore, accountId: string, symbol: string, timestamp: string) => EaRecord;
+  accountDetail: (store: EaStore, accountId: string, timestamp: string) => EaRecord;
   accountSummaries: (store: EaStore) => EaRecord[];
   overviewCards: (accounts: EaRecord[]) => EaRecord[];
   buildAuditBody: (store: EaStore, timestamp: string) => EaRecord;
@@ -122,6 +123,12 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
         status: 'OK',
         accounts: helpers.accountSummaries(deps.store)
       }
+    };
+  }
+  if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'accounts' && parts[3] != null && parts.length === 4) {
+    return {
+      statusCode: 200,
+      body: helpers.accountDetail(deps.store, parts[3], deps.nowIso())
     };
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'overview' && parts.length === 3) {

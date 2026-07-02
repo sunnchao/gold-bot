@@ -592,6 +592,73 @@ describe('app-server scaffold', () => {
     }
   });
 
+  it('serves Go-compatible account detail behind admin auth', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    store.saveRegistration({
+      account_id: '90011087',
+      broker: 'Demo Broker',
+      server_name: 'Demo-1',
+      currency: 'USD',
+      leverage: 500
+    });
+    store.saveHeartbeat({
+      account_id: '90011087',
+      balance: 1000.5,
+      equity: 1100.25,
+      margin: 100,
+      free_margin: 1000.25,
+      market_open: true,
+      is_trade_allowed: true
+    });
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3335.55,
+      ask: 3335.75,
+      spread: 0.2,
+      time: '2026-04-13T07:59:30Z'
+    });
+    store.savePositions({
+      account_id: '90011087',
+      positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY', lots: 0.1, open_price: 3330, profit: 5.25 }]
+    });
+    store.saveAIResult('90011087', 'XAUUSD', { bias: 'bullish', confidence: 82 });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/accounts/90011087',
+      headers: apiAdminHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      status: 'OK',
+      account: {
+        account_id: '90011087',
+        broker: 'Demo Broker',
+        balance: 1000.5,
+        equity: 1100.25
+      },
+      market: {
+        symbol: 'XAUUSD',
+        bid: 3335.55,
+        ask: 3335.75
+      },
+      positions: [
+        {
+          ticket: 123456,
+          direction: 'BUY',
+          lots: 0.1
+        }
+      ],
+      ai_result: {
+        bias: 'bullish',
+        confidence: 82
+      }
+    });
+  });
+
   it('renders /api/v1/audit from persisted shadow state instead of placeholders', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store, nowIso: () => '2026-07-02T12:05:00.000Z' });
