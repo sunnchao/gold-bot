@@ -213,17 +213,18 @@ export function runReplay(raw: unknown): ReplayResult {
   const enrichedM1 = enrichBars(snapshot.bars.M1 ?? []);
   const currentPrice = snapshot.current_price ?? enrichedH1[enrichedH1.length - 1]?.close ?? 0;
   const momentumConfig = momentumScalpConfigForSymbol(snapshot.symbol);
-  const signal =
-    evaluatePullbackSignal(enrichedH1, enrichedH4, currentPrice) ??
-    evaluateBreakoutRetestSignal(enrichedH1, currentPrice) ??
-    evaluateDivergenceSignal(enrichedH1, currentPrice) ??
-    evaluateCounterPullbackSignal(enrichedH1, currentPrice, snapshot.smc) ??
-    evaluateBreakoutPyramidSignal(enrichedH1, currentPrice) ??
-    evaluateMomentumScalpSignal(enrichedM15, enrichedM5, enrichedM1, currentPrice, momentumConfig);
-  const h4FilterResult = applyH4Filter(signal, enrichedH4);
-  const trendRatedSignal = applyTrendRatingPenalty(h4FilterResult.signal, enrichedD1, enrichedH4, enrichedH1, enrichedM30);
-  const boostedSignal = applyM15ConfirmationBoost(trendRatedSignal, enrichedM15, currentPrice);
-  const positionFilterResult = applyPositionConflictFilter(boostedSignal, normalizePositionManagerPositions(snapshot.positions ?? []));
+  const candidates = collectReplayCandidates(enrichedH1, enrichedH4, enrichedM15, enrichedM5, enrichedM1, currentPrice, snapshot.smc, momentumConfig);
+  const h4FilterResult = applyH4FilterToCandidates(candidates, enrichedH4);
+  const trendRatedCandidates = h4FilterResult.candidates.map((candidate) =>
+    applyTrendRatingPenalty(candidate, enrichedD1, enrichedH4, enrichedH1, enrichedM30)
+  ).filter((candidate): candidate is ReplaySignal => candidate != null);
+  const boostedCandidates = trendRatedCandidates
+    .map((candidate) => applyM15ConfirmationBoost(candidate, enrichedM15, currentPrice))
+    .filter((candidate): candidate is ReplaySignal => candidate != null);
+  const boostedSignal = selectHighestScore(boostedCandidates);
+  const rawSignal = selectRawCandidateFor(boostedSignal, candidates);
+  const selectedSignal = boostedSignal == null ? null : withAllStrategies(boostedSignal, boostedCandidates);
+  const positionFilterResult = applyPositionConflictFilter(selectedSignal, normalizePositionManagerPositions(snapshot.positions ?? []));
   const aiStopLossResult = applyAIStopLossOverride(positionFilterResult.signal, snapshot.ai_result);
   const aiTakeProfitResult = applyAITakeProfitOverride(aiStopLossResult.signal, snapshot.ai_result);
   const positionCommands = evaluateReplayPositionCommands(snapshot, enrichedH1, currentPrice);
@@ -238,7 +239,7 @@ export function runReplay(raw: unknown): ReplayResult {
       enrichedM5,
       enrichedM1,
       currentPrice,
-      signal,
+      rawSignal,
       boostedSignal,
       aiTakeProfitResult.signal,
       h4FilterResult.logs,
@@ -248,6 +249,114 @@ export function runReplay(raw: unknown): ReplayResult {
     ),
     position_commands: positionCommands.length === 0 ? null : positionCommands,
     canProduceLiveCommands: false
+  };
+}
+
+function collectReplayCandidates(
+  h1: EnrichedReplayBar[],
+  h4: EnrichedReplayBar[],
+  m15: EnrichedReplayBar[],
+  m5: EnrichedReplayBar[],
+  m1: EnrichedReplayBar[],
+  price: number,
+  smc: ReplaySmcContext | undefined,
+  momentumConfig: MomentumScalpConfig
+): ReplaySignal[] {
+  return [
+    evaluatePullbackSignal(h1, h4, price),
+    evaluateBreakoutRetestSignal(h1, price),
+    evaluateDivergenceSignal(h1, price),
+    evaluateCounterPullbackSignal(h1, price, smc),
+    evaluateBreakoutPyramidSignal(h1, price),
+    evaluateMomentumScalpSignal(m15, m5, m1, price, momentumConfig)
+  ].filter((signal): signal is ReplaySignal => signal != null);
+}
+
+function applyH4FilterToCandidates(candidates: ReplaySignal[], h4: EnrichedReplayBar[]): { candidates: ReplaySignal[]; logs: ReplayLog[] } {
+  if (candidates.length === 0) {
+    return { candidates, logs: [] };
+  }
+
+  const filter = h4FilterDecision(h4);
+  if (filter.direction === 'BLOCK') {
+    const momentumCandidates = candidates.filter((candidate) => candidate.strategy === 'momentum_scalp');
+    if (momentumCandidates.length > 0) {
+      return {
+        candidates: momentumCandidates,
+        logs: [
+          {
+            level: 'info',
+            strategy: 'H4过滤',
+            msg:
+              `H4=震荡,保留 ${momentumCandidates.length} 个动量剥头皮信号,` +
+              `过滤 ${candidates.length - momentumCandidates.length} 个传统信号`
+          }
+        ]
+      };
+    }
+    return {
+      candidates: [],
+      logs: [
+        {
+          level: 'warn',
+          strategy: 'H4过滤',
+          msg: `H4=震荡(ADX=${formatFixed(filter.adx, 1)}<30), 过滤所有信号`
+        }
+      ]
+    };
+  }
+
+  if (filter.direction === '') {
+    return { candidates, logs: [] };
+  }
+
+  const kept = candidates.filter((candidate) => candidate.side === filter.direction);
+  const filtered = candidates.length - kept.length;
+  if (filtered === 0) {
+    return { candidates, logs: [] };
+  }
+
+  const logs: ReplayLog[] = [
+    {
+      level: 'warn',
+      strategy: 'H4过滤',
+      msg: `H4=${filter.trend},过滤掉 ${filtered} 个逆势信号,保留 ${kept.length} 个`
+    }
+  ];
+  if (kept.length === 0) {
+    logs.push({
+      level: 'info',
+      strategy: 'H4过滤',
+      msg: 'H4趋势过滤后无信号'
+    });
+  }
+  return { candidates: kept, logs };
+}
+
+function selectHighestScore(candidates: ReplaySignal[]): ReplaySignal | null {
+  if (candidates.length === 0) {
+    return null;
+  }
+  return candidates.reduce((best, candidate) => (candidate.score > best.score ? candidate : best));
+}
+
+function selectRawCandidateFor(signal: ReplaySignal | null, candidates: ReplaySignal[]): ReplaySignal | null {
+  if (signal == null) {
+    return null;
+  }
+  return candidates.find((candidate) => candidate.strategy === signal.strategy && candidate.side === signal.side) ?? signal;
+}
+
+function withAllStrategies(signal: ReplaySignal, candidates: ReplaySignal[]): ReplaySignal {
+  return {
+    ...signal,
+    all_strategies: candidates.map((candidate) => ({
+      strategy: candidate.strategy,
+      side: candidate.side,
+      score: candidate.score,
+      entry: candidate.entry,
+      stop_loss: candidate.stop_loss
+    }))
   };
 }
 
@@ -591,58 +700,6 @@ function h4TrendLabel(h4: EnrichedReplayBar[]): string {
     return '强空头';
   }
   return '趋势不明';
-}
-
-function applyH4Filter(signal: ReplaySignal | null, h4: EnrichedReplayBar[]): { signal: ReplaySignal | null; logs: ReplayLog[] } {
-  if (signal == null) {
-    return { signal: null, logs: [] };
-  }
-
-  const filter = h4FilterDecision(h4);
-  if (filter.direction === 'BLOCK') {
-    if (signal.strategy === 'momentum_scalp') {
-      return {
-        signal,
-        logs: [
-          {
-            level: 'info',
-            strategy: 'H4过滤',
-            msg: 'H4=震荡,保留 1 个动量剥头皮信号,过滤 0 个传统信号'
-          }
-        ]
-      };
-    }
-    return {
-      signal: null,
-      logs: [
-        {
-          level: 'warn',
-          strategy: 'H4过滤',
-          msg: `H4=震荡(ADX=${formatFixed(filter.adx, 1)}<30), 过滤所有信号`
-        }
-      ]
-    };
-  }
-
-  if (filter.direction !== '' && filter.direction !== signal.side) {
-    return {
-      signal: null,
-      logs: [
-        {
-          level: 'warn',
-          strategy: 'H4过滤',
-          msg: `H4=${filter.trend},过滤掉 1 个逆势信号,保留 0 个`
-        },
-        {
-          level: 'info',
-          strategy: 'H4过滤',
-          msg: 'H4趋势过滤后无信号'
-        }
-      ]
-    };
-  }
-
-  return { signal, logs: [] };
 }
 
 function h4FilterDecision(h4: EnrichedReplayBar[]): { trend: string; direction: '' | 'BUY' | 'SELL' | 'BLOCK'; adx: number } {

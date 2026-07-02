@@ -373,6 +373,32 @@ describe('replay harness Go oracle slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
+  it('keeps a later momentum scalp candidate when H4 filters the earlier pullback candidate', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars(),
+        H4: h4RangeBars(),
+        ...momentumScalpBuyBars()
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      entry: 95,
+      strategy: 'momentum_scalp',
+      score: 10
+    });
+    expect(result.signal?.all_strategies.map((entry) => entry.strategy)).toEqual(['momentum_scalp']);
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: 'H4过滤',
+      msg: 'H4=震荡,保留 1 个动量剥头皮信号,过滤 1 个传统信号'
+    });
+    expect(result.canProduceLiveCommands).toBe(false);
+  });
+
   it('filters a pullback BUY signal when H4 strong trend is opposite', () => {
     const result = runReplay({
       account_id: '90011087',
