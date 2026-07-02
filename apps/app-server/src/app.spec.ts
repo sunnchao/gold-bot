@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInMemoryEaStore, type EaCommand } from '@gold-bot/persistence';
 import { createAppServer, type AppServerOptions } from './app.js';
@@ -174,6 +175,51 @@ describe('app-server scaffold', () => {
       latest_build: 9,
       force_update: false
     });
+  });
+
+  it('rejects EA download without a route token', async () => {
+    const server = createApiServer();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/ea/download'
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: 'invalid token' });
+  });
+
+  it('serves token-protected EA download as an attachment', async () => {
+    const server = createApiServer();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/ea/download',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-disposition']).toBe('attachment; filename="GoldBolt_Client.mq4"');
+    expect(response.body).toContain('GoldBolt_Client.mq4');
+    expect(response.body).toContain('#property strict');
+  });
+
+  it('returns Go-shaped 404 when the EA download file is missing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gold-bot-ea-download-'));
+    try {
+      const server = createApiServer({ releaseRoot: dir });
+
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/ea/download',
+        headers: apiUserHeaders
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: 'file not found' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('accepts safe EA lifecycle routes with Go-shaped responses and stores payloads', async () => {

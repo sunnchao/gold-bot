@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { EA_COMPAT_ENDPOINTS, isEaCompatEndpoint, isEaStrategyName, type HeaderMap } from '@gold-bot/shared-contracts';
 import { createInMemoryEaStore, persistenceStatus, type CommandCandidate, type EaRecord, type EaStore, type StoredCommand } from '@gold-bot/persistence';
 import {
@@ -53,6 +55,7 @@ export type AppServerOptions = {
   tokenAccounts?: Record<string, readonly string[]>;
   adminTokens?: readonly string[];
   defaultRuntimeMode?: RuntimeMode;
+  releaseRoot?: string;
 };
 
 type AppServerDeps = {
@@ -62,6 +65,7 @@ type AppServerDeps = {
   validTokens: Set<string> | null;
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;
+  releaseRoot: string;
   commandLifecycle: CommandLifecycleService;
   scheduler: SchedulerService;
   shadow: ShadowService;
@@ -74,7 +78,7 @@ type EaReleaseInfo = {
 };
 
 const ALLOWED_STRATEGY_MAPPING_KEYS = ['20250231', '20250232', '20250233', '20250234', '20250235', '20250236', '20250237', '20250238'] as const;
-const EA_VERSION_FILE_URL = new URL('../../../mt4_ea/version.json', import.meta.url);
+const DEFAULT_RELEASE_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 
 const DEFAULT_STRATEGY_MAPPING: EaRecord = {
   '20250231': 'pullback',
@@ -98,7 +102,8 @@ export function createAppServer(options: AppServerOptions = {}) {
     nowIso: options.nowIso ?? (() => new Date().toISOString()),
     validTokens: options.validTokens == null ? null : new Set(options.validTokens),
     tokenAccounts: options.tokenAccounts == null ? null : tokenAccountMap(options.tokenAccounts),
-    adminTokens: new Set(options.adminTokens ?? [])
+    adminTokens: new Set(options.adminTokens ?? []),
+    releaseRoot: options.releaseRoot ?? DEFAULT_RELEASE_ROOT
   };
   const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso);
   const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
@@ -158,7 +163,7 @@ async function routeRequest(
   }
 
   if (path === '/api/ea/version') {
-    return eaVersionResponse();
+    return eaVersionResponse(deps.releaseRoot);
   }
 
   if (path === '/version_check') {
@@ -166,7 +171,15 @@ async function routeRequest(
     if (tokenResult.response != null) {
       return tokenResult.response;
     }
-    return eaVersionCheckResponse();
+    return eaVersionCheckResponse(deps.releaseRoot);
+  }
+
+  if (path === '/api/ea/download') {
+    const tokenResult = requireRouteToken(deps.validTokens, request.headers, request.url);
+    if (tokenResult.response != null) {
+      return tokenResult.response;
+    }
+    return eaDownloadResponse(deps.releaseRoot);
   }
 
   if (isEaCompatEndpoint(path)) {
@@ -1439,8 +1452,8 @@ function eventStreamSnapshot(store: EaStore, timestamp: string): string {
   });
 }
 
-function eaVersionResponse(): JsonResponse {
-  const release = currentEaRelease();
+function eaVersionResponse(releaseRoot: string): JsonResponse {
+  const release = currentEaRelease(releaseRoot);
   if (!release.ok) {
     return { statusCode: 500, body: { status: 'ERROR', message: release.message } };
   }
@@ -1455,8 +1468,8 @@ function eaVersionResponse(): JsonResponse {
   };
 }
 
-function eaVersionCheckResponse(): JsonResponse {
-  const release = currentEaRelease();
+function eaVersionCheckResponse(releaseRoot: string): JsonResponse {
+  const release = currentEaRelease(releaseRoot);
   if (!release.ok) {
     return { statusCode: 500, body: { status: 'ERROR', message: release.message } };
   }
@@ -1470,11 +1483,26 @@ function eaVersionCheckResponse(): JsonResponse {
   };
 }
 
-function currentEaRelease(): { ok: true; info: EaReleaseInfo } | { ok: false; message: string } {
+function eaDownloadResponse(releaseRoot: string): JsonResponse {
+  try {
+    return {
+      statusCode: 200,
+      headers: {
+        'Content-Disposition': 'attachment; filename="GoldBolt_Client.mq4"'
+      },
+      body: null,
+      rawBody: readFileSync(join(releaseRoot, 'mt4_ea', 'GoldBolt_Client.mq4'))
+    };
+  } catch {
+    return { statusCode: 404, body: { status: 'ERROR', message: 'file not found' } };
+  }
+}
+
+function currentEaRelease(releaseRoot: string): { ok: true; info: EaReleaseInfo } | { ok: false; message: string } {
   const fallback: EaReleaseInfo = { version: '0.0.0', build: 0, changelog: '' };
   let raw: string;
   try {
-    raw = readFileSync(EA_VERSION_FILE_URL, 'utf8');
+    raw = readFileSync(join(releaseRoot, 'mt4_ea', 'version.json'), 'utf8');
   } catch (error) {
     if (isNotFoundError(error)) {
       return { ok: true, info: fallback };

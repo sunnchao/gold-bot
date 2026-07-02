@@ -2,7 +2,7 @@ export type JsonResponse = {
   statusCode: number;
   headers?: Record<string, string>;
   body: unknown;
-  rawBody?: string;
+  rawBody?: string | Buffer;
 };
 
 export function error(statusCode: number, message: string): JsonResponse {
