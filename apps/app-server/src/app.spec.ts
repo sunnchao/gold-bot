@@ -151,7 +151,7 @@ describe('app-server scaffold', () => {
     const server = createApiServer();
 
     const response = await server.inject({
-      method: 'GET',
+      method: 'POST',
       url: '/version_check'
     });
 
@@ -163,7 +163,7 @@ describe('app-server scaffold', () => {
     const server = createApiServer();
 
     const response = await server.inject({
-      method: 'GET',
+      method: 'POST',
       url: '/version_check',
       headers: apiUserHeaders
     });
@@ -671,6 +671,28 @@ describe('app-server scaffold', () => {
       positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY', lots: 0.1, open_price: 3330, profit: 5.25 }]
     });
     store.saveAIResult('90011087', 'XAUUSD', { bias: 'bullish', confidence: 82 });
+    store.recordDecisionEvent({
+      decision_id: 'tpv1_old',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      stage: 'candidate_signal',
+      status: 'pending',
+      reason_codes: ['candidate.created'],
+      summary: { score: 7 },
+      related_command_id: '',
+      created_at: '2026-04-13T07:59:00.000Z'
+    });
+    store.recordDecisionEvent({
+      decision_id: 'tpv1_new',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      stage: 'risk_gate',
+      status: 'rejected',
+      reason_codes: ['risk.spread.wide'],
+      summary: { max_lots: 0 },
+      related_command_id: 'sig_new',
+      created_at: '2026-04-13T08:01:00.000Z'
+    });
 
     const response = await server.inject({
       method: 'GET',
@@ -679,7 +701,8 @@ describe('app-server scaffold', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body)).toMatchObject({
+    const body = JSON.parse(response.body);
+    expect(body).toMatchObject({
       status: 'OK',
       account: {
         account_id: '90011087',
@@ -704,6 +727,83 @@ describe('app-server scaffold', () => {
         confidence: 82
       }
     });
+    expect(body.decision_events.map((event: { decision_id: string }) => event.decision_id)).toEqual([
+      'tpv1_new',
+      'tpv1_old'
+    ]);
+  });
+
+  it('serves Go-compatible account decisions behind admin auth', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store });
+    store.recordDecisionEvent({
+      decision_id: 'tpv1_old',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      stage: 'candidate_signal',
+      status: 'pending',
+      reason_codes: ['candidate.created'],
+      summary: { score: 7 },
+      related_command_id: '',
+      created_at: '2026-04-13T07:59:00.000Z'
+    });
+    store.recordDecisionEvent({
+      decision_id: 'tpv1_rejected',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      stage: 'risk_gate',
+      status: 'rejected',
+      reason_codes: ['risk.spread.wide'],
+      summary: { max_lots: 0 },
+      related_command_id: 'sig_rejected',
+      created_at: '2026-04-13T08:01:00.000Z'
+    });
+    store.recordDecisionEvent({
+      decision_id: 'tpv1_other_symbol',
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      stage: 'risk_gate',
+      status: 'rejected',
+      reason_codes: [],
+      summary: {},
+      related_command_id: '',
+      created_at: '2026-04-13T08:02:00.000Z'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/accounts/90011087/decisions?symbol=XAUUSD&status=rejected&limit=1',
+      headers: apiAdminHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      status: 'OK',
+      account_id: '90011087',
+      decision_events: [
+        {
+          id: 2,
+          decision_id: 'tpv1_rejected',
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          stage: 'risk_gate',
+          status: 'rejected',
+          reason_codes: ['risk.spread.wide'],
+          summary: { max_lots: 0 },
+          related_command_id: 'sig_rejected',
+          created_at: '2026-04-13T08:01:00.000Z'
+        }
+      ]
+    });
+
+    const badLimit = await server.inject({
+      method: 'GET',
+      url: '/api/v1/accounts/90011087/decisions?limit=0',
+      headers: apiAdminHeaders
+    });
+
+    expect(badLimit.statusCode).toBe(400);
+    expect(JSON.parse(badLimit.body)).toEqual({ status: 'ERROR', message: 'limit must be a positive integer' });
   });
 
   it('renders /api/v1/audit from persisted shadow state instead of placeholders', async () => {

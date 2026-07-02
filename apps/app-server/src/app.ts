@@ -1306,7 +1306,8 @@ function accountDetail(store: EaStore, accountId: string, timestamp: string): Ea
     market: payload.market,
     positions: payload.positions,
     indicators: payload.indicators,
-    ai_result: latestAIResult
+    ai_result: latestAIResult,
+    decision_events: store.listDecisionEvents({ account_id: accountId, limit: 10 })
   };
 }
 

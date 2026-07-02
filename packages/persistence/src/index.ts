@@ -1,9 +1,11 @@
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { isCommandSource, isCommandStatus, isRuntimeMode, type CommandSource, type CommandStatus, type RuntimeMode } from '@gold-bot/shared-contracts';
 import type { CommandCandidate, StoredCommand } from './commands.js';
+import type { DecisionEvent, DecisionEventFilter, DecisionEventInput } from './decisions.js';
 import type { RuntimeStateRecord } from './runtime-state.js';
 import type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary, ShadowRuntimeSnapshot } from './shadow.js';
 export type { CommandCandidate, StoredCommand } from './commands.js';
+export type { DecisionEvent, DecisionEventFilter, DecisionEventInput, DecisionStage, DecisionStatus } from './decisions.js';
 export type { RuntimeStateRecord } from './runtime-state.js';
 export type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary, ShadowRuntimeSnapshot } from './shadow.js';
 
@@ -46,6 +48,8 @@ export type EaStore = {
   summarizeShadowComparisons(filter?: ShadowComparisonFilter): ShadowComparisonSummary;
   saveShadowSnapshot(payload: ShadowRuntimeSnapshot): void;
   getLatestShadowSnapshot(accountId: string, symbol: string, source: CommandSource): ShadowRuntimeSnapshot | undefined;
+  recordDecisionEvent(payload: DecisionEventInput): void;
+  listDecisionEvents(filter: DecisionEventFilter): DecisionEvent[];
   savePendingSignal(payload: EaRecord): void;
   getPendingSignals(accountId: string, symbol: string): EaRecord[];
   saveAIResult(accountId: string, symbol: string, payload: EaRecord): void;
@@ -67,9 +71,11 @@ type StoreState = {
   commands: Map<string, StoredCommand>;
   shadowComparisons: ShadowComparison[];
   shadowSnapshots: Map<string, ShadowRuntimeSnapshot>;
+  decisionEvents: DecisionEvent[];
   pendingSignals: Map<string, EaRecord[]>;
   aiResults: Map<string, EaRecord[]>;
   nextCommandId: number;
+  nextDecisionEventId: number;
 };
 
 export function createInMemoryEaStore(): EaStore {
@@ -84,9 +90,11 @@ export function createInMemoryEaStore(): EaStore {
     commands: new Map(),
     shadowComparisons: [],
     shadowSnapshots: new Map(),
+    decisionEvents: [],
     pendingSignals: new Map(),
     aiResults: new Map(),
-    nextCommandId: 1
+    nextCommandId: 1,
+    nextDecisionEventId: 1
   };
 
   return {
@@ -216,6 +224,12 @@ export function createInMemoryEaStore(): EaStore {
       const snapshot = state.shadowSnapshots.get(shadowSnapshotKey(accountId, symbol, source));
       return snapshot == null ? undefined : structuredClone(snapshot);
     },
+    recordDecisionEvent(payload) {
+      state.decisionEvents.push(normalizeDecisionEvent(payload, state.nextDecisionEventId++));
+    },
+    listDecisionEvents(filter) {
+      return structuredClone(filterDecisionEvents(state.decisionEvents, filter));
+    },
     savePendingSignal(payload) {
       const key = symbolKey(accountId(payload), symbolOrDefault(payload));
       const current = state.pendingSignals.get(key) ?? [];
@@ -240,6 +254,7 @@ export function createInMemoryEaStore(): EaStore {
         ...Array.from(state.bars.keys(), accountFromCompoundKey),
         ...state.positions.keys(),
         ...state.orderResults.keys(),
+        ...state.decisionEvents.map((event) => event.account_id),
         ...Array.from(state.pendingSignals.keys(), accountFromCompoundKey),
         ...state.aiResults.keys()
       ]) {
@@ -261,6 +276,11 @@ export function createInMemoryEaStore(): EaStore {
         const symbol = position.symbol;
         if (typeof symbol === 'string') {
           appendUnique(out, symbol);
+        }
+      }
+      for (const event of state.decisionEvents) {
+        if (event.account_id === accountId) {
+          appendUnique(out, event.symbol);
         }
       }
       for (const key of state.pendingSignals.keys()) {
@@ -351,6 +371,22 @@ export function createSqliteEaStore(path: string): EaStore {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (account_id, symbol, source)
     );
+    CREATE TABLE IF NOT EXISTS decision_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      decision_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason_codes_json TEXT NOT NULL DEFAULT '[]',
+      summary_json TEXT NOT NULL DEFAULT '{}',
+      related_command_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_events_account_symbol_created
+      ON decision_events(account_id, symbol, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_decision_events_account_status_created
+      ON decision_events(account_id, status, created_at DESC);
   `);
 
   const saveSnapshot = db.prepare(`
@@ -455,6 +491,19 @@ export function createSqliteEaStore(path: string): EaStore {
   const selectShadowSnapshot = db.prepare(`
     SELECT payload_json FROM shadow_snapshots
     WHERE account_id = ? AND symbol = ? AND source = ?
+  `);
+  const insertDecisionEvent = db.prepare(`
+    INSERT INTO decision_events (
+      decision_id,
+      account_id,
+      symbol,
+      stage,
+      status,
+      reason_codes_json,
+      summary_json,
+      related_command_id,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   return {
@@ -607,6 +656,23 @@ export function createSqliteEaStore(path: string): EaStore {
       const row = selectShadowSnapshot.get(accountId, symbol, source) as { payload_json?: string } | undefined;
       return typeof row?.payload_json === 'string' ? (fromJson(row.payload_json) as ShadowRuntimeSnapshot) : undefined;
     },
+    recordDecisionEvent(payload) {
+      const event = normalizeDecisionEvent(payload, 0);
+      insertDecisionEvent.run(
+        event.decision_id,
+        event.account_id,
+        event.symbol,
+        event.stage,
+        event.status,
+        toJson(event.reason_codes),
+        toJson(event.summary),
+        event.related_command_id,
+        event.created_at
+      );
+    },
+    listDecisionEvents(filter) {
+      return selectDecisionEvents(db, filter);
+    },
     savePendingSignal(payload) {
       insertEvent.run('pending_signal', accountId(payload), symbolOrDefault(payload), toJson(payload), 1);
     },
@@ -718,6 +784,49 @@ function summarizeShadowComparisons(comparisons: ShadowComparison[]): ShadowComp
   };
 }
 
+function normalizeDecisionEvent(payload: DecisionEventInput, id: number): DecisionEvent {
+  return {
+    id,
+    decision_id: payload.decision_id,
+    account_id: payload.account_id,
+    symbol: payload.symbol,
+    stage: payload.stage,
+    status: payload.status,
+    reason_codes: [...payload.reason_codes],
+    summary: structuredClone(payload.summary),
+    related_command_id: payload.related_command_id,
+    created_at: payload.created_at
+  };
+}
+
+function filterDecisionEvents(events: DecisionEvent[], filter: DecisionEventFilter): DecisionEvent[] {
+  const limit = normalizeDecisionLimit(filter.limit);
+  return events
+    .filter((event) => {
+      if (event.account_id !== filter.account_id) {
+        return false;
+      }
+      if (filter.symbol != null && filter.symbol.length > 0 && event.symbol !== filter.symbol) {
+        return false;
+      }
+      if (filter.status != null && filter.status.length > 0 && event.status !== filter.status) {
+        return false;
+      }
+      return true;
+    })
+    .sort(compareDecisionEventsNewestFirst)
+    .slice(0, limit);
+}
+
+function compareDecisionEventsNewestFirst(left: DecisionEvent, right: DecisionEvent): number {
+  const created = right.created_at.localeCompare(left.created_at);
+  return created === 0 ? right.id - left.id : created;
+}
+
+function normalizeDecisionLimit(limit: number | undefined): number {
+  return limit == null || limit <= 0 || limit > 200 ? 50 : limit;
+}
+
 function currentTimestamp(): string {
   return new Date().toISOString();
 }
@@ -785,6 +894,76 @@ function snapshotRows(db: DatabaseSync, kind: string, accountId: string): EaReco
 
 function eventPayloads(statement: { all(...params: unknown[]): unknown[] }, ...params: unknown[]): EaRecord[] {
   return (statement.all(...params) as Array<{ payload_json: string }>).map((row) => fromJson(row.payload_json) as EaRecord);
+}
+
+function selectDecisionEvents(db: DatabaseSync, filter: DecisionEventFilter): DecisionEvent[] {
+  const clauses = ['account_id = ?'];
+  const params: SQLInputValue[] = [filter.account_id];
+  if (filter.symbol != null && filter.symbol.length > 0) {
+    clauses.push('symbol = ?');
+    params.push(filter.symbol);
+  }
+  if (filter.status != null && filter.status.length > 0) {
+    clauses.push('status = ?');
+    params.push(filter.status);
+  }
+  params.push(normalizeDecisionLimit(filter.limit));
+  const rows = db.prepare(`
+    SELECT
+      id,
+      decision_id,
+      account_id,
+      symbol,
+      stage,
+      status,
+      reason_codes_json,
+      summary_json,
+      related_command_id,
+      created_at
+    FROM decision_events
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(...params) as DecisionEventRow[];
+  return rows.map(decisionEventFromRow);
+}
+
+type DecisionEventRow = {
+  id: number;
+  decision_id: string;
+  account_id: string;
+  symbol: string;
+  stage: DecisionEvent['stage'];
+  status: DecisionEvent['status'];
+  reason_codes_json: string;
+  summary_json: string;
+  related_command_id: string;
+  created_at: string;
+};
+
+function decisionEventFromRow(row: DecisionEventRow): DecisionEvent {
+  return {
+    id: Number(row.id),
+    decision_id: row.decision_id,
+    account_id: row.account_id,
+    symbol: row.symbol,
+    stage: row.stage,
+    status: row.status,
+    reason_codes: stringArrayFromJson(row.reason_codes_json),
+    summary: recordFromJson(row.summary_json),
+    related_command_id: row.related_command_id,
+    created_at: row.created_at
+  };
+}
+
+function stringArrayFromJson(value: string): string[] {
+  const parsed = fromJson(value);
+  return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : [];
+}
+
+function recordFromJson(value: string): Record<string, unknown> {
+  const parsed = fromJson(value);
+  return parsed != null && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
 }
 
 function toJson(value: unknown): string {

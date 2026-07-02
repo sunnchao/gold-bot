@@ -78,6 +78,41 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       body: helpers.tradingCoreAnalysis(deps.store, parts[3], parts[4], deps.nowIso())
     };
   }
+  if (
+    parts[0] === 'api' &&
+    parts[1] === 'v1' &&
+    parts[2] === 'accounts' &&
+    parts[3] != null &&
+    parts[4] === 'decisions' &&
+    parts.length === 5
+  ) {
+    const tokenResult = requireAdminRoute(deps.validTokens, deps.adminTokens, request.headers, request.url);
+    if (tokenResult.response != null) {
+      return tokenResult.response;
+    }
+    if (request.method !== 'GET') {
+      return { ...error(405, 'method not allowed'), headers: { Allow: 'GET' } };
+    }
+    const query = new URL(request.url, 'http://localhost').searchParams;
+    const rawLimit = query.get('limit')?.trim() ?? '';
+    const limit = parseDecisionLimit(rawLimit);
+    if (limit === null) {
+      return error(400, 'limit must be a positive integer');
+    }
+    return {
+      statusCode: 200,
+      body: {
+        status: 'OK',
+        account_id: parts[3],
+        decision_events: deps.store.listDecisionEvents({
+          account_id: parts[3],
+          symbol: query.get('symbol')?.trim() ?? '',
+          status: query.get('status')?.trim() ?? '',
+          ...(limit == null ? {} : { limit })
+        })
+      }
+    };
+  }
   if (request.method !== 'GET') {
     return error(405, 'method not allowed');
   }
@@ -159,4 +194,15 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
   }
 
   return error(404, 'not found');
+}
+
+function parseDecisionLimit(raw: string): number | undefined | null {
+  if (raw.length === 0) {
+    return undefined;
+  }
+  if (!/^[0-9]+$/.test(raw)) {
+    return null;
+  }
+  const limit = Number(raw);
+  return Number.isSafeInteger(limit) && limit >= 1 ? limit : null;
 }

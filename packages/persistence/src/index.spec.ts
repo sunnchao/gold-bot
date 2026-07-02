@@ -199,6 +199,77 @@ describe('persistence scaffold', () => {
     });
   });
 
+  it('stores decision events newest-first with account, symbol, status, and limit filters', () => {
+    const store = createInMemoryEaStore();
+
+    store.recordDecisionEvent({
+      decision_id: 'tpv1_old',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      stage: 'candidate_signal',
+      status: 'pending',
+      reason_codes: ['candidate.created'],
+      summary: { score: 7 },
+      related_command_id: '',
+      created_at: '2026-04-13T07:59:00.000Z'
+    });
+    store.recordDecisionEvent({
+      decision_id: 'tpv1_rejected',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      stage: 'risk_gate',
+      status: 'rejected',
+      reason_codes: ['risk.spread.wide'],
+      summary: { max_lots: 0 },
+      related_command_id: 'sig_rejected',
+      created_at: '2026-04-13T08:01:00.000Z'
+    });
+    store.recordDecisionEvent({
+      decision_id: 'tpv1_other_symbol',
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      stage: 'risk_gate',
+      status: 'accepted',
+      reason_codes: [],
+      summary: {},
+      related_command_id: 'sig_other',
+      created_at: '2026-04-13T08:02:00.000Z'
+    });
+    store.recordDecisionEvent({
+      decision_id: 'tpv1_other_account',
+      account_id: '90022098',
+      symbol: 'XAUUSD',
+      stage: 'risk_gate',
+      status: 'rejected',
+      reason_codes: ['risk.limit'],
+      summary: {},
+      related_command_id: '',
+      created_at: '2026-04-13T08:03:00.000Z'
+    });
+
+    expect(store.listDecisionEvents({ account_id: '90011087' }).map((event) => event.decision_id)).toEqual([
+      'tpv1_other_symbol',
+      'tpv1_rejected',
+      'tpv1_old'
+    ]);
+    expect(
+      store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'rejected', limit: 1 })
+    ).toEqual([
+      {
+        id: 2,
+        decision_id: 'tpv1_rejected',
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        stage: 'risk_gate',
+        status: 'rejected',
+        reason_codes: ['risk.spread.wide'],
+        summary: { max_lots: 0 },
+        related_command_id: 'sig_rejected',
+        created_at: '2026-04-13T08:01:00.000Z'
+      }
+    ]);
+  });
+
   it('lists account symbols and explicitly stored pending signals', () => {
     const store = createInMemoryEaStore();
     const pendingSignal = {
@@ -287,6 +358,17 @@ describe('persistence scaffold', () => {
         source: 'ai_result',
         created_at: '2026-07-03T00:05:00.000Z'
       });
+      store.recordDecisionEvent({
+        decision_id: 'tpv1_persisted',
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        stage: 'risk_gate',
+        status: 'rejected',
+        reason_codes: ['risk.spread.wide'],
+        summary: { max_lots: 0 },
+        related_command_id: 'sig_persisted',
+        created_at: '2026-07-03T00:06:00.000Z'
+      });
       store.enqueueCommand('90011087', command);
       store.setRuntimeMode('90011087', 'cutover');
       const candidate = store.saveCommandCandidate('90011087', {
@@ -340,6 +422,20 @@ describe('persistence scaffold', () => {
         first_created_at: '2026-07-03T00:00:00.000Z',
         last_created_at: '2026-07-03T00:05:00.000Z'
       });
+      expect(reopened.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'rejected' })).toEqual([
+        {
+          id: 1,
+          decision_id: 'tpv1_persisted',
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          stage: 'risk_gate',
+          status: 'rejected',
+          reason_codes: ['risk.spread.wide'],
+          summary: { max_lots: 0 },
+          related_command_id: 'sig_persisted',
+          created_at: '2026-07-03T00:06:00.000Z'
+        }
+      ]);
       expect(reopened.getCommand('candidate_1')).toMatchObject({
         status: 'acked',
         result: 'filled',
