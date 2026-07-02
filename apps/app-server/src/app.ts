@@ -28,6 +28,7 @@ import { AnalysisService } from './services/analysis/service.js';
 import { CommandLifecycleService } from './services/command-lifecycle/service.js';
 import { SchedulerService } from './services/scheduler/service.js';
 import { ShadowService } from './services/shadow/service.js';
+import type { RuntimeMode } from '@gold-bot/shared-contracts';
 
 export type InjectRequest = {
   method: string;
@@ -49,6 +50,7 @@ export type AppServerOptions = {
   validTokens?: readonly string[];
   tokenAccounts?: Record<string, readonly string[]>;
   adminTokens?: readonly string[];
+  defaultRuntimeMode?: RuntimeMode;
 };
 
 type AppServerDeps = {
@@ -89,7 +91,7 @@ export function createAppServer(options: AppServerOptions = {}) {
     adminTokens: new Set(options.adminTokens ?? [])
   };
   const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
-  const commandLifecycle = new CommandLifecycleService(baseDeps.store);
+  const commandLifecycle = new CommandLifecycleService(baseDeps.store, options.defaultRuntimeMode ?? 'oracle');
   const scheduler = new SchedulerService(analysis, commandLifecycle);
   const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso);
   const deps: AppServerDeps = {

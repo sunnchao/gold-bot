@@ -55,4 +55,20 @@ describe('CommandLifecycleService', () => {
       source: 'ai_result'
     });
   });
+
+  it('uses the configured shadow default when no explicit runtime mode is stored', () => {
+    const store = createInMemoryEaStore();
+    const service = new CommandLifecycleService(store, 'shadow');
+
+    const stored = service.acceptCandidate('90011087', {
+      command_id: 'default_shadow_cmd',
+      action: 'SIGNAL',
+      source: 'ai_result',
+      symbol: 'XAUUSD',
+      strategy: 'ai_signal'
+    });
+
+    expect(stored.status).toBe('shadow_only');
+    expect(store.pollCommands('90011087')).toEqual([]);
+  });
 });

@@ -1,11 +1,15 @@
 import type { CommandCandidate, EaStore, StoredCommand } from '@gold-bot/persistence';
+import type { RuntimeMode } from '@gold-bot/shared-contracts';
 
 export class CommandLifecycleService {
-  constructor(private readonly store: EaStore) {}
+  constructor(
+    private readonly store: EaStore,
+    private readonly defaultRuntimeMode: RuntimeMode = 'oracle'
+  ) {}
 
   acceptCandidate(accountId: string, candidate: CommandCandidate): StoredCommand {
     const stored = this.store.saveCommandCandidate(accountId, candidate);
-    const mode = this.store.getRuntimeMode(accountId);
+    const mode = resolveRuntimeMode(this.store.getRuntimeMode(accountId), this.defaultRuntimeMode);
     if (mode === 'cutover') {
       this.store.promoteCommand(stored.command_id);
     } else {
@@ -28,4 +32,11 @@ export class CommandLifecycleService {
   reconcile(accountId: string, commandId: string, result: string, ticket?: number): void {
     this.store.reconcileCommandResult(accountId, commandId, result, ticket);
   }
+}
+
+function resolveRuntimeMode(storedMode: RuntimeMode, defaultRuntimeMode: RuntimeMode): RuntimeMode {
+  if (storedMode === 'oracle' && defaultRuntimeMode === 'shadow') {
+    return 'shadow';
+  }
+  return storedMode;
 }
