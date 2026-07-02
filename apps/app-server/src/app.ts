@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { EA_COMPAT_ENDPOINTS, isEaCompatEndpoint, isEaStrategyName, type HeaderMap } from '@gold-bot/shared-contracts';
-import { createInMemoryEaStore, persistenceStatus, type CommandCandidate, type EaRecord, type EaStore } from '@gold-bot/persistence';
+import { createInMemoryEaStore, persistenceStatus, type CommandCandidate, type EaRecord, type EaStore, type StoredCommand } from '@gold-bot/persistence';
 import {
   adx,
   atr,
@@ -80,6 +80,7 @@ const DEFAULT_STRATEGY_MAPPING: EaRecord = {
 
 const VALID_TRADE_PLAN_MODES = new Set(['observe', 'veto', 'approve', 'modify', 'reduce', 'close']);
 const VALID_TRADE_PLAN_SIDES = new Set(['buy', 'sell', 'none']);
+const AI_RISK_EXIT_SUGGESTIONS = new Set(['close_partial', 'close_all', 'close_short']);
 
 export function createAppServer(options: AppServerOptions = {}) {
   const baseDeps = {
@@ -486,6 +487,9 @@ function handleAIResultRoute(
   const tradePlanPayload = parseTradePlanPayload(parsed.body, accountId, symbol);
   const tradePlan = tradePlanPayload.tradePlan;
   if (tradePlan == null) {
+    if (tradePlanPayload.validation == null) {
+      queueAIRiskCommands(deps, accountId, symbol, parsed.body);
+    }
     return {
       statusCode: 200,
       body: tradePlanPayload.validation == null ? { status: 'OK', received: true } : { status: 'OK', received: true, trade_plan_validation: tradePlanPayload.validation }
@@ -495,7 +499,9 @@ function handleAIResultRoute(
   const riskGate = aiTradePlanRiskGate(deps.store, accountId, symbol, tradePlan, deps.nowIso());
   const decisionId = stringFieldOrEmpty(tradePlan, 'decision_id');
   const mode = stringFieldOrEmpty(tradePlan, 'mode');
-  const command = riskGate.status === 'accepted' && mode !== 'observe' && mode !== 'veto'
+  const riskCommandRequested = shouldQueueAIRiskCommand(parsed.body);
+  const riskCommands = queueAIRiskCommands(deps, accountId, symbol, parsed.body, tradePlan, riskGate);
+  const command = !riskCommandRequested && riskGate.status === 'accepted' && mode !== 'observe' && mode !== 'veto' && mode !== 'close'
     ? deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(accountId, symbol, tradePlan))
     : undefined;
   deps.shadow.recordRuntimeSnapshot({
@@ -503,7 +509,7 @@ function handleAIResultRoute(
     symbol,
     source: 'ai_result',
     signal: null,
-    command: command ?? {
+    command: command ?? riskCommands[0] ?? {
       decision_id: decisionId,
       mode,
       risk_gate: riskGate
@@ -525,6 +531,128 @@ function handleAIResultRoute(
       ...(command == null ? {} : { command_status: command.status })
     }
   };
+}
+
+function shouldQueueAIRiskCommand(payload: EaRecord): boolean {
+  if (payload.risk_alert !== true) {
+    return false;
+  }
+  return AI_RISK_EXIT_SUGGESTIONS.has(stringFieldOrEmpty(payload, 'exit_suggestion').toLowerCase());
+}
+
+function queueAIRiskCommands(
+  deps: Pick<AppServerDeps, 'store' | 'nowIso'>,
+  accountId: string,
+  symbol: string,
+  payload: EaRecord,
+  tradePlan?: EaRecord,
+  riskGate?: EaRecord
+): StoredCommand[] {
+  if (!shouldQueueAIRiskCommand(payload) || !aiRiskGateAllowsCommand(tradePlan, riskGate)) {
+    return [];
+  }
+  const candidates = buildAIRiskCommandCandidates(deps.store, accountId, symbol, payload, deps.nowIso(), tradePlan, riskGate);
+  return candidates.map((candidate) => {
+    const stored = deps.store.saveCommandCandidate(accountId, candidate);
+    deps.store.promoteCommand(stored.command_id);
+    return deps.store.getCommand(stored.command_id) ?? { ...stored, status: 'queued' };
+  });
+}
+
+function aiRiskGateAllowsCommand(tradePlan?: EaRecord, riskGate?: EaRecord): boolean {
+  if (tradePlan == null) {
+    return true;
+  }
+  const status = stringFieldOrEmpty(riskGate ?? {}, 'status');
+  return status === 'accepted' || status === 'clamped';
+}
+
+function buildAIRiskCommandCandidates(
+  store: EaStore,
+  accountId: string,
+  symbol: string,
+  payload: EaRecord,
+  nowIso: string,
+  tradePlan?: EaRecord,
+  riskGate?: EaRecord
+): CommandCandidate[] {
+  const exitSuggestion = stringFieldOrEmpty(payload, 'exit_suggestion').toLowerCase();
+  const timestamp = aiRiskCommandTimestamp(nowIso);
+  const confidence = payload.confidence;
+  const alertReason = stringFieldOrEmpty(payload, 'alert_reason');
+  if (exitSuggestion === 'close_short') {
+    return buildCloseShortRiskCommands(store, accountId, symbol, timestamp, alertReason, confidence, tradePlan, riskGate);
+  }
+
+  const action = exitSuggestion === 'close_all' ? 'CLOSE_ALL' : 'CLOSE_PARTIAL';
+  const candidate: CommandCandidate = {
+    command_id: `ai_close_${timestamp}`,
+    action,
+    source: 'ai_result',
+    symbol,
+    reason: exitSuggestion === 'close_all' ? `AI风险警报(全平): ${alertReason}` : `AI风险警报(减仓50%): ${alertReason}`,
+    confidence
+  };
+  if (exitSuggestion === 'close_partial') {
+    candidate.lots_pct = 0.5;
+  }
+  attachAIRiskTradePlanMetadata(candidate, tradePlan, riskGate);
+  return [candidate];
+}
+
+function buildCloseShortRiskCommands(
+  store: EaStore,
+  accountId: string,
+  symbol: string,
+  timestamp: number,
+  alertReason: string,
+  confidence: unknown,
+  tradePlan?: EaRecord,
+  riskGate?: EaRecord
+): CommandCandidate[] {
+  return store.getPositions(accountId).flatMap((position): CommandCandidate[] => {
+    const ticket = numberField(position, 'ticket');
+    if (ticket <= 0) {
+      return [];
+    }
+    const positionSymbol = stringFieldOrEmpty(position, 'symbol');
+    if (positionSymbol.length > 0 && positionSymbol.toUpperCase() !== symbol.toUpperCase()) {
+      return [];
+    }
+    if (stringFieldOrEmpty(position, 'type').toUpperCase() !== 'SELL') {
+      return [];
+    }
+    const candidate: CommandCandidate = {
+      command_id: `ai_close_${timestamp}_${ticket}`,
+      action: 'CLOSE',
+      source: 'ai_result',
+      ticket,
+      symbol,
+      reason: `AI风险警报(平空): ${alertReason}`,
+      confidence
+    };
+    attachAIRiskTradePlanMetadata(candidate, tradePlan, riskGate);
+    return [candidate];
+  });
+}
+
+function attachAIRiskTradePlanMetadata(candidate: CommandCandidate, tradePlan?: EaRecord, riskGate?: EaRecord): void {
+  if (tradePlan == null) {
+    return;
+  }
+  candidate.decision_id = stringFieldOrEmpty(tradePlan, 'decision_id');
+  candidate.trade_plan_mode = stringFieldOrEmpty(tradePlan, 'mode');
+  if (riskGate != null) {
+    candidate.risk_gate = riskGate;
+  }
+}
+
+function aiRiskCommandTimestamp(nowIso: string): number {
+  const millis = Date.parse(nowIso);
+  if (Number.isFinite(millis)) {
+    return Math.floor(millis / 1000);
+  }
+  return Math.floor(Date.now() / 1000);
 }
 
 function parseTradePlanPayload(payload: EaRecord, expectedAccountId: string, expectedSymbol: string): {

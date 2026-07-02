@@ -1014,7 +1014,225 @@ describe('app-server scaffold', () => {
     }
 
     expect(store.getAIResults('90011087')).toHaveLength(2);
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(store.pollCommands('90011087')).toEqual([
+      expect.objectContaining({
+        action: 'CLOSE_ALL',
+        reason: 'AI风险警报(全平): volatility spike'
+      })
+    ]);
+  });
+
+  it('queues legacy AI close_all risk alerts for EA poll', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/ai_result/90011087',
+      headers: apiUserHeaders,
+      body: {
+        combined_bias: 'bearish',
+        confidence: 87,
+        reasoning: 'risk regime changed',
+        exit_suggestion: 'close_all',
+        risk_alert: true,
+        alert_reason: 'volatility spike'
+      }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ status: 'OK', received: true });
+
+    const poll = await server.inject({
+      method: 'POST',
+      url: '/poll',
+      headers: apiUserHeaders,
+      body: { account_id: '90011087' }
+    });
+    const pollBody = JSON.parse(poll.body) as { count: number; commands: Array<Record<string, unknown>> };
+    expect(pollBody.count).toBe(1);
+    expect(pollBody.commands[0]).toMatchObject({
+      action: 'CLOSE_ALL',
+      reason: 'AI风险警报(全平): volatility spike',
+      confidence: 87
+    });
+  });
+
+  it('queues legacy AI close_short risk alerts only for matching SELL positions', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    store.savePositions({
+      account_id: '90011087',
+      positions: [
+        { ticket: 111001, symbol: 'XAUUSD', type: 'BUY', lots: 0.1 },
+        { ticket: 222002, symbol: 'XAUUSD', type: 'SELL', lots: 0.1 },
+        { ticket: 333003, symbol: 'XAUUSD', type: 'SELL', lots: 0.2 },
+        { ticket: 444004, symbol: 'GBPJPY', type: 'SELL', lots: 0.2 }
+      ]
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/ai_result/90011087',
+      headers: apiUserHeaders,
+      body: {
+        combined_bias: 'bullish',
+        confidence: 84,
+        reasoning: 'short exposure invalidated',
+        exit_suggestion: 'close_short',
+        risk_alert: true,
+        alert_reason: '多周期强bullish共振'
+      }
+    });
+    expect(response.statusCode).toBe(200);
+
+    const poll = await server.inject({
+      method: 'POST',
+      url: '/poll',
+      headers: apiUserHeaders,
+      body: { account_id: '90011087' }
+    });
+    const pollBody = JSON.parse(poll.body) as { count: number; commands: Array<Record<string, unknown>> };
+    expect(pollBody.count).toBe(2);
+    expect(pollBody.commands.map((command) => command.ticket).sort()).toEqual([222002, 333003]);
+    for (const command of pollBody.commands) {
+      expect(command).toMatchObject({
+        action: 'CLOSE',
+        reason: 'AI风险警报(平空): 多周期强bullish共振'
+      });
+    }
+  });
+
+  it('queues accepted V2 AI risk commands with trade-plan metadata', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    store.saveHeartbeat({
+      account_id: '90011087',
+      equity: 10000,
+      free_margin: 9000,
+      market_open: true,
+      is_trade_allowed: true
+    });
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3335.55,
+      ask: 3335.75,
+      spread: 0.2,
+      time: '2026-04-13T15:59:30+08:00'
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
+      body: {
+        bias: 'bearish',
+        confidence: 87,
+        reasoning: 'risk regime changed',
+        exit_suggestion: 'close_all',
+        risk_alert: true,
+        alert_reason: 'volatility spike',
+        trade_plan: {
+          schema_version: 'trade_plan.v1',
+          decision_id: 'tpv1_close_all',
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          mode: 'close',
+          side: 'buy',
+          confidence: 87,
+          entry_zone: { min: 3335.55, max: 3335.75 },
+          stop_loss: 3328,
+          take_profit: [3350],
+          max_lots: 0.1,
+          expires_at: '2099-06-06T09:15:00Z',
+          reason_codes: ['mode.close', 'risk.high'],
+          narrative: 'AI requests full close after risk spike'
+        }
+      }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      risk_gate: { status: 'accepted' }
+    });
+
+    const poll = await server.inject({
+      method: 'POST',
+      url: '/poll',
+      headers: apiUserHeaders,
+      body: { account_id: '90011087' }
+    });
+    const pollBody = JSON.parse(poll.body) as { count: number; commands: Array<Record<string, unknown>> };
+    expect(pollBody.count).toBe(1);
+    expect(pollBody.commands[0]).toMatchObject({
+      action: 'CLOSE_ALL',
+      decision_id: 'tpv1_close_all',
+      trade_plan_mode: 'close',
+      risk_gate: { status: 'accepted' }
+    });
+  });
+
+  it('does not queue V2 AI risk commands when the trade-plan risk gate rejects', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    store.saveHeartbeat({
+      account_id: '90011087',
+      equity: 10000,
+      free_margin: 9000,
+      market_open: false,
+      is_trade_allowed: true
+    });
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3335.55,
+      ask: 3335.75,
+      spread: 8.1,
+      time: '2026-04-13T15:59:30+08:00'
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
+      body: {
+        bias: 'bearish',
+        confidence: 87,
+        reasoning: 'risk regime changed',
+        exit_suggestion: 'close_all',
+        risk_alert: true,
+        alert_reason: 'volatility spike',
+        trade_plan: {
+          schema_version: 'trade_plan.v1',
+          decision_id: 'tpv1_rejected_spread',
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          mode: 'close',
+          side: 'buy',
+          confidence: 87,
+          entry_zone: { min: 3335.55, max: 3335.75 },
+          stop_loss: 3328,
+          take_profit: [3350],
+          max_lots: 0.1,
+          expires_at: '2099-06-06T09:15:00Z',
+          reason_codes: ['mode.close', 'risk.high'],
+          narrative: 'AI requests full close after risk spike'
+        }
+      }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      risk_gate: { status: 'rejected', reason_codes: expect.arrayContaining(['market.closed']) }
+    });
+
+    const poll = await server.inject({
+      method: 'POST',
+      url: '/poll',
+      headers: apiUserHeaders,
+      body: { account_id: '90011087' }
+    });
+    expect(JSON.parse(poll.body)).toMatchObject({ count: 0, commands: [] });
   });
 
   it('keeps accepted AI trade-plan commands shadow_only while the account is in shadow mode', async () => {
