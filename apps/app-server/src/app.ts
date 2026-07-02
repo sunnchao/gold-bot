@@ -18,6 +18,7 @@ import {
   summarizePositions,
   type PositionManagerPosition
 } from '@gold-bot/trading-core';
+import { buildShadowReport, formatSseFrame } from '@gold-bot/observability';
 import { type JsonResponse } from './http/response.js';
 import { parseJsonObject } from './http/json.js';
 import { handleEaRoute as routeEa } from './routes/ea.js';
@@ -181,7 +182,7 @@ async function routeRequest(
         tradingCoreAnalysis,
         accountSummaries,
         overviewCards,
-        auditChecks,
+        buildAuditBody,
         eventStreamSnapshot
       }
     );
@@ -1034,27 +1035,79 @@ function overviewCards(accounts: EaRecord[]): EaRecord[] {
   ];
 }
 
-function auditChecks(): EaRecord[] {
+function auditChecks(report: ReturnType<typeof buildShadowReport>): EaRecord[] {
+  if (report.last_shadow_event_at.length === 0) {
+    return [
+      {
+        detail: 'Replay fixture has not been approved yet',
+        label: 'Replay Parity',
+        tone: 'orange',
+        value: 'pending'
+      },
+      {
+        detail: 'Waiting for mirrored production traffic',
+        label: 'Shadow Drift',
+        tone: 'orange',
+        value: 'pending'
+      },
+      {
+        detail: 'Live shadow traffic has not started yet',
+        label: 'Protocol Errors',
+        tone: 'amber',
+        value: '0.00%'
+      }
+    ];
+  }
   return [
     {
-      detail: 'Replay fixture has not been approved yet',
+      detail: report.signal_drift_rate <= 0.02 ? 'Replay fixture matched baseline or drift is within threshold' : 'Replay fixture drift is above threshold',
       label: 'Replay Parity',
-      tone: 'orange',
-      value: 'pending'
+      tone: report.signal_drift_rate <= 0.02 ? 'green' : 'orange',
+      value: report.signal_drift_rate <= 0.02 ? 'validated' : 'pending'
     },
     {
-      detail: 'Waiting for mirrored production traffic',
+      detail: report.last_shadow_event_at.length > 0 ? `Last shadow event at ${report.last_shadow_event_at}` : 'Waiting for mirrored production traffic',
       label: 'Shadow Drift',
-      tone: 'orange',
-      value: 'pending'
+      tone: report.last_shadow_event_at.length > 0 ? 'blue' : 'orange',
+      value: report.last_shadow_event_at.length > 0 ? 'active' : 'pending'
     },
     {
-      detail: 'Live shadow traffic has not started yet',
+      detail: report.protocol_error_rate === 0 ? 'No contract mismatches observed in replay or shadow mode' : 'Protocol mismatches detected in shadow mode',
       label: 'Protocol Errors',
-      tone: 'amber',
-      value: '0.00%'
+      tone: report.protocol_error_rate === 0 ? 'green' : 'amber',
+      value: `${(report.protocol_error_rate * 100).toFixed(2)}%`
     }
   ];
+}
+
+function buildAuditBody(store: EaStore, timestamp: string): EaRecord {
+  const comparisons = store.listShadowComparisons();
+  const report = buildShadowReport(comparisons);
+  const summary = auditChecks(report);
+  if (comparisons.length === 0) {
+    return {
+      status: 'OK',
+      generated_at: timestamp,
+      summary,
+      report: {
+        ready: false,
+        protocol_error_rate: 0,
+        signal_drift_rate: 0,
+        command_drift_rate: 0,
+        last_shadow_event_at: '0001-01-01T00:00:00Z',
+        missing_capabilities: ['shadow_traffic'],
+        checks: summary
+      },
+      events: []
+    };
+  }
+  return {
+    status: 'OK',
+    generated_at: timestamp,
+    summary,
+    report,
+    events: []
+  };
 }
 
 function eventStreamSnapshot(store: EaStore, timestamp: string): string {
@@ -1062,14 +1115,14 @@ function eventStreamSnapshot(store: EaStore, timestamp: string): string {
   if (accountId == null) {
     return '';
   }
-  return `data: ${JSON.stringify({
+  return formatSseFrame({
     event_id: 'evt_1',
     event_type: 'heartbeat',
     account_id: accountId,
     source: 'test',
     timestamp,
     payload: { status: 'OK' }
-  })}\n\n`;
+  });
 }
 
 function numberField(record: EaRecord, field: string): number {

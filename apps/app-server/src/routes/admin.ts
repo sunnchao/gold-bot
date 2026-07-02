@@ -1,4 +1,5 @@
 import type { EaRecord, EaStore } from '@gold-bot/persistence';
+import { eventStreamHeaders } from '@gold-bot/observability';
 import { error, type JsonResponse } from '../http/response.js';
 
 export type AdminRouteRequest = {
@@ -15,7 +16,7 @@ export type AdminRouteHelpers = {
   tradingCoreAnalysis: (store: EaStore, accountId: string, symbol: string, timestamp: string) => EaRecord;
   accountSummaries: (store: EaStore) => EaRecord[];
   overviewCards: (accounts: EaRecord[]) => EaRecord[];
-  auditChecks: () => EaRecord[];
+  buildAuditBody: (store: EaStore, timestamp: string) => EaRecord;
   eventStreamSnapshot: (store: EaStore, timestamp: string) => string;
 };
 
@@ -79,34 +80,15 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
     };
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'audit' && parts.length === 3) {
-    const summary = helpers.auditChecks();
     return {
       statusCode: 200,
-      body: {
-        status: 'OK',
-        generated_at: deps.nowIso(),
-        summary,
-        report: {
-          ready: false,
-          protocol_error_rate: 0,
-          signal_drift_rate: 0,
-          command_drift_rate: 0,
-          last_shadow_event_at: '0001-01-01T00:00:00Z',
-          missing_capabilities: ['shadow_traffic'],
-          checks: summary
-        },
-        events: []
-      }
+      body: helpers.buildAuditBody(deps.store, deps.nowIso())
     };
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'events' && parts[3] === 'stream' && parts.length === 4) {
     return {
       statusCode: 200,
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive'
-      },
+      headers: eventStreamHeaders(),
       body: null,
       rawBody: helpers.eventStreamSnapshot(deps.store, deps.nowIso())
     };

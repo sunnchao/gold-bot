@@ -33,6 +33,9 @@ importers:
       '@gold-bot/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@gold-bot/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
       '@gold-bot/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
@@ -47,7 +50,11 @@ importers:
 
   packages/config: {}
 
-  packages/observability: {}
+  packages/observability:
+    dependencies:
+      '@gold-bot/persistence':
+        specifier: workspace:*
+        version: link:../persistence
 
   packages/persistence:
     dependencies:

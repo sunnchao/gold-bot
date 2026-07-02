@@ -520,6 +520,66 @@ describe('app-server scaffold', () => {
     }
   });
 
+  it('renders /api/v1/audit from persisted shadow state instead of placeholders', async () => {
+    const store = createInMemoryEaStore();
+    const server = createAppServer({ store, nowIso: () => '2026-07-02T12:05:00.000Z' });
+
+    store.recordShadowComparison({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      protocol_ok: true,
+      signal_drift: false,
+      command_drift: true,
+      created_at: '2026-07-02T12:00:00.000Z'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/audit'
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      report: {
+        ready: boolean;
+        protocol_error_rate: number;
+        signal_drift_rate: number;
+        command_drift_rate: number;
+        last_shadow_event_at: string;
+        missing_capabilities: string[];
+      };
+      summary: Array<{ label: string; value: string }>;
+    };
+    expect(body.report).toEqual({
+      ready: false,
+      protocol_error_rate: 0,
+      signal_drift_rate: 0,
+      command_drift_rate: 1,
+      last_shadow_event_at: '2026-07-02T12:00:00.000Z',
+      missing_capabilities: []
+    });
+    expect(body.summary).toEqual([
+      {
+        label: 'Replay Parity',
+        value: 'validated',
+        detail: 'Replay fixture matched baseline or drift is within threshold',
+        tone: 'green'
+      },
+      {
+        label: 'Shadow Drift',
+        value: 'active',
+        detail: 'Last shadow event at 2026-07-02T12:00:00.000Z',
+        tone: 'blue'
+      },
+      {
+        label: 'Protocol Errors',
+        value: '0.00%',
+        detail: 'No contract mismatches observed in replay or shadow mode',
+        tone: 'green'
+      }
+    ]);
+  });
+
   it('serves a dashboard-compatible SSE snapshot stream', async () => {
     const store = createInMemoryEaStore();
     const server = createAppServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });

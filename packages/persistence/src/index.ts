@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { isCommandSource, isCommandStatus, isRuntimeMode, type CommandSource, type CommandStatus, type RuntimeMode } from '@gold-bot/shared-contracts';
 import type { CommandCandidate, StoredCommand } from './commands.js';
 import type { RuntimeStateRecord } from './runtime-state.js';
+import type { ShadowComparison } from './shadow.js';
 export type { CommandCandidate, StoredCommand } from './commands.js';
 export type { RuntimeStateRecord } from './runtime-state.js';
 export type { ShadowComparison } from './shadow.js';
@@ -40,6 +41,8 @@ export type EaStore = {
   setRuntimeMode(accountId: string, mode: RuntimeMode): void;
   reconcileCommandResult(accountId: string, commandId: string, result: string, ticket?: number): void;
   pollCommands(accountId: string): EaCommand[];
+  recordShadowComparison(payload: ShadowComparison): void;
+  listShadowComparisons(): ShadowComparison[];
   savePendingSignal(payload: EaRecord): void;
   getPendingSignals(accountId: string, symbol: string): EaRecord[];
   saveAIResult(accountId: string, symbol: string, payload: EaRecord): void;
@@ -59,6 +62,7 @@ type StoreState = {
   orderResults: Map<string, EaRecord[]>;
   runtimeModes: Map<string, RuntimeMode>;
   commands: Map<string, StoredCommand>;
+  shadowComparisons: ShadowComparison[];
   pendingSignals: Map<string, EaRecord[]>;
   aiResults: Map<string, EaRecord[]>;
   nextCommandId: number;
@@ -74,6 +78,7 @@ export function createInMemoryEaStore(): EaStore {
     orderResults: new Map(),
     runtimeModes: new Map(),
     commands: new Map(),
+    shadowComparisons: [],
     pendingSignals: new Map(),
     aiResults: new Map(),
     nextCommandId: 1
@@ -190,6 +195,12 @@ export function createInMemoryEaStore(): EaStore {
       }
       return pending.map(toEaCommand);
     },
+    recordShadowComparison(payload) {
+      state.shadowComparisons.push(structuredClone(payload));
+    },
+    listShadowComparisons() {
+      return structuredClone(state.shadowComparisons);
+    },
     savePendingSignal(payload) {
       const key = symbolKey(accountId(payload), symbolOrDefault(payload));
       const current = state.pendingSignals.get(key) ?? [];
@@ -305,6 +316,16 @@ export function createSqliteEaStore(path: string): EaStore {
       ON ea_events(kind, account_id, delivered, created_at);
     CREATE INDEX IF NOT EXISTS idx_runtime_commands_account_status_created
       ON runtime_commands(account_id, status, created_at);
+    CREATE TABLE IF NOT EXISTS shadow_comparisons (
+      account_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      protocol_ok INTEGER NOT NULL,
+      signal_drift INTEGER NOT NULL,
+      command_drift INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_shadow_comparisons_created
+      ON shadow_comparisons(created_at);
   `);
 
   const saveSnapshot = db.prepare(`
@@ -390,6 +411,15 @@ export function createSqliteEaStore(path: string): EaStore {
     FROM runtime_commands
     WHERE account_id = ? AND status = 'queued'
     ORDER BY created_at ASC, command_id ASC
+  `);
+  const insertShadowComparison = db.prepare(`
+    INSERT INTO shadow_comparisons (account_id, symbol, protocol_ok, signal_drift, command_drift, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const selectShadowComparisons = db.prepare(`
+    SELECT account_id, symbol, protocol_ok, signal_drift, command_drift, created_at
+    FROM shadow_comparisons
+    ORDER BY created_at ASC
   `);
 
   return {
@@ -497,6 +527,33 @@ export function createSqliteEaStore(path: string): EaStore {
         updateRuntimeCommandStatus.run('delivered', currentTimestamp(), currentTimestamp(), row.command_id);
       }
       return rows.map((row) => toEaCommand(runtimeCommandFromListRow(row)));
+    },
+    recordShadowComparison(payload) {
+      insertShadowComparison.run(
+        payload.account_id,
+        payload.symbol,
+        payload.protocol_ok ? 1 : 0,
+        payload.signal_drift ? 1 : 0,
+        payload.command_drift ? 1 : 0,
+        payload.created_at
+      );
+    },
+    listShadowComparisons() {
+      return (selectShadowComparisons.all() as Array<{
+        account_id: string;
+        symbol: string;
+        protocol_ok: number;
+        signal_drift: number;
+        command_drift: number;
+        created_at: string;
+      }>).map((row) => ({
+        account_id: row.account_id,
+        symbol: row.symbol,
+        protocol_ok: row.protocol_ok === 1,
+        signal_drift: row.signal_drift === 1,
+        command_drift: row.command_drift === 1,
+        created_at: row.created_at
+      }));
     },
     savePendingSignal(payload) {
       insertEvent.run('pending_signal', accountId(payload), symbolOrDefault(payload), toJson(payload), 1);
