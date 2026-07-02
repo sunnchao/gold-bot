@@ -101,19 +101,38 @@ const AI_RISK_EXIT_SUGGESTIONS = new Set(['close_partial', 'close_all', 'close_s
 
 export function createAppServer(options: AppServerOptions = {}) {
   const nowUnix = options.nowUnix ?? (() => Math.floor(Date.now() / 1000));
-  const validTokens = options.validTokens == null ? null : new Set(options.validTokens);
-  const adminTokens = new Set(options.adminTokens ?? []);
+  const store = options.store ?? createInMemoryEaStore();
+  const storedTokens = store.listApiTokens();
+  const validTokens = options.validTokens == null && storedTokens.length === 0
+    ? null
+    : new Set([...(options.validTokens ?? []), ...storedTokens.map((record) => record.token)]);
+  const adminTokens = new Set([
+    ...(options.adminTokens ?? []),
+    ...storedTokens.filter((record) => record.is_admin).map((record) => record.token)
+  ]);
   const tokenAccounts = validTokens == null
     ? null
     : tokenAccountMap(options.tokenAccounts ?? Object.fromEntries(Array.from(validTokens, (token) => [token, []])));
+  for (const record of storedTokens) {
+    tokenAccounts?.set(record.token, new Set(record.accounts));
+  }
+  const tokenRecords = bootstrapTokenRecords(validTokens, tokenAccounts, adminTokens);
+  for (const record of storedTokens) {
+    tokenRecords.set(record.token, {
+      token: record.token,
+      name: record.name,
+      accounts: record.accounts,
+      isAdmin: record.is_admin
+    });
+  }
   const baseDeps = {
-    store: options.store ?? createInMemoryEaStore(),
+    store,
     nowUnix,
     nowIso: options.nowIso ?? (() => new Date().toISOString()),
     validTokens,
     tokenAccounts,
     adminTokens,
-    tokenRecords: bootstrapTokenRecords(validTokens, tokenAccounts, adminTokens),
+    tokenRecords,
     releaseRoot: options.releaseRoot ?? DEFAULT_RELEASE_ROOT,
     alerts: createIndicatorAlertCache(() => nowUnix() * 1000)
   };

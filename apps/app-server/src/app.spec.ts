@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInMemoryEaStore, type EaCommand } from '@gold-bot/persistence';
+import { createInMemoryEaStore, createSqliteEaStore, type EaCommand } from '@gold-bot/persistence';
 import { createAppServer, type AppServerOptions } from './app.js';
 import { authorizeRouteAccount, extractRouteToken } from './middleware/auth.js';
 
@@ -827,6 +827,46 @@ describe('app-server scaffold', () => {
       body: { account_id: '90022000', equity: 3000 }
     });
     expect(rejected.statusCode).toBe(401);
+  });
+
+  it('loads persisted API tokens from the app store on startup', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gold-bot-token-admin-'));
+    const dbPath = join(dir, 'ea.sqlite');
+    try {
+      const firstStore = createSqliteEaStore(dbPath);
+      const firstServer = createApiServer({ store: firstStore });
+      const created = await firstServer.inject({
+        method: 'POST',
+        url: '/api/tokens',
+        headers: apiAdminHeaders,
+        body: { name: 'Desk', accounts: ['90011087'] }
+      });
+      const token = (JSON.parse(created.body) as { token: string }).token;
+      firstStore.close();
+
+      const secondStore = createSqliteEaStore(dbPath);
+      const secondServer = createApiServer({ store: secondStore });
+      const allowed = await secondServer.inject({
+        method: 'POST',
+        url: '/heartbeat',
+        headers: { 'X-API-Token': token },
+        body: { account_id: '90011087', equity: 2100 }
+      });
+      const listed = await secondServer.inject({
+        method: 'GET',
+        url: '/api/tokens',
+        headers: apiAdminHeaders
+      });
+
+      expect(allowed.statusCode).toBe(200);
+      expect(secondStore.getHeartbeat('90011087')).toMatchObject({ equity: 2100 });
+      expect(Object.values((JSON.parse(listed.body) as { tokens: Record<string, { full_token: string }> }).tokens)).toContainEqual(
+        expect.objectContaining({ full_token: token })
+      );
+      secondStore.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('binds a valid EA token to its first account before rejecting later accounts', async () => {

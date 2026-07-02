@@ -337,6 +337,30 @@ describe('persistence scaffold', () => {
     expect(store.updatePendingSignalArbitration(999, 'approved', 'missing')).toBe(false);
   });
 
+  it('stores and deletes API token records', () => {
+    const store = createInMemoryEaStore();
+
+    store.saveApiToken({
+      token: 'user-token',
+      name: 'Desk',
+      accounts: ['90011087', '90022000'],
+      is_admin: false,
+      created_at: '2026-04-13T08:00:00.000Z'
+    });
+
+    expect(store.listApiTokens()).toEqual([
+      {
+        token: 'user-token',
+        name: 'Desk',
+        accounts: ['90011087', '90022000'],
+        is_admin: false,
+        created_at: '2026-04-13T08:00:00.000Z'
+      }
+    ]);
+    expect(store.deleteApiToken('user-token')).toBe(true);
+    expect(store.listApiTokens()).toEqual([]);
+  });
+
   it('persists EA lifecycle snapshots and queued commands in SQLite', () => {
     const dir = mkdtempSync(join(tmpdir(), 'gold-bot-persistence-'));
     const dbPath = join(dir, 'ea.sqlite');
@@ -405,6 +429,13 @@ describe('persistence scaffold', () => {
         related_command_id: 'sig_persisted',
         created_at: '2026-07-03T00:06:00.000Z'
       });
+      store.saveApiToken({
+        token: 'user-token',
+        name: 'Desk',
+        accounts: ['90011087', '90022000'],
+        is_admin: false,
+        created_at: '2026-07-03T00:07:00.000Z'
+      });
       store.enqueueCommand('90011087', command);
       store.setRuntimeMode('90011087', 'cutover');
       const candidate = store.saveCommandCandidate('90011087', {
@@ -472,6 +503,15 @@ describe('persistence scaffold', () => {
           summary: { max_lots: 0 },
           related_command_id: 'sig_persisted',
           created_at: '2026-07-03T00:06:00.000Z'
+        }
+      ]);
+      expect(reopened.listApiTokens()).toEqual([
+        {
+          token: 'user-token',
+          name: 'Desk',
+          accounts: ['90011087', '90022000'],
+          is_admin: false,
+          created_at: '2026-07-03T00:07:00.000Z'
         }
       ]);
       expect(reopened.getCommand('candidate_1')).toMatchObject({

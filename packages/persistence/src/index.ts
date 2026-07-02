@@ -4,10 +4,12 @@ import type { CommandCandidate, StoredCommand } from './commands.js';
 import type { DecisionEvent, DecisionEventFilter, DecisionEventInput } from './decisions.js';
 import type { RuntimeStateRecord } from './runtime-state.js';
 import type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary, ShadowRuntimeSnapshot } from './shadow.js';
+import type { StoredApiToken, StoredApiTokenInput } from './tokens.js';
 export type { CommandCandidate, StoredCommand } from './commands.js';
 export type { DecisionEvent, DecisionEventFilter, DecisionEventInput, DecisionStage, DecisionStatus } from './decisions.js';
 export type { RuntimeStateRecord } from './runtime-state.js';
 export type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary, ShadowRuntimeSnapshot } from './shadow.js';
+export type { StoredApiToken, StoredApiTokenInput } from './tokens.js';
 
 export const persistenceStatus = {
   writesLiveCommands: false
@@ -56,6 +58,9 @@ export type EaStore = {
   expirePendingSignals(nowIso: string): number;
   saveAIResult(accountId: string, symbol: string, payload: EaRecord): void;
   getAIResults(accountId: string): EaRecord[];
+  saveApiToken(payload: StoredApiTokenInput): void;
+  listApiTokens(): StoredApiToken[];
+  deleteApiToken(token: string): boolean;
   listAccountIds(): string[];
   listSymbols(accountId: string): string[];
   listAISymbols(accountId: string): string[];
@@ -76,6 +81,7 @@ type StoreState = {
   decisionEvents: DecisionEvent[];
   pendingSignals: Map<string, EaRecord[]>;
   aiResults: Map<string, EaRecord[]>;
+  apiTokens: Map<string, StoredApiToken>;
   nextCommandId: number;
   nextDecisionEventId: number;
 };
@@ -95,6 +101,7 @@ export function createInMemoryEaStore(): EaStore {
     decisionEvents: [],
     pendingSignals: new Map(),
     aiResults: new Map(),
+    apiTokens: new Map(),
     nextCommandId: 1,
     nextDecisionEventId: 1
   };
@@ -253,6 +260,16 @@ export function createInMemoryEaStore(): EaStore {
     getAIResults(accountId) {
       return cloneArray(state.aiResults.get(accountId) ?? []);
     },
+    saveApiToken(payload) {
+      const token = normalizeApiToken(payload);
+      state.apiTokens.set(token.token, token);
+    },
+    listApiTokens() {
+      return Array.from(state.apiTokens.values()).map((token) => structuredClone(token));
+    },
+    deleteApiToken(token) {
+      return state.apiTokens.delete(token);
+    },
     listAccountIds() {
       const out: string[] = [];
       for (const key of [
@@ -395,6 +412,17 @@ export function createSqliteEaStore(path: string): EaStore {
       ON decision_events(account_id, symbol, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_decision_events_account_status_created
       ON decision_events(account_id, status, created_at DESC);
+    CREATE TABLE IF NOT EXISTS tokens (
+      token TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      is_admin INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS token_accounts (
+      token TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      PRIMARY KEY (token, account_id)
+    );
   `);
 
   const saveSnapshot = db.prepare(`
@@ -513,6 +541,29 @@ export function createSqliteEaStore(path: string): EaStore {
       created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const upsertApiToken = db.prepare(`
+    INSERT INTO tokens (token, name, is_admin, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(token)
+    DO UPDATE SET name = excluded.name, is_admin = excluded.is_admin
+  `);
+  const deleteApiTokenAccounts = db.prepare(`DELETE FROM token_accounts WHERE token = ?`);
+  const insertApiTokenAccount = db.prepare(`
+    INSERT INTO token_accounts (token, account_id)
+    VALUES (?, ?)
+    ON CONFLICT(token, account_id) DO NOTHING
+  `);
+  const selectApiTokens = db.prepare(`
+    SELECT token, name, is_admin, created_at
+    FROM tokens
+    ORDER BY created_at ASC, token ASC
+  `);
+  const selectApiTokenAccounts = db.prepare(`
+    SELECT account_id FROM token_accounts
+    WHERE token = ?
+    ORDER BY account_id ASC
+  `);
+  const deleteApiToken = db.prepare(`DELETE FROM tokens WHERE token = ?`);
 
   return {
     saveRegistration(payload) {
@@ -699,6 +750,28 @@ export function createSqliteEaStore(path: string): EaStore {
     getAIResults(accountId) {
       return eventPayloads(selectEventsAnyDelivery, 'ai_result', accountId);
     },
+    saveApiToken(payload) {
+      const token = normalizeApiToken(payload);
+      upsertApiToken.run(token.token, token.name, token.is_admin ? 1 : 0, token.created_at);
+      deleteApiTokenAccounts.run(token.token);
+      for (const account of token.accounts) {
+        insertApiTokenAccount.run(token.token, account);
+      }
+    },
+    listApiTokens() {
+      return (selectApiTokens.all() as Array<{ token: string; name: string; is_admin: number; created_at: string }>).map((row) => ({
+        token: row.token,
+        name: row.name,
+        accounts: (selectApiTokenAccounts.all(row.token) as Array<{ account_id: string }>).map((account) => account.account_id),
+        is_admin: row.is_admin === 1,
+        created_at: row.created_at
+      }));
+    },
+    deleteApiToken(token) {
+      deleteApiTokenAccounts.run(token);
+      const result = deleteApiToken.run(token);
+      return result.changes > 0;
+    },
     listAccountIds() {
       const out: string[] = [];
       for (const row of selectSnapshotAccounts.all() as Array<{ account_id: string }>) {
@@ -854,6 +927,16 @@ function normalizePendingSignal(payload: EaRecord): EaRecord {
     out.status = 'pending';
   }
   return out;
+}
+
+function normalizeApiToken(payload: StoredApiTokenInput): StoredApiToken {
+  return {
+    token: payload.token,
+    name: payload.name,
+    accounts: [...payload.accounts],
+    is_admin: payload.is_admin,
+    created_at: payload.created_at ?? currentTimestamp()
+  };
 }
 
 function updatePendingSignalInMemory(signals: Map<string, EaRecord[]>, id: number, result: string, reason: string): boolean {

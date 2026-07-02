@@ -198,6 +198,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       deps.validTokens?.add(token);
       deps.tokenAccounts?.set(token, new Set(accounts));
       deps.tokenRecords.set(token, { token, name, accounts, isAdmin: false });
+      deps.store.saveApiToken({ token, name, accounts, is_admin: false });
       return {
         statusCode: 200,
         body: {
@@ -226,6 +227,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
     deps.validTokens?.delete(token);
     deps.tokenAccounts?.delete(token);
     deps.adminTokens.delete(token);
+    deps.store.deleteApiToken(token);
     return {
       statusCode: 200,
       body: {
