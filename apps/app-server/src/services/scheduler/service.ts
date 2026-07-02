@@ -14,9 +14,9 @@ export class SchedulerService {
 
   enqueuePositionReview(accountId: string, symbol: string): void {
     const result = this.analysis.analyzeAccountSymbol(accountId, symbol);
-    for (const command of result.replay.position_commands ?? []) {
+    for (const [index, command] of (result.replay.position_commands ?? []).entries()) {
       const candidate: CommandCandidate = {
-        command_id: `pos_${accountId}_${command.ticket}_${Date.now()}`,
+        command_id: `pos_${accountId}_${command.ticket}_${command.action}_${index}_${Date.now()}`,
         action: command.action,
         source: 'position_review',
         symbol,

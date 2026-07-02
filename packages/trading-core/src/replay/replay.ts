@@ -225,10 +225,11 @@ export function runReplay(raw: unknown): ReplayResult {
   const boostedSignal = applyM15ConfirmationBoost(trendRatedSignal, enrichedM15, currentPrice);
   const positionFilterResult = applyPositionConflictFilter(boostedSignal, normalizePositionManagerPositions(snapshot.positions ?? []));
   const aiStopLossResult = applyAIStopLossOverride(positionFilterResult.signal, snapshot.ai_result);
+  const aiTakeProfitResult = applyAITakeProfitOverride(aiStopLossResult.signal, snapshot.ai_result);
   const positionCommands = evaluateReplayPositionCommands(snapshot, enrichedH1, currentPrice);
 
   return {
-    signal: aiStopLossResult.signal,
+    signal: aiTakeProfitResult.signal,
     logs: buildReplayLogs(
       snapshot,
       enrichedH1,
@@ -239,10 +240,10 @@ export function runReplay(raw: unknown): ReplayResult {
       currentPrice,
       signal,
       boostedSignal,
-      aiStopLossResult.signal,
+      aiTakeProfitResult.signal,
       h4FilterResult.logs,
       positionFilterResult.logs,
-      aiStopLossResult.logs,
+      [...aiStopLossResult.logs, ...aiTakeProfitResult.logs],
       momentumConfig
     ),
     position_commands: positionCommands.length === 0 ? null : positionCommands,
@@ -1510,6 +1511,39 @@ function applyAIStopLossOverride(
         level: 'info',
         strategy: 'AI止损',
         msg: `🤖 AI止损覆盖: ${formatFixed(originalSL, 2)} → ${formatFixed(aiSL, 2)} (基于支撑阻力位)`
+      }
+    ]
+  };
+}
+
+function applyAITakeProfitOverride(
+  signal: ReplaySignal | null,
+  aiResult: ReplayAIResult | undefined
+): { signal: ReplaySignal | null; logs: ReplayLog[] } {
+  if (signal == null || aiResult?.suggested_tp == null || aiResult.suggested_tp <= 0) {
+    return { signal, logs: [] };
+  }
+
+  const aiTP = aiResult.suggested_tp;
+  const dist = Math.abs(aiTP - signal.entry);
+  const sideValid = (signal.side === 'BUY' && aiTP > signal.entry) || (signal.side === 'SELL' && aiTP < signal.entry);
+  if (!sideValid || dist < signal.atr * 0.3 || dist > signal.atr * 5) {
+    return { signal, logs: [] };
+  }
+
+  const originalTp1 = signal.tp1;
+  const originalTp2 = signal.tp2;
+  return {
+    signal: {
+      ...signal,
+      tp1: aiTP,
+      tp2: aiTP
+    },
+    logs: [
+      {
+        level: 'info',
+        strategy: 'AI止盈',
+        msg: `🤖 AI止盈覆盖: TP1=${formatFixed(originalTp1, 2)}→${formatFixed(aiTP, 2)}, TP2=${formatFixed(originalTp2, 2)}→${formatFixed(aiTP, 2)}`
       }
     ]
   };
