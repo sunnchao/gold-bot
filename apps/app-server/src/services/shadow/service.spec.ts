@@ -34,6 +34,8 @@ describe('ShadowService', () => {
       protocol_ok: true,
       signal_drift: false,
       command_drift: true,
+      oracle_compared: true,
+      source: 'ai_result',
       created_at: '2026-07-03T00:00:00.000Z'
     });
     store.recordShadowComparison({
@@ -42,6 +44,8 @@ describe('ShadowService', () => {
       protocol_ok: false,
       signal_drift: true,
       command_drift: false,
+      oracle_compared: true,
+      source: 'ea_analysis',
       created_at: '2026-07-03T00:05:00.000Z'
     });
 

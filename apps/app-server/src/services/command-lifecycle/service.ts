@@ -11,7 +11,18 @@ export class CommandLifecycleService {
     } else {
       this.store.demoteCommandToShadowOnly(stored.command_id);
     }
-    return this.store.getCommand(stored.command_id) ?? stored;
+    const resolved = this.store.getCommand(stored.command_id) ?? stored;
+    this.store.recordShadowComparison({
+      account_id: accountId,
+      symbol: typeof resolved.symbol === 'string' && resolved.symbol.length > 0 ? resolved.symbol : 'XAUUSD',
+      protocol_ok: true,
+      signal_drift: false,
+      command_drift: false,
+      oracle_compared: false,
+      source: resolved.source,
+      created_at: resolved.created_at
+    });
+    return resolved;
   }
 
   reconcile(accountId: string, commandId: string, result: string, ticket?: number): void {

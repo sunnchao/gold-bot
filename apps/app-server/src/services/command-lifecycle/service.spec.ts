@@ -18,6 +18,18 @@ describe('CommandLifecycleService', () => {
 
     expect(stored.status).toBe('shadow_only');
     expect(store.pollCommands('90011087')).toEqual([]);
+    expect(store.listShadowComparisons()).toEqual([
+      {
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        protocol_ok: true,
+        signal_drift: false,
+        command_drift: false,
+        oracle_compared: false,
+        source: 'ai_result',
+        created_at: stored.created_at
+      }
+    ]);
   });
 
   it('queues candidates only for cutover accounts', () => {
@@ -35,5 +47,12 @@ describe('CommandLifecycleService', () => {
 
     expect(stored.status).toBe('queued');
     expect(store.pollCommands('90011087')).toHaveLength(1);
+    expect(store.listShadowComparisons()).toHaveLength(1);
+    expect(store.listShadowComparisons()[0]).toMatchObject({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      oracle_compared: false,
+      source: 'ai_result'
+    });
   });
 });

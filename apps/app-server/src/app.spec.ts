@@ -530,6 +530,8 @@ describe('app-server scaffold', () => {
       protocol_ok: true,
       signal_drift: false,
       command_drift: true,
+      oracle_compared: true,
+      source: 'ai_result',
       created_at: '2026-07-02T12:00:00.000Z'
     });
 
@@ -590,6 +592,8 @@ describe('app-server scaffold', () => {
       protocol_ok: true,
       signal_drift: false,
       command_drift: true,
+      oracle_compared: true,
+      source: 'ai_result',
       created_at: '2026-07-03T00:00:00.000Z'
     });
     store.recordShadowComparison({
@@ -598,6 +602,8 @@ describe('app-server scaffold', () => {
       protocol_ok: false,
       signal_drift: true,
       command_drift: false,
+      oracle_compared: true,
+      source: 'ea_analysis',
       created_at: '2026-07-03T00:05:00.000Z'
     });
 
@@ -780,6 +786,17 @@ describe('app-server scaffold', () => {
     });
     expect(store.listCommands('90011087').map((command) => command.status)).toEqual(['shadow_only']);
     expect(store.pollCommands('90011087')).toEqual([]);
+    expect(store.listShadowComparisons()).toEqual([
+      expect.objectContaining({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        protocol_ok: true,
+        signal_drift: false,
+        command_drift: false,
+        oracle_compared: false,
+        source: 'ai_result'
+      })
+    ]);
   });
 
   it('queues accepted AI trade-plan commands only for cutover accounts', async () => {

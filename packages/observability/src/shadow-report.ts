@@ -21,10 +21,22 @@ export function buildShadowReport(comparisons: ShadowComparison[]): CutoverRepor
     };
   }
 
-  const protocolErrors = comparisons.filter((comparison) => !comparison.protocol_ok).length;
-  const signalDrifts = comparisons.filter((comparison) => comparison.signal_drift).length;
-  const commandDrifts = comparisons.filter((comparison) => comparison.command_drift).length;
-  const total = comparisons.length;
+  const compared = comparisons.filter((comparison) => comparison.oracle_compared);
+  if (compared.length === 0) {
+    return {
+      ready: false,
+      protocol_error_rate: 0,
+      signal_drift_rate: 0,
+      command_drift_rate: 0,
+      last_shadow_event_at: comparisons[comparisons.length - 1]?.created_at ?? '',
+      missing_capabilities: ['go_oracle_reference']
+    };
+  }
+
+  const protocolErrors = compared.filter((comparison) => !comparison.protocol_ok).length;
+  const signalDrifts = compared.filter((comparison) => comparison.signal_drift).length;
+  const commandDrifts = compared.filter((comparison) => comparison.command_drift).length;
+  const total = compared.length;
   const protocolErrorRate = protocolErrors / total;
   const signalDriftRate = signalDrifts / total;
   const commandDriftRate = commandDrifts / total;

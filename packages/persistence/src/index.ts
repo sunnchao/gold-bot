@@ -322,6 +322,8 @@ export function createSqliteEaStore(path: string): EaStore {
       protocol_ok INTEGER NOT NULL,
       signal_drift INTEGER NOT NULL,
       command_drift INTEGER NOT NULL,
+      oracle_compared INTEGER NOT NULL,
+      source TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_shadow_comparisons_created
@@ -413,11 +415,11 @@ export function createSqliteEaStore(path: string): EaStore {
     ORDER BY created_at ASC, command_id ASC
   `);
   const insertShadowComparison = db.prepare(`
-    INSERT INTO shadow_comparisons (account_id, symbol, protocol_ok, signal_drift, command_drift, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO shadow_comparisons (account_id, symbol, protocol_ok, signal_drift, command_drift, oracle_compared, source, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const selectShadowComparisons = db.prepare(`
-    SELECT account_id, symbol, protocol_ok, signal_drift, command_drift, created_at
+    SELECT account_id, symbol, protocol_ok, signal_drift, command_drift, oracle_compared, source, created_at
     FROM shadow_comparisons
     ORDER BY created_at ASC
   `);
@@ -535,6 +537,8 @@ export function createSqliteEaStore(path: string): EaStore {
         payload.protocol_ok ? 1 : 0,
         payload.signal_drift ? 1 : 0,
         payload.command_drift ? 1 : 0,
+        payload.oracle_compared ? 1 : 0,
+        payload.source,
         payload.created_at
       );
     },
@@ -545,6 +549,8 @@ export function createSqliteEaStore(path: string): EaStore {
         protocol_ok: number;
         signal_drift: number;
         command_drift: number;
+        oracle_compared: number;
+        source: string;
         created_at: string;
       }>).map((row) => ({
         account_id: row.account_id,
@@ -552,6 +558,8 @@ export function createSqliteEaStore(path: string): EaStore {
         protocol_ok: row.protocol_ok === 1,
         signal_drift: row.signal_drift === 1,
         command_drift: row.command_drift === 1,
+        oracle_compared: row.oracle_compared === 1,
+        source: row.source === 'position_review' || row.source === 'ai_result' ? row.source : 'ea_analysis',
         created_at: row.created_at
       }));
     },

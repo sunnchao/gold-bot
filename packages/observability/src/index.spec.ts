@@ -30,6 +30,8 @@ describe('observability scaffold', () => {
           protocol_ok: true,
           signal_drift: false,
           command_drift: true,
+          oracle_compared: true,
+          source: 'ai_result',
           created_at: '2026-07-02T12:00:00.000Z'
         }
       ])
@@ -40,6 +42,30 @@ describe('observability scaffold', () => {
       command_drift_rate: 1,
       last_shadow_event_at: '2026-07-02T12:00:00.000Z',
       missing_capabilities: []
+    });
+  });
+
+  it('keeps shadow metrics non-ready until oracle comparisons exist', () => {
+    expect(
+      buildShadowReport([
+        {
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          protocol_ok: true,
+          signal_drift: false,
+          command_drift: false,
+          oracle_compared: false,
+          source: 'ea_analysis',
+          created_at: '2026-07-03T00:00:00.000Z'
+        }
+      ])
+    ).toEqual({
+      ready: false,
+      protocol_error_rate: 0,
+      signal_drift_rate: 0,
+      command_drift_rate: 0,
+      last_shadow_event_at: '2026-07-03T00:00:00.000Z',
+      missing_capabilities: ['go_oracle_reference']
     });
   });
 });
