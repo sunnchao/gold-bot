@@ -13,7 +13,20 @@ export class SchedulerService {
   }
 
   enqueuePositionReview(accountId: string, symbol: string): void {
-    this.publishReplaySignal(accountId, symbol);
+    const result = this.analysis.analyzeAccountSymbol(accountId, symbol);
+    for (const command of result.replay.position_commands ?? []) {
+      const candidate: CommandCandidate = {
+        command_id: `pos_${accountId}_${command.ticket}_${Date.now()}`,
+        action: command.action,
+        source: 'position_review',
+        symbol,
+        ticket: command.ticket,
+        ...(command.lots == null ? {} : { lots: command.lots }),
+        ...(command.new_sl == null ? {} : { new_sl: command.new_sl }),
+        reason: command.reason
+      };
+      this.commandLifecycle.acceptCandidate(accountId, candidate);
+    }
   }
 
   private publishReplaySignal(accountId: string, symbol: string): void {
