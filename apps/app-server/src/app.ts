@@ -190,7 +190,7 @@ async function routeRequest(
   const path = new URL(request.url, 'http://localhost').pathname;
 
   if (method === 'GET' && path === '/healthz') {
-    return { statusCode: 200, body: { status: 'ok', phase: 1 } };
+    return { statusCode: 200, body: null, rawBody: 'ok' };
   }
 
   if (path === '/api/ea/version') {

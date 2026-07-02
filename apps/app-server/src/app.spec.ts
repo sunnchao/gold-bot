@@ -115,7 +115,7 @@ describe('app-server scaffold', () => {
     });
   });
 
-  it('returns phase 1 health payload', async () => {
+  it('returns Go-compatible health payload', async () => {
     const server = createAppServer();
     const response = await server.inject({
       method: 'GET',
@@ -123,11 +123,7 @@ describe('app-server scaffold', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.headers['content-type']).toContain('application/json');
-    expect(JSON.parse(response.body)).toEqual({
-      status: 'ok',
-      phase: 1
-    });
+    expect(response.body).toBe('ok');
   });
 
   it('serves public EA release version metadata', async () => {
@@ -233,9 +229,10 @@ describe('app-server scaffold', () => {
       timeframe: 'H1',
       time: '2026-04-13T08:00:00.000Z',
       price: 3335.75,
-      strength: 8,
-      confidence: 82,
-      description: 'RSI bullish divergence'
+      strength: 'strong',
+      confidence: 0.82,
+      description: 'RSI bullish divergence',
+      rsi_divergence: 'bullish'
     };
 
     const first = await server.inject({
@@ -279,11 +276,21 @@ describe('app-server scaffold', () => {
       headers: apiUserHeaders,
       body: '{bad-json'
     });
+    const wrongShape = await server.inject({
+      method: 'POST',
+      url: '/indicator_alert/store',
+      headers: apiUserHeaders,
+      body: {
+        strength: 8
+      }
+    });
 
     expect(method.statusCode).toBe(405);
     expect(JSON.parse(method.body)).toEqual({ status: 'ERROR', message: 'method not allowed' });
     expect(json.statusCode).toBe(400);
     expect(JSON.parse(json.body)).toEqual({ status: 'ERROR', message: 'invalid json' });
+    expect(wrongShape.statusCode).toBe(400);
+    expect(JSON.parse(wrongShape.body)).toEqual({ status: 'ERROR', message: 'invalid json' });
   });
 
   it('serves visual poll with tick, AI trade plan, and matching alerts', async () => {
@@ -327,9 +334,10 @@ describe('app-server scaffold', () => {
         timeframe: 'H1',
         time: '2026-04-13T08:00:00.000Z',
         price: 3335.75,
-        strength: 8,
-        confidence: 82,
-        description: 'RSI bullish divergence'
+        strength: 'strong',
+        confidence: 0.82,
+        description: 'RSI bullish divergence',
+        rsi_divergence: 'bullish'
       }
     });
     await server.inject({
@@ -345,8 +353,8 @@ describe('app-server scaffold', () => {
         timeframe: 'M15',
         time: '2026-04-13T08:00:00.000Z',
         price: 190.1,
-        strength: 5,
-        confidence: 60,
+        strength: 'medium',
+        confidence: 0.6,
         description: 'GBPJPY alert'
       }
     });
@@ -399,9 +407,10 @@ describe('app-server scaffold', () => {
           timeframe: 'H1',
           time: '2026-04-13T08:00:00.000Z',
           price: 3335.75,
-          strength: 8,
-          confidence: 82,
-          description: 'RSI bullish divergence'
+          strength: 'strong',
+          confidence: 0.82,
+          description: 'RSI bullish divergence',
+          rsi_divergence: 'bullish'
         }
       ],
       count: 1

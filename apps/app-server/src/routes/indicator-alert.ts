@@ -7,7 +7,7 @@ import { requireRouteToken } from '../middleware/auth.js';
 const ALERT_TTL_MS = 4 * 60 * 60 * 1000;
 
 export type IndicatorAlert = EaRecord & {
-  id?: string | number;
+  id?: string;
   type?: string;
   indicator?: string;
   direction?: string;
@@ -15,11 +15,11 @@ export type IndicatorAlert = EaRecord & {
   timeframe?: string;
   time?: string;
   price?: number;
-  strength?: number;
+  strength?: string;
   confidence?: number;
   description?: string;
-  macd_divergence?: boolean;
-  rsi_divergence?: boolean;
+  macd_divergence?: string;
+  rsi_divergence?: string;
 };
 
 export type IndicatorAlertCache = {
@@ -85,6 +85,9 @@ export function handleIndicatorAlertRoute(request: IndicatorAlertRouteRequest, d
   }
 
   if (request.path === '/indicator_alert/store') {
+    if (!isGoDecodableIndicatorAlert(parsed.body)) {
+      return error(400, 'invalid json');
+    }
     return {
       statusCode: 200,
       body: {
@@ -105,6 +108,38 @@ export function handleIndicatorAlertRoute(request: IndicatorAlertRouteRequest, d
     };
   }
   return error(404, 'not found');
+}
+
+const GO_STRING_FIELDS = [
+  'id',
+  'type',
+  'indicator',
+  'direction',
+  'symbol',
+  'timeframe',
+  'time',
+  'strength',
+  'description',
+  'macd_divergence',
+  'rsi_divergence'
+] as const;
+
+const GO_NUMBER_FIELDS = ['price', 'confidence'] as const;
+
+function isGoDecodableIndicatorAlert(record: EaRecord): boolean {
+  for (const field of GO_STRING_FIELDS) {
+    const value = record[field];
+    if (value != null && typeof value !== 'string') {
+      return false;
+    }
+  }
+  for (const field of GO_NUMBER_FIELDS) {
+    const value = record[field];
+    if (value != null && typeof value !== 'number') {
+      return false;
+    }
+  }
+  return true;
 }
 
 function alertKey(alert: IndicatorAlert): string {
