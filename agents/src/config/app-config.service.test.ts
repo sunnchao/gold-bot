@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AppConfigService, validateConfig } from './app-config.service.js';
 
 const env = {
-  GOLDBOT_API_URL: 'http://localhost:8880',
+  GOLDBOT_API_URL: 'http://127.0.0.1:3000',
   GOLDBOT_API_TOKEN: 'test-token',
   REDIS_URL: 'redis://localhost:6379',
   LLM_PROVIDER: 'openai',
@@ -41,7 +41,7 @@ describe('AppConfigService', () => {
 
     expect(service.port).toBe(3100);
     expect(service.goldbot).toEqual({
-      apiUrl: 'http://localhost:8880',
+      apiUrl: 'http://127.0.0.1:3000',
       apiToken: 'test-token',
     });
     expect(service.llm.model).toBe('gpt-4o');
@@ -65,5 +65,14 @@ describe('AppConfigService', () => {
     accounts[0].symbols.push('US100Cash');
 
     expect(service.accounts[0].symbols).toEqual(['XAUUSD']);
+  });
+
+  it('defaults the Goldbot API URL to the Node app-server authority', () => {
+    const config = validateConfig({
+      ...env,
+      GOLDBOT_API_URL: undefined,
+    });
+
+    expect(config.goldbotApiUrl).toBe('http://127.0.0.1:3000');
   });
 });

@@ -53,7 +53,7 @@ function parseAccounts(env: Record<string, unknown>): unknown {
 
 export function validateConfig(env: Record<string, unknown>): AppConfig {
   const raw = {
-    goldbotApiUrl: env.GOLDBOT_API_URL ?? 'http://localhost:8880',
+    goldbotApiUrl: env.GOLDBOT_API_URL ?? 'http://127.0.0.1:3000',
     goldbotApiToken: env.GOLDBOT_API_TOKEN ?? 'test-token',
     redisUrl: env.REDIS_URL ?? 'redis://localhost:6379',
     llmProvider: env.LLM_PROVIDER ?? 'openai',
