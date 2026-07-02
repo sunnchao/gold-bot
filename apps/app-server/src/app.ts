@@ -27,6 +27,7 @@ import { handleAIRoute as routeAI } from './routes/ai.js';
 import { AnalysisService } from './services/analysis/service.js';
 import { CommandLifecycleService } from './services/command-lifecycle/service.js';
 import { SchedulerService } from './services/scheduler/service.js';
+import { ShadowService } from './services/shadow/service.js';
 
 export type InjectRequest = {
   method: string;
@@ -59,6 +60,7 @@ type AppServerDeps = {
   adminTokens: Set<string>;
   commandLifecycle: CommandLifecycleService;
   scheduler: SchedulerService;
+  shadow: ShadowService;
 };
 
 const ALLOWED_STRATEGY_MAPPING_KEYS = ['20250231', '20250232', '20250233', '20250234', '20250235', '20250236', '20250237', '20250238'] as const;
@@ -89,10 +91,12 @@ export function createAppServer(options: AppServerOptions = {}) {
   const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
   const commandLifecycle = new CommandLifecycleService(baseDeps.store);
   const scheduler = new SchedulerService(analysis, commandLifecycle);
+  const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso);
   const deps: AppServerDeps = {
     ...baseDeps,
     commandLifecycle,
-    scheduler
+    scheduler,
+    shadow
   };
   const appHandler = (req: IncomingMessage, res: ServerResponse): void => {
     void handleHttpRequest(req, res, deps);
@@ -177,6 +181,13 @@ async function routeRequest(
         ea_endpoints: EA_COMPAT_ENDPOINTS,
         persistence: persistenceStatus
       }
+    };
+  }
+
+  if (method === 'GET' && path === '/shadow/metrics') {
+    return {
+      statusCode: 200,
+      body: deps.shadow.metrics()
     };
   }
 

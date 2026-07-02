@@ -580,6 +580,53 @@ describe('app-server scaffold', () => {
     ]);
   });
 
+  it('serves /shadow/metrics from persisted shadow comparison state', async () => {
+    const store = createInMemoryEaStore();
+    const server = createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
+
+    store.recordShadowComparison({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      protocol_ok: true,
+      signal_drift: false,
+      command_drift: true,
+      created_at: '2026-07-03T00:00:00.000Z'
+    });
+    store.recordShadowComparison({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      protocol_ok: false,
+      signal_drift: true,
+      command_drift: false,
+      created_at: '2026-07-03T00:05:00.000Z'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/shadow/metrics'
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      status: 'OK',
+      generated_at: '2026-07-03T00:10:00.000Z',
+      report: {
+        ready: false,
+        protocol_error_rate: 0.5,
+        signal_drift_rate: 0.5,
+        command_drift_rate: 0.5,
+        last_shadow_event_at: '2026-07-03T00:05:00.000Z',
+        missing_capabilities: []
+      },
+      totals: {
+        comparisons: 2,
+        protocol_errors: 1,
+        signal_drifts: 1,
+        command_drifts: 1
+      }
+    });
+  });
+
   it('serves a dashboard-compatible SSE snapshot stream', async () => {
     const store = createInMemoryEaStore();
     const server = createAppServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
