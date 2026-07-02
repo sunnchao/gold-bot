@@ -1,0 +1,13 @@
+{
+  "name": "app-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --dir ../../web/dashboard build",
+    "dev": "pnpm --dir ../../web/dashboard dev",
+    "test": "pnpm --dir ../../web/dashboard test",
+    "typecheck": "pnpm --dir ../../web/dashboard build",
+    "lint": "pnpm run typecheck"
+  }
+}

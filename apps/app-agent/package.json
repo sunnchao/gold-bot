@@ -1,0 +1,14 @@
+{
+  "name": "app-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --dir ../../agents build",
+    "dev": "pnpm --dir ../../agents dev",
+    "start": "pnpm --dir ../../agents start",
+    "test": "pnpm --dir ../../agents test",
+    "typecheck": "pnpm --dir ../../agents build",
+    "lint": "pnpm run typecheck"
+  }
+}
