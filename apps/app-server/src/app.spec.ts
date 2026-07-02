@@ -129,6 +129,53 @@ describe('app-server scaffold', () => {
     });
   });
 
+  it('serves public EA release version metadata', async () => {
+    const server = createApiServer();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/ea/version'
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      status: 'OK',
+      version: '2.8.3',
+      build: 9,
+      changelog:
+        'AI信号挂单: 新增 ai_signal 策略支持(Magic=20250238)，修复未知策略拒绝问题；兼容 tp/tp1 字段名；AI信号使用服务端计算手数(含减半逻辑)；所有品种MaxSpread=80避免挂单被点差拦截；SQLite方言移除，仅支持PostgreSQL'
+    });
+  });
+
+  it('rejects EA version_check without a route token', async () => {
+    const server = createApiServer();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/version_check'
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: 'invalid token' });
+  });
+
+  it('serves token-protected EA version_check payload', async () => {
+    const server = createApiServer();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/version_check',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      latest_version: '2.8.3',
+      latest_build: 9,
+      force_update: false
+    });
+  });
+
   it('accepts safe EA lifecycle routes with Go-shaped responses and stores payloads', async () => {
     const store = createInMemoryEaStore();
     const server = createAppServer({ store, nowUnix: () => 1772342400 });

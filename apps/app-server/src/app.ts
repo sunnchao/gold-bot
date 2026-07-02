@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { EA_COMPAT_ENDPOINTS, isEaCompatEndpoint, isEaStrategyName, type HeaderMap } from '@gold-bot/shared-contracts';
 import { createInMemoryEaStore, persistenceStatus, type CommandCandidate, type EaRecord, type EaStore, type StoredCommand } from '@gold-bot/persistence';
@@ -21,6 +22,7 @@ import {
 import { buildShadowReport, formatSseFrame } from '@gold-bot/observability';
 import { type JsonResponse } from './http/response.js';
 import { parseJsonObject } from './http/json.js';
+import { requireRouteToken } from './middleware/auth.js';
 import { handleEaRoute as routeEa } from './routes/ea.js';
 import { handleAdminRoute as routeAdmin } from './routes/admin.js';
 import { handleAIRoute as routeAI } from './routes/ai.js';
@@ -65,7 +67,14 @@ type AppServerDeps = {
   shadow: ShadowService;
 };
 
+type EaReleaseInfo = {
+  version: string;
+  build: number;
+  changelog: string;
+};
+
 const ALLOWED_STRATEGY_MAPPING_KEYS = ['20250231', '20250232', '20250233', '20250234', '20250235', '20250236', '20250237', '20250238'] as const;
+const EA_VERSION_FILE_URL = new URL('../../../mt4_ea/version.json', import.meta.url);
 
 const DEFAULT_STRATEGY_MAPPING: EaRecord = {
   '20250231': 'pullback',
@@ -146,6 +155,18 @@ async function routeRequest(
 
   if (method === 'GET' && path === '/healthz') {
     return { statusCode: 200, body: { status: 'ok', phase: 1 } };
+  }
+
+  if (path === '/api/ea/version') {
+    return eaVersionResponse();
+  }
+
+  if (path === '/version_check') {
+    const tokenResult = requireRouteToken(deps.validTokens, request.headers, request.url);
+    if (tokenResult.response != null) {
+      return tokenResult.response;
+    }
+    return eaVersionCheckResponse();
   }
 
   if (isEaCompatEndpoint(path)) {
@@ -1415,6 +1436,75 @@ function eventStreamSnapshot(store: EaStore, timestamp: string): string {
     timestamp,
     payload: { status: 'OK' }
   });
+}
+
+function eaVersionResponse(): JsonResponse {
+  const release = currentEaRelease();
+  if (!release.ok) {
+    return { statusCode: 500, body: { status: 'ERROR', message: release.message } };
+  }
+  return {
+    statusCode: 200,
+    body: {
+      status: 'OK',
+      version: release.info.version,
+      build: release.info.build,
+      changelog: release.info.changelog
+    }
+  };
+}
+
+function eaVersionCheckResponse(): JsonResponse {
+  const release = currentEaRelease();
+  if (!release.ok) {
+    return { statusCode: 500, body: { status: 'ERROR', message: release.message } };
+  }
+  return {
+    statusCode: 200,
+    body: {
+      latest_version: release.info.version,
+      latest_build: release.info.build,
+      force_update: false
+    }
+  };
+}
+
+function currentEaRelease(): { ok: true; info: EaReleaseInfo } | { ok: false; message: string } {
+  const fallback: EaReleaseInfo = { version: '0.0.0', build: 0, changelog: '' };
+  let raw: string;
+  try {
+    raw = readFileSync(EA_VERSION_FILE_URL, 'utf8');
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return { ok: true, info: fallback };
+    }
+    return { ok: false, message: `read EA version file: ${errorMessage(error)}` };
+  }
+
+  try {
+    const payload = JSON.parse(raw) as unknown;
+    if (!isRecord(payload)) {
+      return { ok: false, message: 'decode EA version file: expected object' };
+    }
+    return {
+      ok: true,
+      info: {
+        version: typeof payload.version === 'string' ? payload.version : fallback.version,
+        build: typeof payload.build === 'number' && Number.isInteger(payload.build) ? payload.build : fallback.build,
+        changelog: typeof payload.changelog === 'string' ? payload.changelog : fallback.changelog
+      }
+    };
+  } catch (error) {
+    return { ok: false, message: `decode EA version file: ${errorMessage(error)}` };
+  }
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return typeof error === 'object' && error != null && 'code' in error && error.code === 'ENOENT';
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function numberField(record: EaRecord, field: string): number {
