@@ -193,6 +193,13 @@ async function routeRequest(
     };
   }
 
+  if (method === 'GET' && path === '/shadow/qualification') {
+    return {
+      statusCode: 200,
+      body: deps.shadow.qualification()
+    };
+  }
+
   if (method === 'POST' && path === '/shadow/comparisons') {
     const parsed = parseJsonObject(request.rawBody);
     if (!parsed.ok) {

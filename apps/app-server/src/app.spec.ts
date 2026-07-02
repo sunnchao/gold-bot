@@ -558,7 +558,27 @@ describe('app-server scaffold', () => {
       signal_drift_rate: 0,
       command_drift_rate: 1,
       last_shadow_event_at: '2026-07-02T12:00:00.000Z',
-      missing_capabilities: []
+      missing_capabilities: [],
+      checks: [
+        {
+          label: 'Oracle Replay',
+          value: 'validated',
+          detail: 'Go oracle comparisons are flowing into the shadow stream',
+          tone: 'green'
+        },
+        {
+          label: 'Shadow Drift',
+          value: 'review required',
+          detail: 'Signal 0.00%, command 100.00% (limit 2.00%)',
+          tone: 'red'
+        },
+        {
+          label: 'Protocol Errors',
+          value: '0.00%',
+          detail: 'No contract mismatches observed in mirrored traffic',
+          tone: 'green'
+        }
+      ]
     });
     expect(body.summary).toEqual([
       {
@@ -622,7 +642,27 @@ describe('app-server scaffold', () => {
         signal_drift_rate: 0.5,
         command_drift_rate: 0.5,
         last_shadow_event_at: '2026-07-03T00:05:00.000Z',
-        missing_capabilities: []
+        missing_capabilities: [],
+        checks: [
+          {
+            label: 'Oracle Replay',
+            value: 'validated',
+            detail: 'Go oracle comparisons are flowing into the shadow stream',
+            tone: 'green'
+          },
+          {
+            label: 'Shadow Drift',
+            value: 'review required',
+            detail: 'Signal 50.00%, command 50.00% (limit 2.00%)',
+            tone: 'red'
+          },
+          {
+            label: 'Protocol Errors',
+            value: '50.00%',
+            detail: 'Legacy contract mismatches detected in mirrored traffic',
+            tone: 'red'
+          }
+        ]
       },
       totals: {
         comparisons: 2,
@@ -630,6 +670,87 @@ describe('app-server scaffold', () => {
         signal_drifts: 1,
         command_drifts: 1
       }
+    });
+  });
+
+  it('serves /shadow/qualification with cutover-style checks', async () => {
+    const store = createInMemoryEaStore();
+    const server = createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
+
+    store.recordShadowComparison({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      protocol_ok: true,
+      signal_drift: false,
+      command_drift: false,
+      oracle_compared: true,
+      source: 'ea_analysis',
+      created_at: '2026-07-03T00:00:00.000Z'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/shadow/qualification'
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      status: 'OK',
+      generated_at: '2026-07-03T00:10:00.000Z',
+      report: {
+        ready: true,
+        protocol_error_rate: 0,
+        signal_drift_rate: 0,
+        command_drift_rate: 0,
+        last_shadow_event_at: '2026-07-03T00:00:00.000Z',
+        missing_capabilities: [],
+        checks: [
+          {
+            label: 'Oracle Replay',
+            value: 'validated',
+            detail: 'Go oracle comparisons are flowing into the shadow stream',
+            tone: 'green'
+          },
+          {
+            label: 'Shadow Drift',
+            value: 'within threshold',
+            detail: 'Signal 0.00%, command 0.00%',
+            tone: 'green'
+          },
+          {
+            label: 'Protocol Errors',
+            value: '0.00%',
+            detail: 'No contract mismatches observed in mirrored traffic',
+            tone: 'green'
+          }
+        ]
+      },
+      totals: {
+        comparisons: 1,
+        protocol_errors: 0,
+        signal_drifts: 0,
+        command_drifts: 0
+      },
+      summary: [
+        {
+          label: 'Oracle Replay',
+          value: 'validated',
+          detail: 'Go oracle comparisons are flowing into the shadow stream',
+          tone: 'green'
+        },
+        {
+          label: 'Shadow Drift',
+          value: 'within threshold',
+          detail: 'Signal 0.00%, command 0.00%',
+          tone: 'green'
+        },
+        {
+          label: 'Protocol Errors',
+          value: '0.00%',
+          detail: 'No contract mismatches observed in mirrored traffic',
+          tone: 'green'
+        }
+      ]
     });
   });
 

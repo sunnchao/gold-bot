@@ -142,6 +142,63 @@ describe('persistence scaffold', () => {
     });
   });
 
+  it('filters and summarizes shadow comparisons for qualification checks', () => {
+    const store = createInMemoryEaStore();
+
+    store.recordShadowComparison({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      protocol_ok: true,
+      signal_drift: false,
+      command_drift: false,
+      oracle_compared: true,
+      source: 'ea_analysis',
+      created_at: '2026-07-03T00:00:00.000Z'
+    });
+    store.recordShadowComparison({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      protocol_ok: false,
+      signal_drift: true,
+      command_drift: false,
+      oracle_compared: true,
+      source: 'ea_analysis',
+      created_at: '2026-07-03T00:10:00.000Z'
+    });
+    store.recordShadowComparison({
+      account_id: '90022098',
+      symbol: 'GBPJPY',
+      protocol_ok: true,
+      signal_drift: false,
+      command_drift: true,
+      oracle_compared: false,
+      source: 'ai_result',
+      created_at: '2026-07-03T00:20:00.000Z'
+    });
+
+    expect(store.listShadowComparisons({ account_id: '90011087', signal_drift: true })).toEqual([
+      {
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        protocol_ok: false,
+        signal_drift: true,
+        command_drift: false,
+        oracle_compared: true,
+        source: 'ea_analysis',
+        created_at: '2026-07-03T00:10:00.000Z'
+      }
+    ]);
+    expect(store.summarizeShadowComparisons({ account_id: '90011087', source: 'ea_analysis' })).toEqual({
+      comparisons: 2,
+      protocol_errors: 1,
+      signal_drifts: 1,
+      command_drifts: 0,
+      oracle_compared: 2,
+      first_created_at: '2026-07-03T00:00:00.000Z',
+      last_created_at: '2026-07-03T00:10:00.000Z'
+    });
+  });
+
   it('lists account symbols and explicitly stored pending signals', () => {
     const store = createInMemoryEaStore();
     const pendingSignal = {
@@ -210,6 +267,26 @@ describe('persistence scaffold', () => {
         command: { action: 'SIGNAL', tp1: 3358 },
         created_at: '2026-07-03T00:00:00.000Z'
       });
+      store.recordShadowComparison({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        protocol_ok: true,
+        signal_drift: false,
+        command_drift: false,
+        oracle_compared: true,
+        source: 'ea_analysis',
+        created_at: '2026-07-03T00:00:00.000Z'
+      });
+      store.recordShadowComparison({
+        account_id: '90011087',
+        symbol: 'GBPJPY',
+        protocol_ok: false,
+        signal_drift: true,
+        command_drift: false,
+        oracle_compared: true,
+        source: 'ai_result',
+        created_at: '2026-07-03T00:05:00.000Z'
+      });
       store.enqueueCommand('90011087', command);
       store.setRuntimeMode('90011087', 'cutover');
       const candidate = store.saveCommandCandidate('90011087', {
@@ -241,6 +318,27 @@ describe('persistence scaffold', () => {
         signal: { strategy: 'pullback', side: 'BUY' },
         command: { action: 'SIGNAL', tp1: 3358 },
         created_at: '2026-07-03T00:00:00.000Z'
+      });
+      expect(reopened.listShadowComparisons({ source: 'ai_result' })).toEqual([
+        {
+          account_id: '90011087',
+          symbol: 'GBPJPY',
+          protocol_ok: false,
+          signal_drift: true,
+          command_drift: false,
+          oracle_compared: true,
+          source: 'ai_result',
+          created_at: '2026-07-03T00:05:00.000Z'
+        }
+      ]);
+      expect(reopened.summarizeShadowComparisons({ account_id: '90011087' })).toEqual({
+        comparisons: 2,
+        protocol_errors: 1,
+        signal_drifts: 1,
+        command_drifts: 0,
+        oracle_compared: 2,
+        first_created_at: '2026-07-03T00:00:00.000Z',
+        last_created_at: '2026-07-03T00:05:00.000Z'
       });
       expect(reopened.getCommand('candidate_1')).toMatchObject({
         status: 'acked',

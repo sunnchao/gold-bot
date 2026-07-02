@@ -13,6 +13,10 @@ export type ShadowMetrics = {
   };
 };
 
+export type ShadowQualification = ShadowMetrics & {
+  summary: ReturnType<typeof buildShadowReport>['checks'];
+};
+
 export class ShadowService {
   constructor(
     private readonly store: EaStore,
@@ -21,16 +25,25 @@ export class ShadowService {
 
   metrics(): ShadowMetrics {
     const comparisons = this.store.listShadowComparisons();
+    const totals = this.store.summarizeShadowComparisons();
     return {
       status: 'OK',
       generated_at: this.nowIso(),
       report: buildShadowReport(comparisons),
       totals: {
-        comparisons: comparisons.length,
-        protocol_errors: comparisons.filter((comparison) => !comparison.protocol_ok).length,
-        signal_drifts: comparisons.filter((comparison) => comparison.signal_drift).length,
-        command_drifts: comparisons.filter((comparison) => comparison.command_drift).length
+        comparisons: totals.comparisons,
+        protocol_errors: totals.protocol_errors,
+        signal_drifts: totals.signal_drifts,
+        command_drifts: totals.command_drifts
       }
+    };
+  }
+
+  qualification(): ShadowQualification {
+    const metrics = this.metrics();
+    return {
+      ...metrics,
+      summary: metrics.report.checks
     };
   }
 

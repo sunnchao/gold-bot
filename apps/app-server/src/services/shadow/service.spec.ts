@@ -15,7 +15,27 @@ describe('ShadowService', () => {
         signal_drift_rate: 0,
         command_drift_rate: 0,
         last_shadow_event_at: '',
-        missing_capabilities: ['shadow_traffic']
+        missing_capabilities: ['shadow_traffic'],
+        checks: [
+          {
+            label: 'Oracle Replay',
+            value: 'pending',
+            detail: 'No Go oracle comparisons have been recorded yet',
+            tone: 'orange'
+          },
+          {
+            label: 'Shadow Drift',
+            value: 'pending',
+            detail: 'Waiting for mirrored production traffic',
+            tone: 'orange'
+          },
+          {
+            label: 'Protocol Errors',
+            value: '0.00%',
+            detail: 'Live shadow traffic has not started yet',
+            tone: 'amber'
+          }
+        ]
       },
       totals: {
         comparisons: 0,
@@ -60,7 +80,27 @@ describe('ShadowService', () => {
         signal_drift_rate: 0.5,
         command_drift_rate: 0.5,
         last_shadow_event_at: '2026-07-03T00:05:00.000Z',
-        missing_capabilities: []
+        missing_capabilities: [],
+        checks: [
+          {
+            label: 'Oracle Replay',
+            value: 'validated',
+            detail: 'Go oracle comparisons are flowing into the shadow stream',
+            tone: 'green'
+          },
+          {
+            label: 'Shadow Drift',
+            value: 'review required',
+            detail: 'Signal 50.00%, command 50.00% (limit 2.00%)',
+            tone: 'red'
+          },
+          {
+            label: 'Protocol Errors',
+            value: '50.00%',
+            detail: 'Legacy contract mismatches detected in mirrored traffic',
+            tone: 'red'
+          }
+        ]
       },
       totals: {
         comparisons: 2,
@@ -142,6 +182,37 @@ describe('ShadowService', () => {
       oracle_compared: true,
       source: 'ea_analysis',
       created_at: '2026-07-03T00:10:00.000Z'
+    });
+  });
+
+  it('builds a cutover-style qualification payload from the current metrics', () => {
+    const store = createInMemoryEaStore();
+    store.recordShadowComparison({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      protocol_ok: true,
+      signal_drift: false,
+      command_drift: false,
+      oracle_compared: true,
+      source: 'ea_analysis',
+      created_at: '2026-07-03T00:00:00.000Z'
+    });
+
+    const service = new ShadowService(store, () => '2026-07-03T00:10:00.000Z');
+    const qualification = service.qualification();
+
+    expect(qualification.status).toBe('OK');
+    expect(qualification.report.ready).toBe(true);
+    expect(qualification.summary).toHaveLength(3);
+    expect(qualification.summary[0]).toMatchObject({
+      label: 'Oracle Replay',
+      value: 'validated'
+    });
+    expect(qualification.totals).toEqual({
+      comparisons: 1,
+      protocol_errors: 0,
+      signal_drifts: 0,
+      command_drifts: 0
     });
   });
 });

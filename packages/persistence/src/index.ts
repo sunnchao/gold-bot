@@ -2,10 +2,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { isCommandSource, isCommandStatus, isRuntimeMode, type CommandSource, type CommandStatus, type RuntimeMode } from '@gold-bot/shared-contracts';
 import type { CommandCandidate, StoredCommand } from './commands.js';
 import type { RuntimeStateRecord } from './runtime-state.js';
-import type { ShadowComparison, ShadowRuntimeSnapshot } from './shadow.js';
+import type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary, ShadowRuntimeSnapshot } from './shadow.js';
 export type { CommandCandidate, StoredCommand } from './commands.js';
 export type { RuntimeStateRecord } from './runtime-state.js';
-export type { ShadowComparison, ShadowRuntimeSnapshot } from './shadow.js';
+export type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary, ShadowRuntimeSnapshot } from './shadow.js';
 
 export const persistenceStatus = {
   writesLiveCommands: false
@@ -42,7 +42,8 @@ export type EaStore = {
   reconcileCommandResult(accountId: string, commandId: string, result: string, ticket?: number): void;
   pollCommands(accountId: string): EaCommand[];
   recordShadowComparison(payload: ShadowComparison): void;
-  listShadowComparisons(): ShadowComparison[];
+  listShadowComparisons(filter?: ShadowComparisonFilter): ShadowComparison[];
+  summarizeShadowComparisons(filter?: ShadowComparisonFilter): ShadowComparisonSummary;
   saveShadowSnapshot(payload: ShadowRuntimeSnapshot): void;
   getLatestShadowSnapshot(accountId: string, symbol: string, source: CommandSource): ShadowRuntimeSnapshot | undefined;
   savePendingSignal(payload: EaRecord): void;
@@ -202,8 +203,11 @@ export function createInMemoryEaStore(): EaStore {
     recordShadowComparison(payload) {
       state.shadowComparisons.push(structuredClone(payload));
     },
-    listShadowComparisons() {
-      return structuredClone(state.shadowComparisons);
+    listShadowComparisons(filter) {
+      return structuredClone(filterShadowComparisons(state.shadowComparisons, filter));
+    },
+    summarizeShadowComparisons(filter) {
+      return summarizeShadowComparisons(filterShadowComparisons(state.shadowComparisons, filter));
     },
     saveShadowSnapshot(payload) {
       state.shadowSnapshots.set(shadowSnapshotKey(payload.account_id, payload.symbol, payload.source), structuredClone(payload));
@@ -571,8 +575,8 @@ export function createSqliteEaStore(path: string): EaStore {
         payload.created_at
       );
     },
-    listShadowComparisons() {
-      return (selectShadowComparisons.all() as Array<{
+    listShadowComparisons(filter) {
+      const comparisons: ShadowComparison[] = (selectShadowComparisons.all() as Array<{
         account_id: string;
         symbol: string;
         protocol_ok: number;
@@ -591,6 +595,10 @@ export function createSqliteEaStore(path: string): EaStore {
         source: row.source === 'position_review' || row.source === 'ai_result' ? row.source : 'ea_analysis',
         created_at: row.created_at
       }));
+      return filterShadowComparisons(comparisons, filter);
+    },
+    summarizeShadowComparisons(filter) {
+      return summarizeShadowComparisons(this.listShadowComparisons(filter));
     },
     saveShadowSnapshot(payload) {
       upsertShadowSnapshot.run(payload.account_id, payload.symbol, payload.source, toJson(payload));
@@ -657,6 +665,57 @@ function symbolOrDefault(payload: EaRecord): string {
 
 function shadowSnapshotKey(accountId: string, symbol: string, source: CommandSource): string {
   return `${accountId}:${symbol}:${source}`;
+}
+
+function filterShadowComparisons(
+  comparisons: ShadowComparison[],
+  filter?: ShadowComparisonFilter
+): ShadowComparison[] {
+  if (filter == null) {
+    return comparisons;
+  }
+  return comparisons.filter((comparison) => {
+    if (filter.account_id != null && comparison.account_id !== filter.account_id) {
+      return false;
+    }
+    if (filter.symbol != null && comparison.symbol !== filter.symbol) {
+      return false;
+    }
+    if (filter.source != null && comparison.source !== filter.source) {
+      return false;
+    }
+    if (filter.protocol_ok != null && comparison.protocol_ok !== filter.protocol_ok) {
+      return false;
+    }
+    if (filter.signal_drift != null && comparison.signal_drift !== filter.signal_drift) {
+      return false;
+    }
+    if (filter.command_drift != null && comparison.command_drift !== filter.command_drift) {
+      return false;
+    }
+    if (filter.oracle_compared != null && comparison.oracle_compared !== filter.oracle_compared) {
+      return false;
+    }
+    if (filter.created_at_gte != null && comparison.created_at < filter.created_at_gte) {
+      return false;
+    }
+    if (filter.created_at_lte != null && comparison.created_at > filter.created_at_lte) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function summarizeShadowComparisons(comparisons: ShadowComparison[]): ShadowComparisonSummary {
+  return {
+    comparisons: comparisons.length,
+    protocol_errors: comparisons.filter((comparison) => !comparison.protocol_ok).length,
+    signal_drifts: comparisons.filter((comparison) => comparison.signal_drift).length,
+    command_drifts: comparisons.filter((comparison) => comparison.command_drift).length,
+    oracle_compared: comparisons.filter((comparison) => comparison.oracle_compared).length,
+    first_created_at: comparisons[0]?.created_at ?? '',
+    last_created_at: comparisons.at(-1)?.created_at ?? ''
+  };
 }
 
 function currentTimestamp(): string {

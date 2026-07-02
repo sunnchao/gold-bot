@@ -17,7 +17,27 @@ describe('observability scaffold', () => {
       signal_drift_rate: 0,
       command_drift_rate: 0,
       last_shadow_event_at: '',
-      missing_capabilities: ['shadow_traffic']
+      missing_capabilities: ['shadow_traffic'],
+      checks: [
+        {
+          label: 'Oracle Replay',
+          value: 'pending',
+          detail: 'No Go oracle comparisons have been recorded yet',
+          tone: 'orange'
+        },
+        {
+          label: 'Shadow Drift',
+          value: 'pending',
+          detail: 'Waiting for mirrored production traffic',
+          tone: 'orange'
+        },
+        {
+          label: 'Protocol Errors',
+          value: '0.00%',
+          detail: 'Live shadow traffic has not started yet',
+          tone: 'amber'
+        }
+      ]
     });
   });
 
@@ -41,7 +61,27 @@ describe('observability scaffold', () => {
       signal_drift_rate: 0,
       command_drift_rate: 1,
       last_shadow_event_at: '2026-07-02T12:00:00.000Z',
-      missing_capabilities: []
+      missing_capabilities: [],
+      checks: [
+        {
+          label: 'Oracle Replay',
+          value: 'validated',
+          detail: 'Go oracle comparisons are flowing into the shadow stream',
+          tone: 'green'
+        },
+        {
+          label: 'Shadow Drift',
+          value: 'review required',
+          detail: 'Signal 0.00%, command 100.00% (limit 2.00%)',
+          tone: 'red'
+        },
+        {
+          label: 'Protocol Errors',
+          value: '0.00%',
+          detail: 'No contract mismatches observed in mirrored traffic',
+          tone: 'green'
+        }
+      ]
     });
   });
 
@@ -65,7 +105,81 @@ describe('observability scaffold', () => {
       signal_drift_rate: 0,
       command_drift_rate: 0,
       last_shadow_event_at: '2026-07-03T00:00:00.000Z',
-      missing_capabilities: ['go_oracle_reference']
+      missing_capabilities: ['go_oracle_reference'],
+      checks: [
+        {
+          label: 'Oracle Replay',
+          value: 'pending',
+          detail: 'Go oracle comparisons have not been approved yet',
+          tone: 'orange'
+        },
+        {
+          label: 'Shadow Drift',
+          value: 'within threshold',
+          detail: 'Signal 0.00%, command 0.00%',
+          tone: 'green'
+        },
+        {
+          label: 'Protocol Errors',
+          value: '0.00%',
+          detail: 'No contract mismatches observed in mirrored traffic',
+          tone: 'green'
+        }
+      ]
+    });
+  });
+
+  it('marks cutover ready when compared traffic stays within thresholds', () => {
+    expect(
+      buildShadowReport([
+        {
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          protocol_ok: true,
+          signal_drift: false,
+          command_drift: false,
+          oracle_compared: true,
+          source: 'ai_result',
+          created_at: '2026-07-03T01:00:00.000Z'
+        },
+        {
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          protocol_ok: true,
+          signal_drift: false,
+          command_drift: false,
+          oracle_compared: true,
+          source: 'ai_result',
+          created_at: '2026-07-03T01:05:00.000Z'
+        }
+      ])
+    ).toEqual({
+      ready: true,
+      protocol_error_rate: 0,
+      signal_drift_rate: 0,
+      command_drift_rate: 0,
+      last_shadow_event_at: '2026-07-03T01:05:00.000Z',
+      missing_capabilities: [],
+      checks: [
+        {
+          label: 'Oracle Replay',
+          value: 'validated',
+          detail: 'Go oracle comparisons are flowing into the shadow stream',
+          tone: 'green'
+        },
+        {
+          label: 'Shadow Drift',
+          value: 'within threshold',
+          detail: 'Signal 0.00%, command 0.00%',
+          tone: 'green'
+        },
+        {
+          label: 'Protocol Errors',
+          value: '0.00%',
+          detail: 'No contract mismatches observed in mirrored traffic',
+          tone: 'green'
+        }
+      ]
     });
   });
 });
