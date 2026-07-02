@@ -2,10 +2,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { isCommandSource, isCommandStatus, isRuntimeMode, type CommandSource, type CommandStatus, type RuntimeMode } from '@gold-bot/shared-contracts';
 import type { CommandCandidate, StoredCommand } from './commands.js';
 import type { RuntimeStateRecord } from './runtime-state.js';
-import type { ShadowComparison } from './shadow.js';
+import type { ShadowComparison, ShadowRuntimeSnapshot } from './shadow.js';
 export type { CommandCandidate, StoredCommand } from './commands.js';
 export type { RuntimeStateRecord } from './runtime-state.js';
-export type { ShadowComparison } from './shadow.js';
+export type { ShadowComparison, ShadowRuntimeSnapshot } from './shadow.js';
 
 export const persistenceStatus = {
   writesLiveCommands: false
@@ -43,6 +43,8 @@ export type EaStore = {
   pollCommands(accountId: string): EaCommand[];
   recordShadowComparison(payload: ShadowComparison): void;
   listShadowComparisons(): ShadowComparison[];
+  saveShadowSnapshot(payload: ShadowRuntimeSnapshot): void;
+  getLatestShadowSnapshot(accountId: string, symbol: string, source: CommandSource): ShadowRuntimeSnapshot | undefined;
   savePendingSignal(payload: EaRecord): void;
   getPendingSignals(accountId: string, symbol: string): EaRecord[];
   saveAIResult(accountId: string, symbol: string, payload: EaRecord): void;
@@ -63,6 +65,7 @@ type StoreState = {
   runtimeModes: Map<string, RuntimeMode>;
   commands: Map<string, StoredCommand>;
   shadowComparisons: ShadowComparison[];
+  shadowSnapshots: Map<string, ShadowRuntimeSnapshot>;
   pendingSignals: Map<string, EaRecord[]>;
   aiResults: Map<string, EaRecord[]>;
   nextCommandId: number;
@@ -79,6 +82,7 @@ export function createInMemoryEaStore(): EaStore {
     runtimeModes: new Map(),
     commands: new Map(),
     shadowComparisons: [],
+    shadowSnapshots: new Map(),
     pendingSignals: new Map(),
     aiResults: new Map(),
     nextCommandId: 1
@@ -200,6 +204,13 @@ export function createInMemoryEaStore(): EaStore {
     },
     listShadowComparisons() {
       return structuredClone(state.shadowComparisons);
+    },
+    saveShadowSnapshot(payload) {
+      state.shadowSnapshots.set(shadowSnapshotKey(payload.account_id, payload.symbol, payload.source), structuredClone(payload));
+    },
+    getLatestShadowSnapshot(accountId, symbol, source) {
+      const snapshot = state.shadowSnapshots.get(shadowSnapshotKey(accountId, symbol, source));
+      return snapshot == null ? undefined : structuredClone(snapshot);
     },
     savePendingSignal(payload) {
       const key = symbolKey(accountId(payload), symbolOrDefault(payload));
@@ -328,6 +339,14 @@ export function createSqliteEaStore(path: string): EaStore {
     );
     CREATE INDEX IF NOT EXISTS idx_shadow_comparisons_created
       ON shadow_comparisons(created_at);
+    CREATE TABLE IF NOT EXISTS shadow_snapshots (
+      account_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      source TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (account_id, symbol, source)
+    );
   `);
 
   const saveSnapshot = db.prepare(`
@@ -422,6 +441,16 @@ export function createSqliteEaStore(path: string): EaStore {
     SELECT account_id, symbol, protocol_ok, signal_drift, command_drift, oracle_compared, source, created_at
     FROM shadow_comparisons
     ORDER BY created_at ASC
+  `);
+  const upsertShadowSnapshot = db.prepare(`
+    INSERT INTO shadow_snapshots (account_id, symbol, source, payload_json, updated_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(account_id, symbol, source)
+    DO UPDATE SET payload_json = excluded.payload_json, updated_at = CURRENT_TIMESTAMP
+  `);
+  const selectShadowSnapshot = db.prepare(`
+    SELECT payload_json FROM shadow_snapshots
+    WHERE account_id = ? AND symbol = ? AND source = ?
   `);
 
   return {
@@ -563,6 +592,13 @@ export function createSqliteEaStore(path: string): EaStore {
         created_at: row.created_at
       }));
     },
+    saveShadowSnapshot(payload) {
+      upsertShadowSnapshot.run(payload.account_id, payload.symbol, payload.source, toJson(payload));
+    },
+    getLatestShadowSnapshot(accountId, symbol, source) {
+      const row = selectShadowSnapshot.get(accountId, symbol, source) as { payload_json?: string } | undefined;
+      return typeof row?.payload_json === 'string' ? (fromJson(row.payload_json) as ShadowRuntimeSnapshot) : undefined;
+    },
     savePendingSignal(payload) {
       insertEvent.run('pending_signal', accountId(payload), symbolOrDefault(payload), toJson(payload), 1);
     },
@@ -617,6 +653,10 @@ function accountId(payload: EaRecord): string {
 
 function symbolOrDefault(payload: EaRecord): string {
   return typeof payload.symbol === 'string' && payload.symbol.length > 0 ? payload.symbol : 'XAUUSD';
+}
+
+function shadowSnapshotKey(accountId: string, symbol: string, source: CommandSource): string {
+  return `${accountId}:${symbol}:${source}`;
 }
 
 function currentTimestamp(): string {

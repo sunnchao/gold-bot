@@ -101,4 +101,47 @@ describe('ShadowService', () => {
     });
     expect(store.listShadowComparisons()).toEqual([comparison]);
   });
+
+  it('records runtime snapshots and can compare against oracle payloads later', () => {
+    const store = createInMemoryEaStore();
+    const service = new ShadowService(store, () => '2026-07-03T00:10:00.000Z');
+
+    const snapshot = service.recordRuntimeSnapshot({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      source: 'ea_analysis',
+      signal: { strategy: 'pullback', side: 'BUY', entry: 3335.7 },
+      command: { action: 'SIGNAL', strategy: 'pullback', tp1: 3345 }
+    });
+
+    expect(snapshot).toEqual({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      source: 'ea_analysis',
+      signal: { strategy: 'pullback', side: 'BUY', entry: 3335.7 },
+      command: { action: 'SIGNAL', strategy: 'pullback', tp1: 3345 },
+      created_at: '2026-07-03T00:10:00.000Z'
+    });
+
+    const comparison = service.recordOracleComparison({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      source: 'ea_analysis',
+      oracle: {
+        signal: { strategy: 'pullback', side: 'BUY', entry: 3335.7 },
+        command: { action: 'SIGNAL', strategy: 'pullback', tp1: 3350 }
+      }
+    });
+
+    expect(comparison).toEqual({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      protocol_ok: true,
+      signal_drift: false,
+      command_drift: true,
+      oracle_compared: true,
+      source: 'ea_analysis',
+      created_at: '2026-07-03T00:10:00.000Z'
+    });
+  });
 });

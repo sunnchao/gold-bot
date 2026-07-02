@@ -684,6 +684,48 @@ describe('app-server scaffold', () => {
     ]);
   });
 
+  it('records oracle comparisons against the latest stored runtime snapshot when node payload is omitted', async () => {
+    const store = createInMemoryEaStore();
+    store.saveShadowSnapshot({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      source: 'ea_analysis',
+      signal: { strategy: 'pullback', side: 'BUY', entry: 3335.7 },
+      command: { action: 'SIGNAL', strategy: 'pullback', tp1: 3345 },
+      created_at: '2026-07-03T00:00:00.000Z'
+    });
+    const server = createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/shadow/comparisons',
+      body: {
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        source: 'ea_analysis',
+        oracle: {
+          signal: { strategy: 'pullback', side: 'BUY', entry: 3335.7 },
+          command: { action: 'SIGNAL', strategy: 'pullback', tp1: 3350 }
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      status: 'OK',
+      comparison: {
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        protocol_ok: true,
+        signal_drift: false,
+        command_drift: true,
+        oracle_compared: true,
+        source: 'ea_analysis',
+        created_at: '2026-07-03T00:10:00.000Z'
+      }
+    });
+  });
+
   it('rejects invalid shadow comparison payloads', async () => {
     const server = createAppServer();
 
@@ -869,6 +911,13 @@ describe('app-server scaffold', () => {
         source: 'ai_result'
       })
     ]);
+    expect(store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ai_result')).toEqual(
+      expect.objectContaining({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        source: 'ai_result'
+      })
+    );
   });
 
   it('queues accepted AI trade-plan commands only for cutover accounts', async () => {

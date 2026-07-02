@@ -1,5 +1,5 @@
 import { buildShadowReport } from '@gold-bot/observability';
-import type { EaRecord, EaStore, ShadowComparison } from '@gold-bot/persistence';
+import type { EaRecord, EaStore, ShadowComparison, ShadowRuntimeSnapshot } from '@gold-bot/persistence';
 
 export type ShadowMetrics = {
   status: 'OK';
@@ -34,13 +34,33 @@ export class ShadowService {
     };
   }
 
+  recordRuntimeSnapshot(input: ShadowRuntimeSnapshotInput): ShadowRuntimeSnapshot {
+    const snapshot: ShadowRuntimeSnapshot = {
+      account_id: input.account_id,
+      symbol: input.symbol,
+      source: input.source,
+      signal: input.signal,
+      command: input.command,
+      created_at: input.created_at ?? this.nowIso()
+    };
+    this.store.saveShadowSnapshot(snapshot);
+    return snapshot;
+  }
+
   recordOracleComparison(input: ShadowComparisonInput): ShadowComparison {
+    const runtimeSnapshot =
+      input.node ??
+      this.store.getLatestShadowSnapshot(input.account_id, input.symbol, input.source) ??
+      null;
+    if (runtimeSnapshot == null) {
+      throw new Error('shadow runtime snapshot not found');
+    }
     const comparison: ShadowComparison = {
       account_id: input.account_id,
       symbol: input.symbol,
       protocol_ok: input.protocol_ok ?? true,
-      signal_drift: hasDrift(input.node.signal, input.oracle.signal),
-      command_drift: hasDrift(input.node.command, input.oracle.command),
+      signal_drift: hasDrift(runtimeSnapshot.signal, input.oracle.signal),
+      command_drift: hasDrift(runtimeSnapshot.command, input.oracle.command),
       oracle_compared: true,
       source: input.source,
       created_at: input.created_at ?? this.nowIso()
@@ -50,13 +70,22 @@ export class ShadowService {
   }
 }
 
+export type ShadowRuntimeSnapshotInput = {
+  account_id: string;
+  symbol: string;
+  source: 'ea_analysis' | 'position_review' | 'ai_result';
+  signal?: unknown;
+  command?: unknown;
+  created_at?: string;
+};
+
 export type ShadowComparisonInput = {
   account_id: string;
   symbol: string;
   source: 'ea_analysis' | 'position_review' | 'ai_result';
   protocol_ok?: boolean;
   created_at?: string;
-  node: {
+  node?: {
     signal?: unknown;
     command?: unknown;
   };

@@ -8,3 +8,12 @@ export type ShadowComparison = {
   source: 'ea_analysis' | 'position_review' | 'ai_result';
   created_at: string;
 };
+
+export type ShadowRuntimeSnapshot = {
+  account_id: string;
+  symbol: string;
+  source: 'ea_analysis' | 'position_review' | 'ai_result';
+  signal?: unknown;
+  command?: unknown;
+  created_at: string;
+};

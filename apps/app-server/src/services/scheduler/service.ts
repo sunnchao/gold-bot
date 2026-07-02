@@ -1,11 +1,13 @@
 import type { CommandCandidate } from '@gold-bot/persistence';
 import { AnalysisService } from '../analysis/service.js';
 import { CommandLifecycleService } from '../command-lifecycle/service.js';
+import type { ShadowService } from '../shadow/service.js';
 
 export class SchedulerService {
   constructor(
     private readonly analysis: AnalysisService,
-    private readonly commandLifecycle: CommandLifecycleService
+    private readonly commandLifecycle: CommandLifecycleService,
+    private readonly shadow?: ShadowService
   ) {}
 
   enqueueAnalysis(accountId: string, symbol: string): void {
@@ -14,6 +16,13 @@ export class SchedulerService {
 
   enqueuePositionReview(accountId: string, symbol: string): void {
     const result = this.analysis.analyzeAccountSymbol(accountId, symbol);
+    this.shadow?.recordRuntimeSnapshot({
+      account_id: accountId,
+      symbol,
+      source: 'position_review',
+      signal: null,
+      command: result.replay.position_commands,
+    });
     for (const [index, command] of (result.replay.position_commands ?? []).entries()) {
       const candidate: CommandCandidate = {
         command_id: `pos_${accountId}_${command.ticket}_${command.action}_${index}_${Date.now()}`,
@@ -31,6 +40,13 @@ export class SchedulerService {
 
   private publishReplaySignal(accountId: string, symbol: string): void {
     const result = this.analysis.analyzeAccountSymbol(accountId, symbol);
+    this.shadow?.recordRuntimeSnapshot({
+      account_id: accountId,
+      symbol,
+      source: 'ea_analysis',
+      signal: result.replay.signal,
+      command: null,
+    });
     const signal = result.replay.signal;
     if (signal == null) {
       return;

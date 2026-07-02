@@ -1,5 +1,6 @@
 import type { EaRecord, EaStore } from '@gold-bot/persistence';
 import type { CommandLifecycleService } from '../services/command-lifecycle/service.js';
+import type { ShadowService } from '../services/shadow/service.js';
 import { error, type JsonResponse } from '../http/response.js';
 
 export type AIRouteRequest = {
@@ -12,6 +13,7 @@ export type AIRouteDeps = {
   store: EaStore;
   nowIso: () => string;
   commandLifecycle: CommandLifecycleService;
+  shadow: ShadowService;
 };
 
 export type AIRouteHelpers = {

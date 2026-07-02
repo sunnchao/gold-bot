@@ -120,6 +120,28 @@ describe('persistence scaffold', () => {
     });
   });
 
+  it('stores and reloads the latest shadow runtime snapshot by account, symbol, and source', () => {
+    const store = createInMemoryEaStore();
+
+    store.saveShadowSnapshot({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      source: 'ea_analysis',
+      signal: { strategy: 'pullback', side: 'BUY' },
+      command: { action: 'SIGNAL', tp1: 3345 },
+      created_at: '2026-07-03T00:00:00.000Z'
+    });
+
+    expect(store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ea_analysis')).toEqual({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      source: 'ea_analysis',
+      signal: { strategy: 'pullback', side: 'BUY' },
+      command: { action: 'SIGNAL', tp1: 3345 },
+      created_at: '2026-07-03T00:00:00.000Z'
+    });
+  });
+
   it('lists account symbols and explicitly stored pending signals', () => {
     const store = createInMemoryEaStore();
     const pendingSignal = {
@@ -180,6 +202,14 @@ describe('persistence scaffold', () => {
       store.savePositions({ account_id: '90011087', positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY' }] });
       store.savePendingSignal({ id: 1, account_id: '90011087', symbol: 'XAUUSD', strategy: 'pullback', side: 'buy' });
       store.saveAIResult('90011087', 'XAUUSD', { confidence: 82 });
+      store.saveShadowSnapshot({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        source: 'ea_analysis',
+        signal: { strategy: 'pullback', side: 'BUY' },
+        command: { action: 'SIGNAL', tp1: 3358 },
+        created_at: '2026-07-03T00:00:00.000Z'
+      });
       store.enqueueCommand('90011087', command);
       store.setRuntimeMode('90011087', 'cutover');
       const candidate = store.saveCommandCandidate('90011087', {
@@ -204,6 +234,14 @@ describe('persistence scaffold', () => {
       expect(reopened.getAIResults('90011087')).toHaveLength(1);
       expect(reopened.listSymbols('90011087')).toEqual(['XAUUSD', 'GBPJPY']);
       expect(reopened.getRuntimeMode('90011087')).toBe('cutover');
+      expect(reopened.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ea_analysis')).toEqual({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        source: 'ea_analysis',
+        signal: { strategy: 'pullback', side: 'BUY' },
+        command: { action: 'SIGNAL', tp1: 3358 },
+        created_at: '2026-07-03T00:00:00.000Z'
+      });
       expect(reopened.getCommand('candidate_1')).toMatchObject({
         status: 'acked',
         result: 'filled',

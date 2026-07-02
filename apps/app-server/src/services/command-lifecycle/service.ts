@@ -1,10 +1,12 @@
 import type { CommandCandidate, EaStore, StoredCommand } from '@gold-bot/persistence';
 import type { RuntimeMode } from '@gold-bot/shared-contracts';
+import type { ShadowService } from '../shadow/service.js';
 
 export class CommandLifecycleService {
   constructor(
     private readonly store: EaStore,
-    private readonly defaultRuntimeMode: RuntimeMode = 'oracle'
+    private readonly defaultRuntimeMode: RuntimeMode = 'oracle',
+    private readonly shadow?: ShadowService
   ) {}
 
   acceptCandidate(accountId: string, candidate: CommandCandidate): StoredCommand {
@@ -16,6 +18,13 @@ export class CommandLifecycleService {
       this.store.demoteCommandToShadowOnly(stored.command_id);
     }
     const resolved = this.store.getCommand(stored.command_id) ?? stored;
+    this.shadow?.recordRuntimeSnapshot({
+      account_id: accountId,
+      symbol: typeof resolved.symbol === 'string' && resolved.symbol.length > 0 ? resolved.symbol : 'XAUUSD',
+      source: resolved.source,
+      command: resolved,
+      created_at: resolved.created_at
+    });
     this.store.recordShadowComparison({
       account_id: accountId,
       symbol: typeof resolved.symbol === 'string' && resolved.symbol.length > 0 ? resolved.symbol : 'XAUUSD',

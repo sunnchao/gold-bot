@@ -90,10 +90,10 @@ export function createAppServer(options: AppServerOptions = {}) {
     tokenAccounts: options.tokenAccounts == null ? null : tokenAccountMap(options.tokenAccounts),
     adminTokens: new Set(options.adminTokens ?? [])
   };
-  const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
-  const commandLifecycle = new CommandLifecycleService(baseDeps.store, options.defaultRuntimeMode ?? 'oracle');
-  const scheduler = new SchedulerService(analysis, commandLifecycle);
   const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso);
+  const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
+  const commandLifecycle = new CommandLifecycleService(baseDeps.store, options.defaultRuntimeMode ?? 'oracle', shadow);
+  const scheduler = new SchedulerService(analysis, commandLifecycle, shadow);
   const deps: AppServerDeps = {
     ...baseDeps,
     commandLifecycle,
@@ -206,34 +206,47 @@ async function routeRequest(
     const source = stringFieldOrEmpty(parsed.body, 'source').trim();
     const node = recordField(parsed.body, 'node');
     const oracle = recordField(parsed.body, 'oracle');
-    if (accountId.length === 0 || symbol.length === 0 || node == null || oracle == null) {
+    if (accountId.length === 0 || symbol.length === 0 || oracle == null) {
       return {
         statusCode: 400,
         body: { status: 'ERROR', message: 'invalid shadow comparison payload' }
       };
     }
-    const comparison = deps.shadow.recordOracleComparison({
-      account_id: accountId,
-      symbol,
-      source: source === 'position_review' || source === 'ai_result' ? source : 'ea_analysis',
-      protocol_ok: parsed.body.protocol_ok === true,
-      created_at: stringFieldOrEmpty(parsed.body, 'created_at') || undefined,
-      node: {
-        signal: recordField(node, 'signal'),
-        command: recordField(node, 'command')
-      },
-      oracle: {
-        signal: recordField(oracle, 'signal'),
-        command: recordField(oracle, 'command')
-      }
-    });
-    return {
-      statusCode: 200,
-      body: {
-        status: 'OK',
-        comparison
-      }
-    };
+    try {
+      const comparison = deps.shadow.recordOracleComparison({
+        account_id: accountId,
+        symbol,
+        source: source === 'position_review' || source === 'ai_result' ? source : 'ea_analysis',
+        ...(typeof parsed.body.protocol_ok === 'boolean' ? { protocol_ok: parsed.body.protocol_ok } : {}),
+        created_at: stringFieldOrEmpty(parsed.body, 'created_at') || undefined,
+        ...(node == null
+          ? {}
+          : {
+              node: {
+                signal: recordField(node, 'signal'),
+                command: recordField(node, 'command')
+              }
+            }),
+        oracle: {
+          signal: recordField(oracle, 'signal'),
+          command: recordField(oracle, 'command')
+        }
+      });
+      return {
+        statusCode: 200,
+        body: {
+          status: 'OK',
+          comparison
+        }
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'invalid shadow comparison payload';
+      const statusCode = message === 'shadow runtime snapshot not found' ? 404 : 400;
+      return {
+        statusCode,
+        body: { status: 'ERROR', message }
+      };
+    }
   }
 
   if (path.startsWith('/api/')) {
@@ -448,7 +461,7 @@ function handleAIResultRoute(
   accountId: string,
   symbol: string,
   rawBody: string,
-  deps: Pick<AppServerDeps, 'store' | 'nowIso' | 'commandLifecycle'>
+  deps: Pick<AppServerDeps, 'store' | 'nowIso' | 'commandLifecycle' | 'shadow'>
 ): JsonResponse {
   if (method !== 'POST') {
     return { statusCode: 405, body: { status: 'ERROR', message: 'method not allowed' } };
@@ -474,6 +487,17 @@ function handleAIResultRoute(
   const command = riskGate.status === 'accepted' && mode !== 'observe' && mode !== 'veto'
     ? deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(accountId, symbol, tradePlan))
     : undefined;
+  deps.shadow.recordRuntimeSnapshot({
+    account_id: accountId,
+    symbol,
+    source: 'ai_result',
+    signal: null,
+    command: command ?? {
+      decision_id: decisionId,
+      mode,
+      risk_gate: riskGate
+    }
+  });
   return {
     statusCode: 200,
     body: {
