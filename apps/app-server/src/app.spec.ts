@@ -523,6 +523,32 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(userToken.body)).toEqual({ status: 'ERROR', message: 'admin only' });
   });
 
+  it('serves the deprecated trigger_ai endpoint behind token auth', async () => {
+    const server = createApiServer();
+    const expected = {
+      status: 'OK',
+      message: 'AI analysis is now handled by Gateway Cron tasks. This endpoint is deprecated.',
+      deprecated: true
+    };
+
+    const missingToken = await server.inject({
+      method: 'GET',
+      url: '/api/trigger_ai'
+    });
+    expect(missingToken.statusCode).toBe(401);
+    expect(JSON.parse(missingToken.body)).toEqual({ status: 'ERROR', message: 'invalid token' });
+
+    for (const method of ['GET', 'POST']) {
+      const response = await server.inject({
+        method,
+        url: '/api/trigger_ai',
+        headers: apiUserHeaders
+      });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual(expected);
+    }
+  });
+
   it('serves read-only admin symbol and dashboard routes from Node snapshots', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });

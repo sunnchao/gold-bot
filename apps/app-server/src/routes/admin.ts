@@ -41,6 +41,21 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
     (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'audit') ||
     (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'events' && parts[3] === 'stream');
 
+  if (parts[0] === 'api' && parts[1] === 'trigger_ai' && parts.length === 2) {
+    const tokenResult = requireRouteToken(deps.validTokens, request.headers, request.url);
+    if (tokenResult.response != null) {
+      return tokenResult.response;
+    }
+    return {
+      statusCode: 200,
+      body: {
+        status: 'OK',
+        message: 'AI analysis is now handled by Gateway Cron tasks. This endpoint is deprecated.',
+        deprecated: true
+      }
+    };
+  }
+
   if (
     parts[0] === 'api' &&
     parts[1] === 'v1' &&
