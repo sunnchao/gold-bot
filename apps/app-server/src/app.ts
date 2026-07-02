@@ -28,6 +28,8 @@ import { requireRouteToken } from './middleware/auth.js';
 import { handleEaRoute as routeEa } from './routes/ea.js';
 import { handleAdminRoute as routeAdmin } from './routes/admin.js';
 import { handleAIRoute as routeAI } from './routes/ai.js';
+import { createIndicatorAlertCache, handleIndicatorAlertRoute as routeIndicatorAlert, type IndicatorAlertCache } from './routes/indicator-alert.js';
+import { handleVisualRoute as routeVisual } from './routes/visual.js';
 import { AnalysisService } from './services/analysis/service.js';
 import { CommandLifecycleService } from './services/command-lifecycle/service.js';
 import { SchedulerService } from './services/scheduler/service.js';
@@ -66,6 +68,7 @@ type AppServerDeps = {
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;
   releaseRoot: string;
+  alerts: IndicatorAlertCache;
   commandLifecycle: CommandLifecycleService;
   scheduler: SchedulerService;
   shadow: ShadowService;
@@ -96,14 +99,16 @@ const VALID_TRADE_PLAN_SIDES = new Set(['buy', 'sell', 'none']);
 const AI_RISK_EXIT_SUGGESTIONS = new Set(['close_partial', 'close_all', 'close_short']);
 
 export function createAppServer(options: AppServerOptions = {}) {
+  const nowUnix = options.nowUnix ?? (() => Math.floor(Date.now() / 1000));
   const baseDeps = {
     store: options.store ?? createInMemoryEaStore(),
-    nowUnix: options.nowUnix ?? (() => Math.floor(Date.now() / 1000)),
+    nowUnix,
     nowIso: options.nowIso ?? (() => new Date().toISOString()),
     validTokens: options.validTokens == null ? null : new Set(options.validTokens),
     tokenAccounts: options.tokenAccounts == null ? null : tokenAccountMap(options.tokenAccounts),
     adminTokens: new Set(options.adminTokens ?? []),
-    releaseRoot: options.releaseRoot ?? DEFAULT_RELEASE_ROOT
+    releaseRoot: options.releaseRoot ?? DEFAULT_RELEASE_ROOT,
+    alerts: createIndicatorAlertCache(() => nowUnix() * 1000)
   };
   const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso);
   const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
@@ -233,6 +238,42 @@ async function routeRequest(
       statusCode: 200,
       body: deps.shadow.qualification()
     };
+  }
+
+  if (path === '/indicator_alert/store' || path === '/indicator_alert/poll') {
+    return routeIndicatorAlert(
+      {
+        method,
+        path,
+        headers: request.headers,
+        url: request.url,
+        rawBody: request.rawBody
+      },
+      {
+        validTokens: deps.validTokens,
+        alerts: deps.alerts
+      }
+    );
+  }
+
+  if (path === '/visual/poll') {
+    return routeVisual(
+      {
+        method,
+        path,
+        headers: request.headers,
+        url: request.url,
+        rawBody: request.rawBody
+      },
+      {
+        store: deps.store,
+        nowIso: deps.nowIso,
+        validTokens: deps.validTokens,
+        tokenAccounts: deps.tokenAccounts,
+        adminTokens: deps.adminTokens,
+        alerts: deps.alerts
+      }
+    );
   }
 
   if (method === 'POST' && path === '/shadow/comparisons') {

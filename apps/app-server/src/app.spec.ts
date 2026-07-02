@@ -222,6 +222,214 @@ describe('app-server scaffold', () => {
     }
   });
 
+  it('stores and polls indicator alerts with duplicate suppression', async () => {
+    const server = createApiServer({ nowUnix: () => 1772342400 });
+    const alert = {
+      id: 'alert_1',
+      type: 'divergence',
+      indicator: 'RSI',
+      direction: 'bullish',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      time: '2026-04-13T08:00:00.000Z',
+      price: 3335.75,
+      strength: 8,
+      confidence: 82,
+      description: 'RSI bullish divergence'
+    };
+
+    const first = await server.inject({
+      method: 'POST',
+      url: '/indicator_alert/store',
+      headers: apiUserHeaders,
+      body: alert
+    });
+    const duplicate = await server.inject({
+      method: 'POST',
+      url: '/indicator_alert/store',
+      headers: apiUserHeaders,
+      body: alert
+    });
+    const poll = await server.inject({
+      method: 'POST',
+      url: '/indicator_alert/poll',
+      headers: apiUserHeaders,
+      body: { account_id: 'ignored-by-go' }
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(JSON.parse(first.body)).toEqual({ status: 'ok', should_send: true });
+    expect(duplicate.statusCode).toBe(200);
+    expect(JSON.parse(duplicate.body)).toEqual({ status: 'ok', should_send: false });
+    expect(poll.statusCode).toBe(200);
+    expect(JSON.parse(poll.body)).toEqual({ status: 'ok', count: 1, alerts: [alert] });
+  });
+
+  it('rejects invalid indicator alert requests', async () => {
+    const server = createApiServer();
+
+    const method = await server.inject({
+      method: 'GET',
+      url: '/indicator_alert/store',
+      headers: apiUserHeaders
+    });
+    const json = await server.inject({
+      method: 'POST',
+      url: '/indicator_alert/store',
+      headers: apiUserHeaders,
+      body: '{bad-json'
+    });
+
+    expect(method.statusCode).toBe(405);
+    expect(JSON.parse(method.body)).toEqual({ status: 'ERROR', message: 'method not allowed' });
+    expect(json.statusCode).toBe(400);
+    expect(JSON.parse(json.body)).toEqual({ status: 'ERROR', message: 'invalid json' });
+  });
+
+  it('serves visual poll with tick, AI trade plan, and matching alerts', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:05:00.000Z', nowUnix: () => 1772342400 });
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3335.55,
+      ask: 3335.75,
+      spread: 20,
+      time: '08:00:00'
+    });
+    store.saveAIResult('90011087', 'XAUUSD', {
+      bias: 'bullish',
+      confidence: 82,
+      exit_suggestion: 'hold',
+      risk_alert: false,
+      alert_reason: '',
+      decision_id: 'tpv1_abc123',
+      trade_plan: {
+        mode: 'approve',
+        side: 'buy',
+        entry_zone: { min: 3330, max: 3334 },
+        stop_loss: 3320,
+        take_profit: 3360,
+        risk_gate: { status: 'accepted' },
+        narrative: 'trade plan narrative'
+      }
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/indicator_alert/store',
+      headers: apiUserHeaders,
+      body: {
+        id: 'alert_xau_h1',
+        type: 'divergence',
+        indicator: 'RSI',
+        direction: 'bullish',
+        symbol: 'XAUUSD',
+        timeframe: 'H1',
+        time: '2026-04-13T08:00:00.000Z',
+        price: 3335.75,
+        strength: 8,
+        confidence: 82,
+        description: 'RSI bullish divergence'
+      }
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/indicator_alert/store',
+      headers: apiUserHeaders,
+      body: {
+        id: 'alert_gbp_m15',
+        type: 'divergence',
+        indicator: 'RSI',
+        direction: 'bearish',
+        symbol: 'GBPJPY',
+        timeframe: 'M15',
+        time: '2026-04-13T08:00:00.000Z',
+        price: 190.1,
+        strength: 5,
+        confidence: 60,
+        description: 'GBPJPY alert'
+      }
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/visual/poll',
+      headers: apiUserHeaders,
+      body: { account_id: '90011087', symbol: 'XAUUSD', timeframe: 'H1' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      status: 'ok',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      server_time: '2026-04-13T08:05:00.000Z',
+      tick: {
+        symbol: 'XAUUSD',
+        bid: 3335.55,
+        ask: 3335.75,
+        spread: 20,
+        time: '08:00:00'
+      },
+      ai: {
+        has_result: true,
+        bias: 'bullish',
+        confidence: 82,
+        exit_suggestion: 'hold',
+        risk_alert: false,
+        alert_reason: '',
+        decision_id: 'tpv1_abc123',
+        trade_plan_mode: 'approve',
+        side: 'buy',
+        entry_min: 3330,
+        entry_max: 3334,
+        stop_loss: 3320,
+        take_profit: 3360,
+        risk_gate_status: 'accepted',
+        narrative: 'trade plan narrative'
+      },
+      alerts: [
+        {
+          id: 'alert_xau_h1',
+          type: 'divergence',
+          indicator: 'RSI',
+          direction: 'bullish',
+          symbol: 'XAUUSD',
+          timeframe: 'H1',
+          time: '2026-04-13T08:00:00.000Z',
+          price: 3335.75,
+          strength: 8,
+          confidence: 82,
+          description: 'RSI bullish divergence'
+        }
+      ],
+      count: 1
+    });
+  });
+
+  it('rejects invalid visual poll requests', async () => {
+    const server = createApiServer();
+
+    const missing = await server.inject({
+      method: 'POST',
+      url: '/visual/poll',
+      headers: apiUserHeaders,
+      body: { account_id: '90011087' }
+    });
+    const forbidden = await server.inject({
+      method: 'POST',
+      url: '/visual/poll',
+      headers: apiUserHeaders,
+      body: { account_id: '90022098', symbol: 'XAUUSD' }
+    });
+
+    expect(missing.statusCode).toBe(400);
+    expect(JSON.parse(missing.body)).toEqual({ status: 'ERROR', message: 'account_id and symbol are required' });
+    expect(forbidden.statusCode).toBe(403);
+    expect(JSON.parse(forbidden.body)).toEqual({ status: 'ERROR', message: 'forbidden' });
+  });
+
   it('accepts safe EA lifecycle routes with Go-shaped responses and stores payloads', async () => {
     const store = createInMemoryEaStore();
     const server = createAppServer({ store, nowUnix: () => 1772342400 });
