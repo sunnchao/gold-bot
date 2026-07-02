@@ -26,7 +26,7 @@ import { type JsonResponse } from './http/response.js';
 import { parseJsonObject } from './http/json.js';
 import { requireRouteToken } from './middleware/auth.js';
 import { handleEaRoute as routeEa } from './routes/ea.js';
-import { handleAdminRoute as routeAdmin } from './routes/admin.js';
+import { handleAdminRoute as routeAdmin, type ApiTokenRecord } from './routes/admin.js';
 import { handleAIRoute as routeAI } from './routes/ai.js';
 import { createIndicatorAlertCache, handleIndicatorAlertRoute as routeIndicatorAlert, type IndicatorAlertCache } from './routes/indicator-alert.js';
 import { handleVisualRoute as routeVisual } from './routes/visual.js';
@@ -67,6 +67,7 @@ type AppServerDeps = {
   validTokens: Set<string> | null;
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;
+  tokenRecords: Map<string, ApiTokenRecord>;
   releaseRoot: string;
   alerts: IndicatorAlertCache;
   commandLifecycle: CommandLifecycleService;
@@ -100,13 +101,19 @@ const AI_RISK_EXIT_SUGGESTIONS = new Set(['close_partial', 'close_all', 'close_s
 
 export function createAppServer(options: AppServerOptions = {}) {
   const nowUnix = options.nowUnix ?? (() => Math.floor(Date.now() / 1000));
+  const validTokens = options.validTokens == null ? null : new Set(options.validTokens);
+  const adminTokens = new Set(options.adminTokens ?? []);
+  const tokenAccounts = validTokens == null
+    ? null
+    : tokenAccountMap(options.tokenAccounts ?? Object.fromEntries(Array.from(validTokens, (token) => [token, []])));
   const baseDeps = {
     store: options.store ?? createInMemoryEaStore(),
     nowUnix,
     nowIso: options.nowIso ?? (() => new Date().toISOString()),
-    validTokens: options.validTokens == null ? null : new Set(options.validTokens),
-    tokenAccounts: options.tokenAccounts == null ? null : tokenAccountMap(options.tokenAccounts),
-    adminTokens: new Set(options.adminTokens ?? []),
+    validTokens,
+    tokenAccounts,
+    adminTokens,
+    tokenRecords: bootstrapTokenRecords(validTokens, tokenAccounts, adminTokens),
     releaseRoot: options.releaseRoot ?? DEFAULT_RELEASE_ROOT,
     alerts: createIndicatorAlertCache(() => nowUnix() * 1000)
   };
@@ -513,6 +520,26 @@ function normalizePositionsPayload(body: EaRecord, store: EaStore): string | nul
 
 function tokenAccountMap(input: Record<string, readonly string[]>): Map<string, Set<string>> {
   return new Map(Object.entries(input).map(([token, accounts]) => [token, new Set(accounts)]));
+}
+
+function bootstrapTokenRecords(
+  validTokens: Set<string> | null,
+  tokenAccounts: Map<string, Set<string>> | null,
+  adminTokens: Set<string>
+): Map<string, ApiTokenRecord> {
+  const records = new Map<string, ApiTokenRecord>();
+  if (validTokens == null) {
+    return records;
+  }
+  for (const token of validTokens) {
+    records.set(token, {
+      token,
+      name: adminTokens.has(token) ? 'admin' : '',
+      accounts: Array.from(tokenAccounts?.get(token) ?? []),
+      isAdmin: adminTokens.has(token)
+    });
+  }
+  return records;
 }
 
 function tradingCoreAnalysis(store: EaStore, accountId: string, symbol: string, timestamp: string): EaRecord {

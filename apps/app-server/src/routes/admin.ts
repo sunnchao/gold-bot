@@ -1,9 +1,17 @@
 import type { HeaderMap } from '@gold-bot/shared-contracts';
 import type { EaRecord, EaStore } from '@gold-bot/persistence';
 import { eventStreamHeaders } from '@gold-bot/observability';
+import { randomBytes } from 'node:crypto';
 import { authorizeRouteAccount, requireAdminRoute, requireRouteToken } from '../middleware/auth.js';
 import { parseJsonObject } from '../http/json.js';
 import { error, type JsonResponse } from '../http/response.js';
+
+export type ApiTokenRecord = {
+  token: string;
+  name: string;
+  accounts: string[];
+  isAdmin: boolean;
+};
 
 export type AdminRouteRequest = {
   method: string;
@@ -19,6 +27,7 @@ export type AdminRouteDeps = {
   validTokens: Set<string> | null;
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;
+  tokenRecords: Map<string, ApiTokenRecord>;
 };
 
 export type AdminRouteHelpers = {
@@ -164,6 +173,67 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       }
     };
   }
+  if (parts[0] === 'api' && parts[1] === 'tokens' && parts.length === 2) {
+    const tokenResult = requireAdminRoute(deps.validTokens, deps.adminTokens, request.headers, request.url);
+    if (tokenResult.response != null) {
+      return tokenResult.response;
+    }
+    if (request.method === 'GET') {
+      return {
+        statusCode: 200,
+        body: {
+          status: 'OK',
+          tokens: listTokenRecords(deps.tokenRecords)
+        }
+      };
+    }
+    if (request.method === 'POST') {
+      const parsed = parseJsonObject(request.rawBody);
+      if (!parsed.ok) {
+        return error(400, 'invalid JSON');
+      }
+      const token = randomBytes(24).toString('base64url');
+      const name = stringField(parsed.body, 'name');
+      const accounts = stringArrayField(parsed.body, 'accounts');
+      deps.validTokens?.add(token);
+      deps.tokenAccounts?.set(token, new Set(accounts));
+      deps.tokenRecords.set(token, { token, name, accounts, isAdmin: false });
+      return {
+        statusCode: 200,
+        body: {
+          status: 'OK',
+          token,
+          name,
+          accounts
+        }
+      };
+    }
+    return error(405, 'method not allowed');
+  }
+  if (parts[0] === 'api' && parts[1] === 'tokens' && parts[2] != null && parts.length === 3) {
+    const tokenResult = requireAdminRoute(deps.validTokens, deps.adminTokens, request.headers, request.url);
+    if (tokenResult.response != null) {
+      return tokenResult.response;
+    }
+    if (request.method !== 'DELETE') {
+      return error(405, 'method not allowed');
+    }
+    const token = findTokenByPrefix(deps.tokenRecords, parts[2]);
+    if (token == null) {
+      return error(404, 'token not found');
+    }
+    deps.tokenRecords.delete(token);
+    deps.validTokens?.delete(token);
+    deps.tokenAccounts?.delete(token);
+    deps.adminTokens.delete(token);
+    return {
+      statusCode: 200,
+      body: {
+        status: 'OK',
+        revoked: maskToken(token)
+      }
+    };
+  }
   if (request.method !== 'GET') {
     return error(405, 'method not allowed');
   }
@@ -261,4 +331,36 @@ function parseDecisionLimit(raw: string): number | undefined | null {
 function stringField(record: EaRecord, field: string): string {
   const value = record[field];
   return typeof value === 'string' ? value : '';
+}
+
+function stringArrayField(record: EaRecord, field: string): string[] {
+  const value = record[field];
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+}
+
+function listTokenRecords(records: Map<string, ApiTokenRecord>): EaRecord {
+  const out: EaRecord = {};
+  for (const record of records.values()) {
+    if (!record.isAdmin) {
+      out[maskToken(record.token)] = {
+        accounts: record.accounts,
+        name: record.name,
+        full_token: record.token
+      };
+    }
+  }
+  return out;
+}
+
+function findTokenByPrefix(records: Map<string, ApiTokenRecord>, prefix: string): string | undefined {
+  for (const token of records.keys()) {
+    if (token === prefix || token.startsWith(prefix)) {
+      return token;
+    }
+  }
+  return undefined;
+}
+
+function maskToken(token: string): string {
+  return token.length <= 8 ? token : `${token.slice(0, 4)}...${token.slice(-4)}`;
 }

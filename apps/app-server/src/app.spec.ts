@@ -764,6 +764,71 @@ describe('app-server scaffold', () => {
     expect(store.getHeartbeat('90022000')).toMatchObject({ balance: 2000 });
   });
 
+  it('manages API tokens behind admin auth', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store });
+
+    const created = await server.inject({
+      method: 'POST',
+      url: '/api/tokens',
+      headers: apiAdminHeaders,
+      body: { name: 'Desk', accounts: ['90011087', '90022000'] }
+    });
+
+    expect(created.statusCode).toBe(200);
+    const createdBody = JSON.parse(created.body) as { status: string; token: string; name: string; accounts: string[] };
+    expect(createdBody.status).toBe('OK');
+    expect(createdBody.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(createdBody.name).toBe('Desk');
+    expect(createdBody.accounts).toEqual(['90011087', '90022000']);
+
+    const listed = await server.inject({
+      method: 'GET',
+      url: '/api/tokens',
+      headers: apiAdminHeaders
+    });
+    expect(listed.statusCode).toBe(200);
+    const listedBody = JSON.parse(listed.body) as {
+      status: string;
+      tokens: Record<string, { name: string; accounts: string[]; full_token: string }>;
+    };
+    const listedToken = Object.values(listedBody.tokens).find((token) => token.full_token === createdBody.token);
+    expect(listedBody.status).toBe('OK');
+    expect(listedToken).toEqual({
+      name: 'Desk',
+      accounts: ['90011087', '90022000'],
+      full_token: createdBody.token
+    });
+
+    const allowed = await server.inject({
+      method: 'POST',
+      url: '/heartbeat',
+      headers: { 'X-API-Token': createdBody.token },
+      body: { account_id: '90022000', equity: 2000 }
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(store.getHeartbeat('90022000')).toMatchObject({ equity: 2000 });
+
+    const deleted = await server.inject({
+      method: 'DELETE',
+      url: `/api/tokens/${createdBody.token.slice(0, 8)}`,
+      headers: apiAdminHeaders
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(JSON.parse(deleted.body)).toEqual({
+      status: 'OK',
+      revoked: `${createdBody.token.slice(0, 4)}...${createdBody.token.slice(-4)}`
+    });
+
+    const rejected = await server.inject({
+      method: 'POST',
+      url: '/heartbeat',
+      headers: { 'X-API-Token': createdBody.token },
+      body: { account_id: '90022000', equity: 3000 }
+    });
+    expect(rejected.statusCode).toBe(401);
+  });
+
   it('binds a valid EA token to its first account before rejecting later accounts', async () => {
     const store = createInMemoryEaStore();
     const server = createAppServer({
