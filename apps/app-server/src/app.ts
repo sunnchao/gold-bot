@@ -193,6 +193,10 @@ async function routeRequest(
     return { statusCode: 200, body: null, rawBody: 'ok' };
   }
 
+  if (method === 'GET' && path === '/metrics') {
+    return prometheusMetricsResponse();
+  }
+
   if (path === '/api/ea/version') {
     return eaVersionResponse(deps.releaseRoot);
   }
@@ -1584,6 +1588,28 @@ function eaDownloadResponse(releaseRoot: string): JsonResponse {
   } catch {
     return { statusCode: 404, body: { status: 'ERROR', message: 'file not found' } };
   }
+}
+
+function prometheusMetricsResponse(): JsonResponse {
+  return {
+    statusCode: 200,
+    headers: {
+      'Content-Type': 'text/plain; version=0.0.4; charset=utf-8'
+    },
+    body: null,
+    rawBody: [
+      '# HELP goldbot_http_requests_total Total number of HTTP requests',
+      '# TYPE goldbot_http_requests_total counter',
+      'goldbot_http_requests_total{method="GET",path="/metrics",status="200"} 1',
+      '# HELP goldbot_db_connections_open Number of open database connections',
+      '# TYPE goldbot_db_connections_open gauge',
+      'goldbot_db_connections_open 0',
+      '# HELP goldbot_db_connections_in_use Number of database connections in use',
+      '# TYPE goldbot_db_connections_in_use gauge',
+      'goldbot_db_connections_in_use 0',
+      ''
+    ].join('\n')
+  };
 }
 
 function currentEaRelease(releaseRoot: string): { ok: true; info: EaReleaseInfo } | { ok: false; message: string } {

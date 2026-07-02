@@ -126,6 +126,19 @@ describe('app-server scaffold', () => {
     expect(response.body).toBe('ok');
   });
 
+  it('serves Go-compatible Prometheus metrics text', async () => {
+    const server = createAppServer();
+    const response = await server.inject({
+      method: 'GET',
+      url: '/metrics'
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/plain');
+    expect(response.body).toContain('# HELP goldbot_http_requests_total');
+    expect(response.body).toContain('goldbot_http_requests_total');
+  });
+
   it('serves public EA release version metadata', async () => {
     const server = createApiServer();
 
