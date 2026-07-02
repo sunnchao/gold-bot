@@ -668,11 +668,123 @@ describe('app-server scaffold', () => {
         body: fixture.request.body
       });
       expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body)).toEqual(fixture.response.body);
+      if (name === 'ai-result-v2-trade-plan') {
+        expect(JSON.parse(response.body)).toMatchObject({
+          ...(fixture.response.body as Record<string, unknown>),
+          command_status: 'shadow_only'
+        });
+      } else {
+        expect(JSON.parse(response.body)).toEqual(fixture.response.body);
+      }
     }
 
     expect(store.getAIResults('90011087')).toHaveLength(2);
     expect(store.pollCommands('90011087')).toEqual([]);
+  });
+
+  it('keeps accepted AI trade-plan commands shadow_only while the account is in shadow mode', async () => {
+    const store = createInMemoryEaStore();
+    store.setRuntimeMode('90011087', 'shadow');
+    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+
+    store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    store.saveHeartbeat({
+      account_id: '90011087',
+      equity: 10000,
+      free_margin: 9000,
+      market_open: true,
+      is_trade_allowed: true
+    });
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3335.5,
+      ask: 3335.7,
+      spread: 0.2,
+      time: '2026-04-13T15:59:30+08:00'
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v2/ai_result/90011087/XAUUSD',
+      body: {
+        trade_plan: {
+          schema_version: 'trade_plan.v1',
+          decision_id: 'tpv1_shadow_mode',
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          mode: 'approve',
+          side: 'buy',
+          entry_zone: { min: 3335.5, max: 3335.7 },
+          stop_loss: 3330,
+          take_profit: [3345],
+          max_lots: 0.1,
+          confidence: 80,
+          expires_at: '2099-06-06T09:15:00Z',
+          reason_codes: ['mode.approve', 'side.buy'],
+          narrative: 'shadow mode should store but not queue'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      command_status: 'shadow_only'
+    });
+    expect(store.listCommands('90011087').map((command) => command.status)).toEqual(['shadow_only']);
+    expect(store.pollCommands('90011087')).toEqual([]);
+  });
+
+  it('queues accepted AI trade-plan commands only for cutover accounts', async () => {
+    const store = createInMemoryEaStore();
+    store.setRuntimeMode('90011087', 'cutover');
+    const server = createAppServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+
+    store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    store.saveHeartbeat({
+      account_id: '90011087',
+      equity: 10000,
+      free_margin: 9000,
+      market_open: true,
+      is_trade_allowed: true
+    });
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3335.5,
+      ask: 3335.7,
+      spread: 0.2,
+      time: '2026-04-13T15:59:30+08:00'
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v2/ai_result/90011087/XAUUSD',
+      body: {
+        trade_plan: {
+          schema_version: 'trade_plan.v1',
+          decision_id: 'tpv1_cutover_mode',
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          mode: 'approve',
+          side: 'buy',
+          entry_zone: { min: 3335.5, max: 3335.7 },
+          stop_loss: 3330,
+          take_profit: [3345],
+          max_lots: 0.1,
+          confidence: 80,
+          expires_at: '2099-06-06T09:15:00Z',
+          reason_codes: ['mode.approve', 'side.buy'],
+          narrative: 'cutover mode should queue commands'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      command_status: 'queued'
+    });
+    expect(store.pollCommands('90011087')).toHaveLength(1);
   });
 
   it('returns audit-only trade plan risk gate rejects without queueing poll commands', async () => {

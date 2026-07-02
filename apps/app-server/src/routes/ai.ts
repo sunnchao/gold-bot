@@ -1,4 +1,5 @@
 import type { EaRecord, EaStore } from '@gold-bot/persistence';
+import type { CommandLifecycleService } from '../services/command-lifecycle/service.js';
 import { error, type JsonResponse } from '../http/response.js';
 
 export type AIRouteRequest = {
@@ -10,6 +11,7 @@ export type AIRouteRequest = {
 export type AIRouteDeps = {
   store: EaStore;
   nowIso: () => string;
+  commandLifecycle: CommandLifecycleService;
 };
 
 export type AIRouteHelpers = {

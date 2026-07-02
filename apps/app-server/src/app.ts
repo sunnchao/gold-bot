@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { EA_COMPAT_ENDPOINTS, isEaCompatEndpoint, isEaStrategyName, type HeaderMap } from '@gold-bot/shared-contracts';
-import { createInMemoryEaStore, persistenceStatus, type EaRecord, type EaStore } from '@gold-bot/persistence';
+import { createInMemoryEaStore, persistenceStatus, type CommandCandidate, type EaRecord, type EaStore } from '@gold-bot/persistence';
 import {
   adx,
   atr,
@@ -24,6 +24,9 @@ import { parseJsonObject } from './http/json.js';
 import { handleEaRoute as routeEa } from './routes/ea.js';
 import { handleAdminRoute as routeAdmin } from './routes/admin.js';
 import { handleAIRoute as routeAI } from './routes/ai.js';
+import { AnalysisService } from './services/analysis/service.js';
+import { CommandLifecycleService } from './services/command-lifecycle/service.js';
+import { SchedulerService } from './services/scheduler/service.js';
 
 export type InjectRequest = {
   method: string;
@@ -54,6 +57,8 @@ type AppServerDeps = {
   validTokens: Set<string> | null;
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;
+  commandLifecycle: CommandLifecycleService;
+  scheduler: SchedulerService;
 };
 
 const ALLOWED_STRATEGY_MAPPING_KEYS = ['20250231', '20250232', '20250233', '20250234', '20250235', '20250236', '20250237', '20250238'] as const;
@@ -73,13 +78,21 @@ const VALID_TRADE_PLAN_MODES = new Set(['observe', 'veto', 'approve', 'modify', 
 const VALID_TRADE_PLAN_SIDES = new Set(['buy', 'sell', 'none']);
 
 export function createAppServer(options: AppServerOptions = {}) {
-  const deps: AppServerDeps = {
+  const baseDeps = {
     store: options.store ?? createInMemoryEaStore(),
     nowUnix: options.nowUnix ?? (() => Math.floor(Date.now() / 1000)),
     nowIso: options.nowIso ?? (() => new Date().toISOString()),
     validTokens: options.validTokens == null ? null : new Set(options.validTokens),
     tokenAccounts: options.tokenAccounts == null ? null : tokenAccountMap(options.tokenAccounts),
     adminTokens: new Set(options.adminTokens ?? [])
+  };
+  const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
+  const commandLifecycle = new CommandLifecycleService(baseDeps.store);
+  const scheduler = new SchedulerService(analysis, commandLifecycle);
+  const deps: AppServerDeps = {
+    ...baseDeps,
+    commandLifecycle,
+    scheduler
   };
   const appHandler = (req: IncomingMessage, res: ServerResponse): void => {
     void handleHttpRequest(req, res, deps);
@@ -137,9 +150,19 @@ async function routeRequest(
         url: request.url,
         rawBody: request.rawBody
       },
-      deps,
+      {
+        store: deps.store,
+        nowUnix: deps.nowUnix,
+        validTokens: deps.validTokens,
+        tokenAccounts: deps.tokenAccounts,
+        adminTokens: deps.adminTokens,
+        onBarsSaved: (accountId, symbol) => deps.scheduler.enqueueAnalysis(accountId, symbol),
+        onPositionsSaved: (accountId, symbol) => deps.scheduler.enqueuePositionReview(accountId, symbol),
+        onOrderResult: (accountId, commandId, result, ticket) => deps.commandLifecycle.reconcile(accountId, commandId, result, ticket),
+      },
       {
         stringFieldOrEmpty,
+        symbolOrDefault,
         validateEaPayload
       }
     );
@@ -369,7 +392,7 @@ function handleAIResultRoute(
   accountId: string,
   symbol: string,
   rawBody: string,
-  deps: Pick<AppServerDeps, 'store' | 'nowIso'>
+  deps: Pick<AppServerDeps, 'store' | 'nowIso' | 'commandLifecycle'>
 ): JsonResponse {
   if (method !== 'POST') {
     return { statusCode: 405, body: { status: 'ERROR', message: 'method not allowed' } };
@@ -391,6 +414,10 @@ function handleAIResultRoute(
 
   const riskGate = aiTradePlanRiskGate(deps.store, accountId, symbol, tradePlan, deps.nowIso());
   const decisionId = stringFieldOrEmpty(tradePlan, 'decision_id');
+  const mode = stringFieldOrEmpty(tradePlan, 'mode');
+  const command = riskGate.status === 'accepted' && mode !== 'observe' && mode !== 'veto'
+    ? deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(accountId, symbol, tradePlan))
+    : undefined;
   return {
     statusCode: 200,
     body: {
@@ -398,12 +425,13 @@ function handleAIResultRoute(
       received: true,
       decision: {
         decision_id: decisionId,
-        mode: stringFieldOrEmpty(tradePlan, 'mode'),
+        mode,
         symbol: stringFieldOrEmpty(tradePlan, 'symbol') || symbol,
         confidence: numberField(tradePlan, 'confidence')
       },
       risk_gate: riskGate,
-      trade_plan_validation: tradePlanPayload.validation
+      trade_plan_validation: tradePlanPayload.validation,
+      ...(command == null ? {} : { command_status: command.status })
     }
   };
 }
@@ -628,6 +656,29 @@ function aiTradePlanRiskGate(store: EaStore, accountId: string, symbol: string, 
     max_margin_lots: result.maxMarginLots,
     canProduceLiveCommands: result.canProduceLiveCommands
   };
+}
+
+function tradePlanToCommandCandidate(accountId: string, symbol: string, tradePlan: EaRecord): CommandCandidate {
+  const entryZone = recordField(tradePlan, 'entry_zone');
+  const takeProfit = arrayNumberField(tradePlan, 'take_profit');
+  const side = stringFieldOrEmpty(tradePlan, 'side').toUpperCase();
+  const entryMin = entryZone == null ? 0 : numberField(entryZone, 'min');
+  const entryMax = entryZone == null ? entryMin : numberField(entryZone, 'max');
+  return {
+    command_id: stringFieldOrEmpty(tradePlan, 'decision_id'),
+    action: 'SIGNAL',
+    source: 'ai_result',
+    account_id: accountId,
+    symbol,
+    strategy: 'ai_signal',
+    type: side,
+    entry: entryMin > 0 && entryMax > 0 ? round4((entryMin + entryMax) / 2) : entryMin,
+    sl: numberField(tradePlan, 'stop_loss'),
+    tp1: takeProfit[0] ?? 0,
+    tp2: takeProfit[1] ?? takeProfit[0] ?? 0,
+    score: numberField(tradePlan, 'confidence'),
+    mode: stringFieldOrEmpty(tradePlan, 'mode')
+  } satisfies CommandCandidate;
 }
 
 function riskGateEntryZone(value: EaRecord | undefined): { min?: number; max?: number } | undefined {
@@ -1151,6 +1202,10 @@ function booleanField(record: EaRecord, field: string): boolean {
 function stringFieldOrEmpty(record: EaRecord, field: string): string {
   const value = record[field];
   return typeof value === 'string' ? value : '';
+}
+
+function symbolOrDefault(payload: EaRecord): string {
+  return typeof payload.symbol === 'string' && payload.symbol.length > 0 ? payload.symbol : 'XAUUSD';
 }
 
 function currentPriceFromTick(tick: EaRecord): number {

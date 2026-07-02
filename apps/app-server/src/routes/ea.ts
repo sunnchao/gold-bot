@@ -18,10 +18,14 @@ export type EaRouteDeps = {
   validTokens: Set<string> | null;
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;
+  onBarsSaved?: (accountId: string, symbol: string) => void;
+  onPositionsSaved?: (accountId: string, symbol: string) => void;
+  onOrderResult?: (accountId: string, commandId: string, result: string, ticket?: number) => void;
 };
 
 export type EaRouteHelpers = {
   stringFieldOrEmpty: (record: EaRecord, field: string) => string;
+  symbolOrDefault: (record: EaRecord) => string;
   validateEaPayload: (path: string, body: EaRecord, store: EaStore) => string | null;
 };
 
@@ -69,12 +73,14 @@ export function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, helper
       return ok({ status: 'OK' });
     case '/bars':
       deps.store.saveBars(parsed.body);
+      deps.onBarsSaved?.(accountId, helpers.symbolOrDefault(parsed.body));
       return ok({
         status: 'OK',
         received: Array.isArray(parsed.body.bars) ? parsed.body.bars.length : 0
       });
     case '/positions':
       deps.store.savePositions(parsed.body);
+      deps.onPositionsSaved?.(accountId, helpers.symbolOrDefault(parsed.body));
       return ok({
         status: 'OK',
         count: Array.isArray(parsed.body.positions) ? parsed.body.positions.length : 0
@@ -88,7 +94,15 @@ export function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, helper
       });
     }
     case '/order_result':
-      deps.store.saveOrderResult(parsed.body);
+      deps.onOrderResult?.(
+        accountId,
+        helpers.stringFieldOrEmpty(parsed.body, 'command_id'),
+        helpers.stringFieldOrEmpty(parsed.body, 'result'),
+        typeof parsed.body.ticket === 'number' ? parsed.body.ticket : undefined
+      );
+      if (deps.onOrderResult == null) {
+        deps.store.saveOrderResult(parsed.body);
+      }
       return ok({ status: 'OK' });
     default:
       return error(404, 'not found');
