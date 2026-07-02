@@ -2,6 +2,7 @@ import type { HeaderMap } from '@gold-bot/shared-contracts';
 import type { EaRecord, EaStore } from '@gold-bot/persistence';
 import { eventStreamHeaders } from '@gold-bot/observability';
 import { authorizeRouteAccount, requireAdminRoute, requireRouteToken } from '../middleware/auth.js';
+import { parseJsonObject } from '../http/json.js';
 import { error, type JsonResponse } from '../http/response.js';
 
 export type AdminRouteRequest = {
@@ -9,6 +10,7 @@ export type AdminRouteRequest = {
   path: string;
   headers: HeaderMap;
   url: string;
+  rawBody: string;
 };
 
 export type AdminRouteDeps = {
@@ -113,6 +115,55 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       }
     };
   }
+  if (parts[0] === 'api' && parts[1] === 'arbitration' && parts[2] === 'expire' && parts.length === 3) {
+    const tokenResult = requireAdminRoute(deps.validTokens, deps.adminTokens, request.headers, request.url);
+    if (tokenResult.response != null) {
+      return tokenResult.response;
+    }
+    if (request.method !== 'POST') {
+      return error(405, 'method not allowed');
+    }
+    return {
+      statusCode: 200,
+      body: {
+        status: 'OK',
+        expired: deps.store.expirePendingSignals(deps.nowIso())
+      }
+    };
+  }
+  if (parts[0] === 'api' && parts[1] === 'arbitration' && parts[2] != null && parts.length === 3) {
+    const tokenResult = requireAdminRoute(deps.validTokens, deps.adminTokens, request.headers, request.url);
+    if (tokenResult.response != null) {
+      return tokenResult.response;
+    }
+    if (request.method !== 'POST') {
+      return error(405, 'method not allowed');
+    }
+    const signalId = Number(parts[2]);
+    if (!Number.isSafeInteger(signalId)) {
+      return error(400, 'invalid signal_id');
+    }
+    const parsed = parseJsonObject(request.rawBody);
+    if (!parsed.ok) {
+      return error(400, 'invalid JSON');
+    }
+    const result = stringField(parsed.body, 'result');
+    const reason = stringField(parsed.body, 'reason');
+    if (result !== 'approved' && result !== 'rejected') {
+      return error(400, "result must be 'approved' or 'rejected'");
+    }
+    if (!deps.store.updatePendingSignalArbitration(signalId, result, reason)) {
+      return error(500, `update arbitration for signal ${signalId}: not found`);
+    }
+    return {
+      statusCode: 200,
+      body: {
+        status: 'OK',
+        signal_id: signalId,
+        result
+      }
+    };
+  }
   if (request.method !== 'GET') {
     return error(405, 'method not allowed');
   }
@@ -205,4 +256,9 @@ function parseDecisionLimit(raw: string): number | undefined | null {
   }
   const limit = Number(raw);
   return Number.isSafeInteger(limit) && limit >= 1 ? limit : null;
+}
+
+function stringField(record: EaRecord, field: string): string {
+  const value = record[field];
+  return typeof value === 'string' ? value : '';
 }

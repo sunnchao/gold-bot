@@ -354,7 +354,8 @@ async function routeRequest(
         method,
         path,
         headers: request.headers,
-        url: request.url
+        url: request.url,
+        rawBody: request.rawBody
       },
       deps,
       {

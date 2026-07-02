@@ -52,6 +52,8 @@ export type EaStore = {
   listDecisionEvents(filter: DecisionEventFilter): DecisionEvent[];
   savePendingSignal(payload: EaRecord): void;
   getPendingSignals(accountId: string, symbol: string): EaRecord[];
+  updatePendingSignalArbitration(id: number, result: string, reason: string): boolean;
+  expirePendingSignals(nowIso: string): number;
   saveAIResult(accountId: string, symbol: string, payload: EaRecord): void;
   getAIResults(accountId: string): EaRecord[];
   listAccountIds(): string[];
@@ -233,10 +235,16 @@ export function createInMemoryEaStore(): EaStore {
     savePendingSignal(payload) {
       const key = symbolKey(accountId(payload), symbolOrDefault(payload));
       const current = state.pendingSignals.get(key) ?? [];
-      state.pendingSignals.set(key, [...current, cloneRecord(payload)]);
+      state.pendingSignals.set(key, [...current, normalizePendingSignal(payload)]);
     },
     getPendingSignals(accountId, symbol) {
-      return cloneArray(state.pendingSignals.get(symbolKey(accountId, symbol)) ?? []);
+      return pendingSignalsNewestFirst(state.pendingSignals.get(symbolKey(accountId, symbol)) ?? []);
+    },
+    updatePendingSignalArbitration(id, result, reason) {
+      return updatePendingSignalInMemory(state.pendingSignals, id, result, reason);
+    },
+    expirePendingSignals(nowIso) {
+      return expirePendingSignalsInMemory(state.pendingSignals, nowIso);
     },
     saveAIResult(accountId, symbol, payload) {
       const current = state.aiResults.get(accountId) ?? [];
@@ -674,10 +682,16 @@ export function createSqliteEaStore(path: string): EaStore {
       return selectDecisionEvents(db, filter);
     },
     savePendingSignal(payload) {
-      insertEvent.run('pending_signal', accountId(payload), symbolOrDefault(payload), toJson(payload), 1);
+      insertEvent.run('pending_signal', accountId(payload), symbolOrDefault(payload), toJson(normalizePendingSignal(payload)), 1);
     },
     getPendingSignals(accountId, symbol) {
-      return eventPayloads(selectEventsBySymbol, 'pending_signal', accountId, symbol);
+      return pendingSignalsNewestFirst(eventPayloads(selectEventsBySymbol, 'pending_signal', accountId, symbol));
+    },
+    updatePendingSignalArbitration(id, result, reason) {
+      return updatePendingSignalInSqlite(db, id, result, reason);
+    },
+    expirePendingSignals(nowIso) {
+      return expirePendingSignalsInSqlite(db, nowIso);
     },
     saveAIResult(accountId, symbol, payload) {
       insertEvent.run('ai_result', accountId, symbol, toJson({ account_id: accountId, symbol, ...payload }), 1);
@@ -827,6 +841,53 @@ function normalizeDecisionLimit(limit: number | undefined): number {
   return limit == null || limit <= 0 || limit > 200 ? 50 : limit;
 }
 
+function pendingSignalsNewestFirst(signals: EaRecord[]): EaRecord[] {
+  return signals
+    .filter((signal) => stringField(signal, 'status') === 'pending')
+    .sort((left, right) => stringField(right, 'created_at').localeCompare(stringField(left, 'created_at')))
+    .map(cloneRecord);
+}
+
+function normalizePendingSignal(payload: EaRecord): EaRecord {
+  const out = cloneRecord(payload);
+  if (stringField(out, 'status').length === 0) {
+    out.status = 'pending';
+  }
+  return out;
+}
+
+function updatePendingSignalInMemory(signals: Map<string, EaRecord[]>, id: number, result: string, reason: string): boolean {
+  for (const entries of signals.values()) {
+    const signal = entries.find((entry) => numericField(entry, 'id') === id);
+    if (signal != null) {
+      updatePendingSignalPayload(signal, result, reason);
+      return true;
+    }
+  }
+  return false;
+}
+
+function expirePendingSignalsInMemory(signals: Map<string, EaRecord[]>, nowIso: string): number {
+  let expired = 0;
+  for (const entries of signals.values()) {
+    for (const signal of entries) {
+      if (stringField(signal, 'status') === 'pending' && stringField(signal, 'expires_at') < nowIso) {
+        signal.status = 'timeout';
+        signal.arbitration_result = 'timeout';
+        signal.arbitration_reason = 'expired';
+        expired += 1;
+      }
+    }
+  }
+  return expired;
+}
+
+function updatePendingSignalPayload(signal: EaRecord, result: string, reason: string): void {
+  signal.status = result === 'rejected' ? 'rejected' : 'approved';
+  signal.arbitration_result = result;
+  signal.arbitration_reason = reason;
+}
+
 function currentTimestamp(): string {
   return new Date().toISOString();
 }
@@ -834,6 +895,11 @@ function currentTimestamp(): string {
 function stringField(payload: EaRecord, field: string): string {
   const value = payload[field];
   return typeof value === 'string' ? value : '';
+}
+
+function numericField(payload: EaRecord, field: string): number {
+  const value = payload[field];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function symbolKey(accountId: string, symbol: string): string {
@@ -894,6 +960,45 @@ function snapshotRows(db: DatabaseSync, kind: string, accountId: string): EaReco
 
 function eventPayloads(statement: { all(...params: unknown[]): unknown[] }, ...params: unknown[]): EaRecord[] {
   return (statement.all(...params) as Array<{ payload_json: string }>).map((row) => fromJson(row.payload_json) as EaRecord);
+}
+
+function updatePendingSignalInSqlite(db: DatabaseSync, id: number, result: string, reason: string): boolean {
+  const select = db.prepare(`
+    SELECT rowid AS row_id, payload_json FROM ea_events
+    WHERE kind = 'pending_signal'
+    ORDER BY rowid ASC
+  `);
+  const update = db.prepare(`UPDATE ea_events SET payload_json = ? WHERE rowid = ?`);
+  for (const row of select.all() as Array<{ row_id: number; payload_json: string }>) {
+    const payload = fromJson(row.payload_json) as EaRecord;
+    if (numericField(payload, 'id') === id) {
+      updatePendingSignalPayload(payload, result, reason);
+      update.run(toJson(payload), row.row_id);
+      return true;
+    }
+  }
+  return false;
+}
+
+function expirePendingSignalsInSqlite(db: DatabaseSync, nowIso: string): number {
+  const select = db.prepare(`
+    SELECT rowid AS row_id, payload_json FROM ea_events
+    WHERE kind = 'pending_signal'
+    ORDER BY rowid ASC
+  `);
+  const update = db.prepare(`UPDATE ea_events SET payload_json = ? WHERE rowid = ?`);
+  let expired = 0;
+  for (const row of select.all() as Array<{ row_id: number; payload_json: string }>) {
+    const payload = fromJson(row.payload_json) as EaRecord;
+    if (stringField(payload, 'status') === 'pending' && stringField(payload, 'expires_at') < nowIso) {
+      payload.status = 'timeout';
+      payload.arbitration_result = 'timeout';
+      payload.arbitration_reason = 'expired';
+      update.run(toJson(payload), row.row_id);
+      expired += 1;
+    }
+  }
+  return expired;
 }
 
 function selectDecisionEvents(db: DatabaseSync, filter: DecisionEventFilter): DecisionEvent[] {

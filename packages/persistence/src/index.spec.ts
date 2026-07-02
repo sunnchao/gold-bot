@@ -301,6 +301,42 @@ describe('persistence scaffold', () => {
     expect(store.getPendingSignals('90011087', 'GBPJPY')).toEqual([]);
   });
 
+  it('updates and expires pending signal arbitration state', () => {
+    const store = createInMemoryEaStore();
+    store.savePendingSignal({
+      id: 1,
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      side: 'buy',
+      score: 9,
+      strategy: 'pullback',
+      status: 'pending',
+      created_at: '2026-04-13T08:00:00.000Z',
+      expires_at: '2026-04-13T08:10:00.000Z',
+      arbitration_result: '',
+      arbitration_reason: ''
+    });
+    store.savePendingSignal({
+      id: 2,
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      side: 'sell',
+      score: 7,
+      strategy: 'range',
+      status: 'pending',
+      created_at: '2026-04-13T08:01:00.000Z',
+      expires_at: '2026-04-13T08:02:00.000Z',
+      arbitration_result: '',
+      arbitration_reason: ''
+    });
+
+    expect(store.updatePendingSignalArbitration(1, 'approved', 'manual ok')).toBe(true);
+    expect(store.getPendingSignals('90011087', 'XAUUSD').map((signal) => signal.id)).toEqual([2]);
+    expect(store.expirePendingSignals('2026-04-13T08:03:00.000Z')).toBe(1);
+    expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([]);
+    expect(store.updatePendingSignalArbitration(999, 'approved', 'missing')).toBe(false);
+  });
+
   it('persists EA lifecycle snapshots and queued commands in SQLite', () => {
     const dir = mkdtempSync(join(tmpdir(), 'gold-bot-persistence-'));
     const dbPath = join(dir, 'ea.sqlite');
@@ -390,6 +426,8 @@ describe('persistence scaffold', () => {
       expect(reopened.getBars('90011087', 'XAUUSD', 'H1')).toHaveLength(1);
       expect(reopened.getPositions('90011087')).toHaveLength(1);
       expect(reopened.getPendingSignals('90011087', 'XAUUSD')).toHaveLength(1);
+      expect(reopened.updatePendingSignalArbitration(1, 'rejected', 'manual reject')).toBe(true);
+      expect(reopened.getPendingSignals('90011087', 'XAUUSD')).toEqual([]);
       expect(reopened.getAIResults('90011087')).toHaveLength(1);
       expect(reopened.listSymbols('90011087')).toEqual(['XAUUSD', 'GBPJPY']);
       expect(reopened.getRuntimeMode('90011087')).toBe('cutover');

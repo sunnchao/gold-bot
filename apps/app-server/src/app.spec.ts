@@ -1060,6 +1060,84 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(badLimit.body)).toEqual({ status: 'ERROR', message: 'limit must be a positive integer' });
   });
 
+  it('updates pending signal arbitration behind admin auth', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store });
+    store.savePendingSignal({
+      id: 1,
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      side: 'buy',
+      score: 9,
+      strategy: 'pullback',
+      status: 'pending',
+      created_at: '2026-04-13T08:00:00.000Z',
+      expires_at: '2026-04-13T08:10:00.000Z',
+      arbitration_result: '',
+      arbitration_reason: ''
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/arbitration/1',
+      headers: apiAdminHeaders,
+      body: { result: 'approved', reason: 'manual ok' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ status: 'OK', signal_id: 1, result: 'approved' });
+    expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([]);
+
+    const invalid = await server.inject({
+      method: 'POST',
+      url: '/api/arbitration/1',
+      headers: apiAdminHeaders,
+      body: { result: 'maybe', reason: 'bad' }
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(JSON.parse(invalid.body)).toEqual({
+      status: 'ERROR',
+      message: "result must be 'approved' or 'rejected'"
+    });
+  });
+
+  it('expires stale pending signals behind admin auth', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:03:00.000Z' });
+    store.savePendingSignal({
+      id: 1,
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      side: 'buy',
+      score: 7,
+      strategy: 'pullback',
+      status: 'pending',
+      created_at: '2026-04-13T08:00:00.000Z',
+      expires_at: '2026-04-13T08:02:00.000Z'
+    });
+    store.savePendingSignal({
+      id: 2,
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      side: 'sell',
+      score: 8,
+      strategy: 'range',
+      status: 'pending',
+      created_at: '2026-04-13T08:01:00.000Z',
+      expires_at: '2026-04-13T08:10:00.000Z'
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/arbitration/expire',
+      headers: apiAdminHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ status: 'OK', expired: 1 });
+    expect(store.getPendingSignals('90011087', 'XAUUSD').map((signal) => signal.id)).toEqual([2]);
+  });
+
   it('renders /api/v1/audit from persisted shadow state instead of placeholders', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store, nowIso: () => '2026-07-02T12:05:00.000Z' });
