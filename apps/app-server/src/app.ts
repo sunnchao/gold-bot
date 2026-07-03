@@ -31,6 +31,7 @@ import { handleAIRoute as routeAI } from './routes/ai.js';
 import { createIndicatorAlertCache, handleIndicatorAlertRoute as routeIndicatorAlert, type IndicatorAlertCache } from './routes/indicator-alert.js';
 import { handleVisualRoute as routeVisual } from './routes/visual.js';
 import { AnalysisService } from './services/analysis/service.js';
+import { buildAIApproveCommandCandidate } from './services/ai-approve/command.js';
 import { CommandLifecycleService } from './services/command-lifecycle/service.js';
 import { SchedulerService } from './services/scheduler/service.js';
 import { ShadowService } from './services/shadow/service.js';
@@ -679,7 +680,7 @@ function handleAIResultRoute(
   const riskCommandRequested = shouldQueueAIRiskCommand(parsed.body);
   const riskCommands = queueAIRiskCommands(deps, accountId, symbol, parsed.body, tradePlan, riskGate);
   const command = !riskCommandRequested && shouldQueueAIPending(tradePlan, riskGate)
-    ? deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(accountId, symbol, tradePlan))
+    ? deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp))
     : undefined;
   deps.shadow.recordRuntimeSnapshot({
     account_id: accountId,
@@ -1187,27 +1188,37 @@ function aiTradePlanRiskGate(store: EaStore, accountId: string, symbol: string, 
   };
 }
 
-function tradePlanToCommandCandidate(accountId: string, symbol: string, tradePlan: EaRecord): CommandCandidate {
-  const entryZone = recordField(tradePlan, 'entry_zone');
-  const takeProfit = arrayNumberField(tradePlan, 'take_profit');
-  const side = stringFieldOrEmpty(tradePlan, 'side').toUpperCase();
-  const entryMin = entryZone == null ? 0 : numberField(entryZone, 'min');
-  const entryMax = entryZone == null ? entryMin : numberField(entryZone, 'max');
-  return {
-    command_id: stringFieldOrEmpty(tradePlan, 'decision_id'),
-    action: 'SIGNAL',
-    source: 'ai_result',
-    account_id: accountId,
+function tradePlanToCommandCandidate(
+  store: EaStore,
+  accountId: string,
+  symbol: string,
+  tradePlan: EaRecord,
+  riskGate: EaRecord,
+  nowIso: string
+): CommandCandidate {
+  return buildAIApproveCommandCandidate({
+    accountId,
     symbol,
-    strategy: 'ai_signal',
-    type: side,
-    entry: entryMin > 0 && entryMax > 0 ? round4((entryMin + entryMax) / 2) : entryMin,
-    sl: numberField(tradePlan, 'stop_loss'),
-    tp1: takeProfit[0] ?? 0,
-    tp2: takeProfit[1] ?? takeProfit[0] ?? 0,
-    score: numberField(tradePlan, 'confidence'),
-    mode: stringFieldOrEmpty(tradePlan, 'mode')
-  } satisfies CommandCandidate;
+    tradePlan,
+    riskGate,
+    nowIso,
+    currentPrice: aiApproveCurrentPrice(store.getLatestTick(accountId, symbol) ?? {}),
+    atr: latestH1Atr(store.getBars(accountId, symbol, 'H1'))
+  });
+}
+
+function aiApproveCurrentPrice(tick: EaRecord): number {
+  const bid = numberField(tick, 'bid');
+  const ask = numberField(tick, 'ask');
+  if (bid > 0 && ask > 0) {
+    return (bid + ask) / 2;
+  }
+  return ask > 0 ? ask : bid;
+}
+
+function latestH1Atr(bars: EaRecord[]): number {
+  const last = bars[bars.length - 1];
+  return last == null ? 0 : numberField(last, 'atr') || numberField(last, 'ATR');
 }
 
 function riskGateEntryZone(value: EaRecord | undefined): { min?: number; max?: number } | undefined {
