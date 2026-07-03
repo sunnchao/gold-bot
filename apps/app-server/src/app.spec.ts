@@ -470,10 +470,10 @@ describe('app-server scaffold', () => {
         side: 'buy',
         entry_zone: { min: 3330, max: 3334 },
         stop_loss: 3320,
-        take_profit: 3360,
-        risk_gate: { status: 'accepted' },
+        take_profit: [3360],
         narrative: 'trade plan narrative'
-      }
+      },
+      risk_gate: { status: 'accepted' }
     });
     await server.inject({
       method: 'POST',

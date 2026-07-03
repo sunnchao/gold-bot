@@ -101,7 +101,7 @@ function visualAI(results: EaRecord[], symbol: string): EaRecord {
   }
   const tradePlan = recordField(result, 'trade_plan') ?? {};
   const entryZone = recordField(tradePlan, 'entry_zone') ?? {};
-  const riskGate = recordField(tradePlan, 'risk_gate') ?? {};
+  const riskGate = recordField(result, 'risk_gate') ?? recordField(tradePlan, 'risk_gate') ?? {};
   return {
     has_result: true,
     bias: stringField(result, 'bias'),
@@ -115,7 +115,7 @@ function visualAI(results: EaRecord[], symbol: string): EaRecord {
     entry_min: numberField(entryZone, 'min'),
     entry_max: numberField(entryZone, 'max'),
     stop_loss: numberField(result, 'stop_loss') || numberField(tradePlan, 'stop_loss'),
-    take_profit: numberField(result, 'take_profit') || numberField(tradePlan, 'take_profit'),
+    take_profit: numberField(result, 'take_profit') || firstPositiveNumber(tradePlan.take_profit),
     risk_gate_status: stringField(result, 'risk_gate_status') || stringField(riskGate, 'status'),
     narrative: stringField(result, 'narrative') || stringField(tradePlan, 'narrative')
   };
@@ -138,6 +138,21 @@ function recordField(record: EaRecord, field: string): EaRecord | undefined {
 function numberField(record: EaRecord, field: string): number {
   const value = record[field];
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function firstPositiveNumber(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 0 ? value : 0;
+  }
+  if (!Array.isArray(value)) {
+    return 0;
+  }
+  for (const entry of value) {
+    if (typeof entry === 'number' && Number.isFinite(entry) && entry > 0) {
+      return entry;
+    }
+  }
+  return 0;
 }
 
 function stringField(record: EaRecord, field: string): string {
