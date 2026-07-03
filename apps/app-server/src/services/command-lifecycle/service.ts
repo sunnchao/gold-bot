@@ -38,8 +38,8 @@ export class CommandLifecycleService {
     return resolved;
   }
 
-  reconcile(accountId: string, commandId: string, result: string, ticket?: number): void {
-    this.store.reconcileCommandResult(accountId, commandId, result, ticket);
+  reconcile(accountId: string, commandId: string, result: string, ticket?: number, errorText?: string, createdAt?: string): boolean {
+    return this.store.reconcileCommandResult(accountId, commandId, result, ticket, errorText, createdAt);
   }
 }
 

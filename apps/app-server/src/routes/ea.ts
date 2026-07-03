@@ -15,12 +15,13 @@ export type EaRouteRequest = {
 export type EaRouteDeps = {
   store: EaStore;
   nowUnix: () => number;
+  nowIso: () => string;
   validTokens: Set<string> | null;
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;
   onBarsSaved?: (accountId: string, symbol: string) => void;
   onPositionsSaved?: (accountId: string, symbol: string) => void;
-  onOrderResult?: (accountId: string, commandId: string, result: string, ticket?: number) => void;
+  onOrderResult?: (accountId: string, commandId: string, result: string, ticket?: number, errorText?: string, createdAt?: string) => void;
 };
 
 export type EaRouteHelpers = {
@@ -98,7 +99,9 @@ export function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, helper
         accountId,
         helpers.stringFieldOrEmpty(parsed.body, 'command_id'),
         helpers.stringFieldOrEmpty(parsed.body, 'result'),
-        typeof parsed.body.ticket === 'number' ? parsed.body.ticket : undefined
+        typeof parsed.body.ticket === 'number' ? parsed.body.ticket : undefined,
+        helpers.stringFieldOrEmpty(parsed.body, 'error') || helpers.stringFieldOrEmpty(parsed.body, 'error_text'),
+        deps.nowIso()
       );
       if (deps.onOrderResult == null) {
         deps.store.saveOrderResult(parsed.body);

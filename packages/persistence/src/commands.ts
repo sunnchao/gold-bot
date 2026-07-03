@@ -14,6 +14,9 @@ export type StoredCommand = EaCommand & {
   source: CommandSource;
   created_at: string;
   delivered_at?: string;
+  acked_at?: string;
+  failed_at?: string;
   result?: string;
   ticket?: number;
+  error_text?: string;
 };

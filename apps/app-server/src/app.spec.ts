@@ -480,6 +480,14 @@ describe('app-server scaffold', () => {
   it('accepts safe EA lifecycle routes with Go-shaped responses and stores payloads', async () => {
     const store = createInMemoryEaStore();
     const server = createAppServer({ store, nowUnix: () => 1772342400 });
+    store.enqueueCommand('90011087', {
+      command_id: 'sig_2',
+      action: 'SIGNAL',
+      strategy: 'pullback',
+      symbol: 'XAUUSD',
+      type: 'BUY'
+    });
+    expect(store.pollCommands('90011087')).toHaveLength(1);
 
     for (const name of ['register', 'heartbeat', 'tick', 'bars', 'positions', 'order_result']) {
       const fixture = readFixture(name);
@@ -686,6 +694,101 @@ describe('app-server scaffold', () => {
       expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: testCase.message });
       testCase.assertNotPersisted();
     }
+  });
+
+  it('applies order_result only to delivered commands and preserves broker error text', async () => {
+    const store = createInMemoryEaStore();
+    const server = createAppServer({
+      store,
+      nowIso: () => '2026-04-13T08:01:00.000Z'
+    });
+    const delivered = store.saveCommandCandidate('90011087', {
+      command_id: 'sig_route_failed',
+      source: 'ai_result',
+      symbol: 'XAUUSD',
+      action: 'SIGNAL',
+      strategy: 'ai_signal',
+      decision_id: 'tpv1_route_failed'
+    });
+    const queued = store.saveCommandCandidate('90011087', {
+      command_id: 'sig_route_pending',
+      source: 'ai_result',
+      symbol: 'XAUUSD',
+      action: 'SIGNAL',
+      strategy: 'ai_signal',
+      decision_id: 'tpv1_route_pending'
+    });
+    store.promoteCommand(delivered.command_id);
+    store.promoteCommand(queued.command_id);
+    expect(store.pollCommands('90011087')).toEqual([
+      expect.objectContaining({ command_id: delivered.command_id }),
+      expect.objectContaining({ command_id: queued.command_id })
+    ]);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/order_result',
+      body: {
+        account_id: '90011087',
+        command_id: delivered.command_id,
+        result: 'ERROR',
+        ticket: 0,
+        error: 'invalid stops'
+      }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ status: 'OK' });
+    expect(store.getCommand(delivered.command_id)).toMatchObject({
+      status: 'failed',
+      result: 'ERROR',
+      ticket: 0,
+      failed_at: '2026-04-13T08:01:00.000Z',
+      error_text: 'invalid stops'
+    });
+    expect(store.getOrderResults('90011087')).toEqual([
+      {
+        account_id: '90011087',
+        command_id: delivered.command_id,
+        result: 'ERROR',
+        ticket: 0,
+        error_text: 'invalid stops',
+        created_at: '2026-04-13T08:01:00.000Z'
+      }
+    ]);
+    expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'failed' })).toEqual([
+      expect.objectContaining({
+        decision_id: 'tpv1_route_failed',
+        stage: 'order_result',
+        related_command_id: delivered.command_id
+      })
+    ]);
+
+    const duplicate = await server.inject({
+      method: 'POST',
+      url: '/order_result',
+      body: {
+        account_id: '90011087',
+        command_id: delivered.command_id,
+        result: 'OK',
+        ticket: 123,
+        error: ''
+      }
+    });
+    const missing = await server.inject({
+      method: 'POST',
+      url: '/order_result',
+      body: {
+        account_id: '90011087',
+        command_id: 'sig_route_missing',
+        result: 'OK',
+        ticket: 123,
+        error: ''
+      }
+    });
+    expect(duplicate.statusCode).toBe(200);
+    expect(missing.statusCode).toBe(200);
+    expect(store.getOrderResults('90011087')).toHaveLength(1);
+    expect(store.getCommand(queued.command_id)).toMatchObject({ status: 'delivered' });
   });
 
   it('rejects order_result payloads missing required fields before persistence', async () => {

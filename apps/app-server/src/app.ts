@@ -229,12 +229,13 @@ async function routeRequest(
       {
         store: deps.store,
         nowUnix: deps.nowUnix,
+        nowIso: deps.nowIso,
         validTokens: deps.validTokens,
         tokenAccounts: deps.tokenAccounts,
         adminTokens: deps.adminTokens,
         onBarsSaved: (accountId, symbol) => deps.scheduler.enqueueAnalysis(accountId, symbol),
         onPositionsSaved: (accountId, symbol) => deps.scheduler.enqueuePositionReview(accountId, symbol),
-        onOrderResult: (accountId, commandId, result, ticket) => deps.commandLifecycle.reconcile(accountId, commandId, result, ticket),
+        onOrderResult: (accountId, commandId, result, ticket, errorText, createdAt) => deps.commandLifecycle.reconcile(accountId, commandId, result, ticket, errorText, createdAt),
       },
       {
         stringFieldOrEmpty,

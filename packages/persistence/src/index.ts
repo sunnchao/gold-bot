@@ -43,7 +43,7 @@ export type EaStore = {
   listCommands(accountId: string): StoredCommand[];
   getRuntimeMode(accountId: string): RuntimeMode;
   setRuntimeMode(accountId: string, mode: RuntimeMode): void;
-  reconcileCommandResult(accountId: string, commandId: string, result: string, ticket?: number): void;
+  reconcileCommandResult(accountId: string, commandId: string, result: string, ticket?: number, errorText?: string, createdAt?: string): boolean;
   pollCommands(accountId: string): EaCommand[];
   recordShadowComparison(payload: ShadowComparison): void;
   listShadowComparisons(filter?: ShadowComparisonFilter): ShadowComparison[];
@@ -196,26 +196,42 @@ export function createInMemoryEaStore(): EaStore {
     setRuntimeMode(accountId, mode) {
       state.runtimeModes.set(accountId, mode);
     },
-    reconcileCommandResult(accountId, commandId, result, ticket) {
+    reconcileCommandResult(accountId, commandId, result, ticket, errorText = '', createdAt = currentTimestamp()) {
       const command = state.commands.get(commandId);
-      if (command != null && command.account_id === accountId) {
-        command.result = result;
-        if (ticket != null) {
-          command.ticket = ticket;
-        }
-        command.status = isAckResult(result) ? 'acked' : 'failed';
+      if (command == null || command.account_id !== accountId || command.status !== 'delivered') {
+        return false;
+      }
+      const normalizedTicket = ticket ?? 0;
+      const status = isAckResult(result) ? 'acked' : 'failed';
+      command.result = result;
+      command.ticket = normalizedTicket;
+      command.error_text = errorText;
+      command.status = status;
+      if (status === 'acked') {
+        command.acked_at = createdAt;
+      } else {
+        command.failed_at = createdAt;
       }
       this.saveOrderResult({
         account_id: accountId,
         command_id: commandId,
         result,
-        ...(ticket == null ? {} : { ticket })
+        ticket: normalizedTicket,
+        error_text: errorText,
+        created_at: createdAt
       });
+      const event = commandResultDecisionEvent(command, result, normalizedTicket, errorText, createdAt);
+      if (event != null) {
+        state.decisionEvents.push(normalizeDecisionEvent(event, state.nextDecisionEventId++));
+      }
+      return true;
     },
     pollCommands(accountId) {
       const pending = Array.from(state.commands.values()).filter((command) => command.account_id === accountId && command.status === 'queued');
+      const deliveredAt = currentTimestamp();
       for (const command of pending) {
         command.status = 'delivered';
+        command.delivered_at = deliveredAt;
       }
       return pending.map(toEaCommand);
     },
@@ -369,6 +385,9 @@ export function createSqliteEaStore(path: string): EaStore {
       ticket INTEGER,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       delivered_at TEXT NOT NULL DEFAULT '',
+      acked_at TEXT NOT NULL DEFAULT '',
+      failed_at TEXT NOT NULL DEFAULT '',
+      error_text TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_ea_events_kind_account_delivered
@@ -423,6 +442,9 @@ export function createSqliteEaStore(path: string): EaStore {
       PRIMARY KEY (token, account_id)
     );
   `);
+  ensureSqliteColumn(db, 'runtime_commands', 'acked_at', "acked_at TEXT NOT NULL DEFAULT ''");
+  ensureSqliteColumn(db, 'runtime_commands', 'failed_at', "failed_at TEXT NOT NULL DEFAULT ''");
+  ensureSqliteColumn(db, 'runtime_commands', 'error_text', "error_text TEXT NOT NULL DEFAULT ''");
 
   const saveSnapshot = db.prepare(`
     INSERT INTO ea_snapshots (kind, account_id, symbol, timeframe, payload_json, updated_at)
@@ -486,24 +508,29 @@ export function createSqliteEaStore(path: string): EaStore {
     SET status = ?, delivered_at = CASE WHEN ? <> '' THEN ? ELSE delivered_at END, updated_at = CURRENT_TIMESTAMP
     WHERE command_id = ?
   `);
-  const updateRuntimeCommandResult = db.prepare(`
+  const ackRuntimeCommandResult = db.prepare(`
     UPDATE runtime_commands
-    SET status = ?, result = ?, ticket = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE command_id = ? AND account_id = ?
+    SET status = 'acked', result = ?, ticket = ?, error_text = ?, acked_at = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE command_id = ? AND account_id = ? AND status = 'delivered'
+  `);
+  const failRuntimeCommandResult = db.prepare(`
+    UPDATE runtime_commands
+    SET status = 'failed', result = ?, ticket = ?, error_text = ?, failed_at = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE command_id = ? AND account_id = ? AND status = 'delivered'
   `);
   const selectRuntimeCommand = db.prepare(`
-    SELECT account_id, status, source, payload_json, result, ticket, created_at, delivered_at
+    SELECT account_id, status, source, payload_json, result, ticket, created_at, delivered_at, acked_at, failed_at, error_text
     FROM runtime_commands
     WHERE command_id = ?
   `);
   const selectRuntimeCommandsByAccount = db.prepare(`
-    SELECT command_id, account_id, status, source, payload_json, result, ticket, created_at, delivered_at
+    SELECT command_id, account_id, status, source, payload_json, result, ticket, created_at, delivered_at, acked_at, failed_at, error_text
     FROM runtime_commands
     WHERE account_id = ?
     ORDER BY created_at ASC, command_id ASC
   `);
   const selectQueuedRuntimeCommands = db.prepare(`
-    SELECT command_id, account_id, status, source, payload_json, result, ticket, created_at, delivered_at
+    SELECT command_id, account_id, status, source, payload_json, result, ticket, created_at, delivered_at, acked_at, failed_at, error_text
     FROM runtime_commands
     WHERE account_id = ? AND status = 'queued'
     ORDER BY created_at ASC, command_id ASC
@@ -657,14 +684,40 @@ export function createSqliteEaStore(path: string): EaStore {
     setRuntimeMode(accountId, mode) {
       upsertRuntimeState.run(accountId, mode, mode === 'cutover' ? 1 : 0);
     },
-    reconcileCommandResult(accountId, commandId, result, ticket) {
-      updateRuntimeCommandResult.run(isAckResult(result) ? 'acked' : 'failed', result, ticket ?? null, commandId, accountId);
+    reconcileCommandResult(accountId, commandId, result, ticket, errorText = '', createdAt = currentTimestamp()) {
+      const normalizedTicket = ticket ?? 0;
+      const update = isAckResult(result) ? ackRuntimeCommandResult : failRuntimeCommandResult;
+      const updateResult = update.run(result, normalizedTicket, errorText, createdAt, commandId, accountId);
+      if (updateResult.changes === 0) {
+        return false;
+      }
       insertEvent.run('order_result', accountId, '', toJson({
         account_id: accountId,
         command_id: commandId,
         result,
-        ...(ticket == null ? {} : { ticket })
+        ticket: normalizedTicket,
+        error_text: errorText,
+        created_at: createdAt
       }), 1);
+      const row = selectRuntimeCommand.get(commandId) as RuntimeCommandRow | undefined;
+      if (row != null) {
+        const command = runtimeCommandFromRow(commandId, row);
+        const event = commandResultDecisionEvent(command, result, normalizedTicket, errorText, createdAt);
+        if (event != null) {
+          insertDecisionEvent.run(
+            event.decision_id,
+            event.account_id,
+            event.symbol,
+            event.stage,
+            event.status,
+            toJson(event.reason_codes),
+            toJson(event.summary),
+            event.related_command_id,
+            event.created_at
+          );
+        }
+      }
+      return true;
     },
     pollCommands(accountId) {
       const rows = selectQueuedRuntimeCommands.all(accountId) as RuntimeCommandListRow[];
@@ -888,6 +941,45 @@ function normalizeDecisionEvent(payload: DecisionEventInput, id: number): Decisi
   };
 }
 
+function commandResultDecisionEvent(
+  command: StoredCommand,
+  result: string,
+  ticket: number,
+  errorText: string,
+  createdAt: string
+): DecisionEventInput | null {
+  const decisionId = stringField(command as EaRecord, 'decision_id');
+  if (decisionId.length === 0) {
+    return null;
+  }
+  const symbol = typeof command.symbol === 'string' && command.symbol.length > 0 ? command.symbol : 'XAUUSD';
+  return {
+    decision_id: decisionId,
+    account_id: command.account_id,
+    symbol,
+    stage: 'order_result',
+    status: command.status === 'acked' ? 'acked' : 'failed',
+    reason_codes: commandDecisionReasonCodes(command),
+    summary: {
+      command_id: command.command_id,
+      action: command.action,
+      result,
+      ticket,
+      error_text: errorText
+    },
+    related_command_id: command.command_id,
+    created_at: createdAt
+  };
+}
+
+function commandDecisionReasonCodes(command: StoredCommand): string[] {
+  const codes = [`command.${command.action}`];
+  if (isPollSourceVisible(command)) {
+    codes.push(`source.${command.source}`);
+  }
+  return codes;
+}
+
 function filterDecisionEvents(events: DecisionEvent[], filter: DecisionEventFilter): DecisionEvent[] {
   const limit = normalizeDecisionLimit(filter.limit);
   return events
@@ -1041,6 +1133,13 @@ function snapshotRows(db: DatabaseSync, kind: string, accountId: string): EaReco
     ORDER BY rowid ASC
   `);
   return (statement.all(kind, accountId) as Array<{ payload_json: string }>).map((row) => fromJson(row.payload_json) as EaRecord);
+}
+
+function ensureSqliteColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((row) => row.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  }
 }
 
 function eventPayloads(statement: { all(...params: unknown[]): unknown[] }, ...params: unknown[]): EaRecord[] {
@@ -1205,8 +1304,7 @@ function normalizeCommandSource(value: unknown): CommandSource {
 }
 
 function isAckResult(result: string): boolean {
-  const normalized = result.trim().toLowerCase();
-  return normalized === 'filled' || normalized === 'ok' || normalized === 'success' || normalized === 'accepted';
+  return result === 'OK';
 }
 
 function toEaCommand(command: StoredCommand): EaCommand {
@@ -1218,6 +1316,9 @@ function toEaCommand(command: StoredCommand): EaCommand {
   }
   delete (out as EaRecord).created_at;
   delete (out as EaRecord).delivered_at;
+  delete (out as EaRecord).acked_at;
+  delete (out as EaRecord).failed_at;
+  delete (out as EaRecord).error_text;
   delete (out as EaRecord).result;
   if (out.ticket === undefined) {
     delete (out as EaRecord).ticket;
@@ -1246,6 +1347,9 @@ type RuntimeCommandRow = {
   ticket: number | null;
   created_at: string;
   delivered_at: string;
+  acked_at: string;
+  failed_at: string;
+  error_text: string;
 };
 
 type RuntimeCommandListRow = RuntimeCommandRow & {
@@ -1273,8 +1377,11 @@ function buildRuntimeCommand(commandId: string, row: RuntimeCommandRow): StoredC
     status,
     created_at: row.created_at,
     delivered_at: row.delivered_at.length > 0 ? row.delivered_at : undefined,
+    acked_at: row.acked_at.length > 0 ? row.acked_at : undefined,
+    failed_at: row.failed_at.length > 0 ? row.failed_at : undefined,
     result: row.result.length > 0 ? row.result : undefined,
-    ticket: typeof row.ticket === 'number' ? row.ticket : undefined
+    ticket: typeof row.ticket === 'number' ? row.ticket : undefined,
+    error_text: row.error_text
   };
   setPollSourceVisible(command, Object.prototype.hasOwnProperty.call(payload, 'source'));
   return command;

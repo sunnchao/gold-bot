@@ -132,13 +132,211 @@ describe('persistence scaffold', () => {
     expect(delivered[0]).toMatchObject({ source: 'ai_result' });
     expect(store.getCommand(stored.command_id)?.status).toBe('delivered');
 
-    store.reconcileCommandResult('90011087', stored.command_id, 'filled', 1001);
+    store.reconcileCommandResult('90011087', stored.command_id, 'OK', 1001);
     expect(store.getCommand(stored.command_id)).toMatchObject({
       status: 'acked',
-      result: 'filled',
+      result: 'OK',
       ticket: 1001
     });
   });
+
+  for (const testCase of [
+    {
+      name: 'in-memory',
+      create() {
+        return {
+          store: createInMemoryEaStore(),
+          cleanup() {}
+        };
+      }
+    },
+    {
+      name: 'sqlite',
+      create() {
+        const dir = mkdtempSync(join(tmpdir(), 'gold-bot-order-result-'));
+        return {
+          store: createSqliteEaStore(join(dir, 'ea.sqlite')),
+          cleanup() {
+            rmSync(dir, { recursive: true, force: true });
+          }
+        };
+      }
+    }
+  ]) {
+    it(`applies order results only to delivered commands in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        const stored = store.saveCommandCandidate('90011087', {
+          command_id: 'sig_order_ack',
+          source: 'ai_result',
+          symbol: 'XAUUSD',
+          action: 'SIGNAL',
+          strategy: 'ai_signal',
+          decision_id: 'tpv1_order_ack'
+        });
+        store.promoteCommand(stored.command_id);
+
+        expect(
+          store.reconcileCommandResult(
+            '90011087',
+            stored.command_id,
+            'OK',
+            1001,
+            '',
+            '2026-04-13T08:00:00.000Z'
+          )
+        ).toBe(false);
+        expect(store.getCommand(stored.command_id)).toMatchObject({ status: 'queued' });
+        expect(store.getOrderResults('90011087')).toEqual([]);
+
+        expect(store.pollCommands('90011087')).toHaveLength(1);
+        expect(
+          store.reconcileCommandResult(
+            '90011087',
+            stored.command_id,
+            'OK',
+            1001,
+            '',
+            '2026-04-13T08:01:00.000Z'
+          )
+        ).toBe(true);
+        expect(store.getCommand(stored.command_id)).toMatchObject({
+          status: 'acked',
+          result: 'OK',
+          ticket: 1001,
+          acked_at: '2026-04-13T08:01:00.000Z',
+          error_text: ''
+        });
+        expect(store.getOrderResults('90011087')).toEqual([
+          {
+            account_id: '90011087',
+            command_id: stored.command_id,
+            result: 'OK',
+            ticket: 1001,
+            error_text: '',
+            created_at: '2026-04-13T08:01:00.000Z'
+          }
+        ]);
+        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'acked' })).toEqual([
+          expect.objectContaining({
+            decision_id: 'tpv1_order_ack',
+            stage: 'order_result',
+            status: 'acked',
+            reason_codes: ['command.SIGNAL', 'source.ai_result'],
+            related_command_id: stored.command_id,
+            created_at: '2026-04-13T08:01:00.000Z',
+            summary: {
+              command_id: stored.command_id,
+              action: 'SIGNAL',
+              result: 'OK',
+              ticket: 1001,
+              error_text: ''
+            }
+          })
+        ]);
+
+        expect(
+          store.reconcileCommandResult(
+            '90011087',
+            stored.command_id,
+            'ERROR',
+            0,
+            'late failure',
+            '2026-04-13T08:02:00.000Z'
+          )
+        ).toBe(false);
+        expect(
+          store.reconcileCommandResult(
+            '90022000',
+            stored.command_id,
+            'OK',
+            1002,
+            '',
+            '2026-04-13T08:03:00.000Z'
+          )
+        ).toBe(false);
+        expect(
+          store.reconcileCommandResult(
+            '90011087',
+            'sig_missing',
+            'ERROR',
+            0,
+            'missing',
+            '2026-04-13T08:04:00.000Z'
+          )
+        ).toBe(false);
+        expect(store.getOrderResults('90011087')).toHaveLength(1);
+        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'failed' })).toEqual([]);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
+
+    it(`records failed delivered order results with error text in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        const stored = store.saveCommandCandidate('90011087', {
+          command_id: 'sig_order_fail',
+          source: 'position_review',
+          symbol: 'XAUUSD',
+          action: 'MODIFY',
+          ticket: 2002,
+          decision_id: 'tpv1_order_fail'
+        });
+        store.promoteCommand(stored.command_id);
+        expect(store.pollCommands('90011087')).toHaveLength(1);
+
+        expect(
+          store.reconcileCommandResult(
+            '90011087',
+            stored.command_id,
+            'REJECTED',
+            0,
+            'invalid stops',
+            '2026-04-13T09:01:00.000Z'
+          )
+        ).toBe(true);
+        expect(store.getCommand(stored.command_id)).toMatchObject({
+          status: 'failed',
+          result: 'REJECTED',
+          ticket: 0,
+          failed_at: '2026-04-13T09:01:00.000Z',
+          error_text: 'invalid stops'
+        });
+        expect(store.getOrderResults('90011087')).toEqual([
+          {
+            account_id: '90011087',
+            command_id: stored.command_id,
+            result: 'REJECTED',
+            ticket: 0,
+            error_text: 'invalid stops',
+            created_at: '2026-04-13T09:01:00.000Z'
+          }
+        ]);
+        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'failed' })).toEqual([
+          expect.objectContaining({
+            decision_id: 'tpv1_order_fail',
+            stage: 'order_result',
+            status: 'failed',
+            reason_codes: ['command.MODIFY', 'source.position_review'],
+            related_command_id: stored.command_id,
+            created_at: '2026-04-13T09:01:00.000Z',
+            summary: {
+              command_id: stored.command_id,
+              action: 'MODIFY',
+              result: 'REJECTED',
+              ticket: 0,
+              error_text: 'invalid stops'
+            }
+          })
+        ]);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
+  }
 
   it('stores and reloads the latest shadow runtime snapshot by account, symbol, and source', () => {
     const store = createInMemoryEaStore();
@@ -467,7 +665,11 @@ describe('persistence scaffold', () => {
         mode: 'approve'
       });
       store.promoteCommand(candidate.command_id);
-      store.reconcileCommandResult('90011087', candidate.command_id, 'filled', 999001);
+      expect(store.pollCommands('90011087')).toEqual(expect.arrayContaining([
+        expect.objectContaining({ command_id: command.command_id }),
+        expect.objectContaining({ command_id: candidate.command_id })
+      ]));
+      store.reconcileCommandResult('90011087', candidate.command_id, 'OK', 999001);
       store.close();
 
       const reopened = createSqliteEaStore(dbPath);
@@ -536,10 +738,9 @@ describe('persistence scaffold', () => {
       ]);
       expect(reopened.getCommand('candidate_1')).toMatchObject({
         status: 'acked',
-        result: 'filled',
+        result: 'OK',
         ticket: 999001
       });
-      expect(reopened.pollCommands('90011087')).toEqual([command]);
       expect(reopened.pollCommands('90011087')).toEqual([]);
       reopened.close();
     } finally {
