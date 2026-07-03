@@ -2,7 +2,7 @@ import type { EaRecord, EaStore } from '@gold-bot/persistence';
 import type { HeaderMap } from '@gold-bot/shared-contracts';
 import { parseJsonObject } from '../http/json.js';
 import { error, type JsonResponse } from '../http/response.js';
-import { authorizeRouteAccount, requireRouteToken } from '../middleware/auth.js';
+import { authorizeApiAccount, requireRouteToken } from '../middleware/auth.js';
 import type { IndicatorAlert, IndicatorAlertCache } from './indicator-alert.js';
 
 export type VisualRouteRequest = {
@@ -44,7 +44,7 @@ export function handleVisualRoute(request: VisualRouteRequest, deps: VisualRoute
   if (accountId.length === 0 || symbol.length === 0) {
     return error(400, 'account_id and symbol are required');
   }
-  if (!authorizeRouteAccount(deps.tokenAccounts, tokenResult.token, accountId, deps.adminTokens)) {
+  if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, accountId, deps.adminTokens)) {
     return error(403, 'forbidden');
   }
 

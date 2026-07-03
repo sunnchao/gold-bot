@@ -932,6 +932,28 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: 'invalid token' });
   });
 
+  it('rejects unbound valid tokens on API account routes without auto-binding', async () => {
+    const requests = [
+      { method: 'GET', url: '/api/analysis_payload/90011087' },
+      { method: 'POST', url: '/api/ai_result/90011087', body: {} },
+      { method: 'GET', url: '/api/pending_signal/90011087/XAUUSD' }
+    ];
+
+    for (const request of requests) {
+      const server = createAppServer({
+        validTokens: ['unbound-token'],
+        tokenAccounts: { 'unbound-token': [] }
+      });
+      const response = await server.inject({
+        ...request,
+        headers: { 'X-API-Token': 'unbound-token' }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: 'forbidden' });
+    }
+  });
+
   it('enforces Go-compatible API admin gates', async () => {
     const server = createApiServer();
 

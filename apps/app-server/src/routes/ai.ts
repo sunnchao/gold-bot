@@ -2,7 +2,7 @@ import type { EaRecord, EaStore } from '@gold-bot/persistence';
 import type { CommandLifecycleService } from '../services/command-lifecycle/service.js';
 import type { ShadowService } from '../services/shadow/service.js';
 import type { HeaderMap } from '@gold-bot/shared-contracts';
-import { authorizeRouteAccount, requireRouteToken } from '../middleware/auth.js';
+import { authorizeApiAccount, requireRouteToken } from '../middleware/auth.js';
 import { error, type JsonResponse } from '../http/response.js';
 
 export type AIRouteRequest = {
@@ -36,7 +36,7 @@ export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helper
     if (tokenResult.response != null) {
       return tokenResult.response;
     }
-    if (!authorizeRouteAccount(deps.tokenAccounts, tokenResult.token, parts[2], deps.adminTokens)) {
+    if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, parts[2], deps.adminTokens)) {
       return error(403, 'forbidden');
     }
     return {
@@ -49,7 +49,7 @@ export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helper
     if (tokenResult.response != null) {
       return tokenResult.response;
     }
-    if (!authorizeRouteAccount(deps.tokenAccounts, tokenResult.token, parts[3], deps.adminTokens)) {
+    if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, parts[3], deps.adminTokens)) {
       return error(403, 'forbidden');
     }
     return {
@@ -62,7 +62,7 @@ export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helper
     if (tokenResult.response != null) {
       return tokenResult.response;
     }
-    if (!authorizeRouteAccount(deps.tokenAccounts, tokenResult.token, parts[2], deps.adminTokens)) {
+    if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, parts[2], deps.adminTokens)) {
       return error(403, 'forbidden');
     }
     return helpers.handleAIResultRoute(request.method, parts[2], 'XAUUSD', request.rawBody, deps);
@@ -72,7 +72,7 @@ export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helper
     if (tokenResult.response != null) {
       return tokenResult.response;
     }
-    if (!authorizeRouteAccount(deps.tokenAccounts, tokenResult.token, parts[3], deps.adminTokens)) {
+    if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, parts[3], deps.adminTokens)) {
       return error(403, 'forbidden');
     }
     return helpers.handleAIResultRoute(request.method, parts[3], parts[4], request.rawBody, deps);

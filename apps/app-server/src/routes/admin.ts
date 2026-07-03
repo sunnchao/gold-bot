@@ -2,7 +2,7 @@ import type { HeaderMap } from '@gold-bot/shared-contracts';
 import type { EaRecord, EaStore } from '@gold-bot/persistence';
 import { eventStreamHeaders } from '@gold-bot/observability';
 import { randomBytes } from 'node:crypto';
-import { authorizeRouteAccount, requireAdminRoute, requireRouteToken } from '../middleware/auth.js';
+import { authorizeApiAccount, requireAdminRoute, requireRouteToken } from '../middleware/auth.js';
 import { parseJsonObject } from '../http/json.js';
 import { error, type JsonResponse } from '../http/response.js';
 
@@ -81,7 +81,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
     if (tokenResult.response != null) {
       return tokenResult.response;
     }
-    if (!authorizeRouteAccount(deps.tokenAccounts, tokenResult.token, parts[3], deps.adminTokens)) {
+    if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, parts[3], deps.adminTokens)) {
       return error(403, 'forbidden');
     }
     return {
@@ -245,7 +245,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       return tokenResult.response;
     }
     const accountId = parts[2]!;
-    if (!authorizeRouteAccount(deps.tokenAccounts, tokenResult.token, accountId, deps.adminTokens)) {
+    if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, accountId, deps.adminTokens)) {
       return error(403, 'forbidden');
     }
   }

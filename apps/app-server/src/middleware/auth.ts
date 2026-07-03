@@ -28,6 +28,24 @@ export function authorizeRouteAccount(
   return accounts.has(accountId);
 }
 
+export function authorizeApiAccount(
+  tokenAccounts: Map<string, Set<string>> | null,
+  token: string | undefined,
+  accountId: string,
+  adminTokens: Set<string>
+): boolean {
+  if (tokenAccounts == null) {
+    return true;
+  }
+  if (token == null) {
+    return false;
+  }
+  if (adminTokens.has(token)) {
+    return true;
+  }
+  return tokenAccounts.get(token)?.has(accountId) === true;
+}
+
 export function requireRouteToken(
   validTokens: Set<string> | null,
   headers: HeaderMap,
