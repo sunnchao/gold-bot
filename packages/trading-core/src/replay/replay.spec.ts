@@ -799,6 +799,46 @@ describe('replay harness Go oracle slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
+  it('adds Go counter pullback OB and FVG confirmation bonuses from replay SMC context', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 100.4,
+      bars: { H1: counterPullbackBuyBars() },
+      smc: {
+        h1_breaks: [{ index: 18, direction: 'UP', level: 101, type: 'CHoCH' }],
+        h1_sweeps: [{ index: 17, level: 100, side: 'BULL', reversed: true }],
+        h1_obs: [{ index: 16, side: 'BUY', high: 101.2, low: 99.8, valid: true }],
+        h1_fvgs: [{ index: 15, upper_bound: 101.1, lower_bound: 99.7, filled: false }]
+      }
+    });
+
+    expect(result.signal).toEqual({
+      side: 'BUY',
+      entry: 100.4,
+      stop_loss: 99,
+      tp1: 104.4,
+      tp2: 108.4,
+      score: 9,
+      strategy: 'counter_pullback',
+      atr: 2,
+      all_strategies: [
+        {
+          strategy: 'counter_pullback',
+          side: 'BUY',
+          score: 9,
+          entry: 100.4,
+          stop_loss: 99
+        }
+      ]
+    });
+    expect(result.logs).toContainEqual({
+      level: 'signal',
+      strategy: '反转回调',
+      msg: '🟢 BUY 评分=9 | 看涨反转回调: CHoCH↑+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=44.0 | OB确认 | MACD>0 | FVG确认'
+    });
+    expect(result.canProduceLiveCommands).toBe(false);
+  });
+
   it('matches the Go counter pullback SELL signal oracle slice with replay SMC context', () => {
     const result = runReplay({
       account_id: '90011087',

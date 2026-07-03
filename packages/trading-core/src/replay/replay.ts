@@ -75,9 +75,26 @@ export type ReplayLiquiditySweep = {
   reversed?: boolean;
 };
 
+export type ReplayOrderBlock = {
+  index: number;
+  side: 'BUY' | 'SELL';
+  high: number;
+  low: number;
+  valid: boolean;
+};
+
+export type ReplayFVG = {
+  index: number;
+  upper_bound: number;
+  lower_bound: number;
+  filled: boolean;
+};
+
 export type ReplaySmcContext = {
   h1_breaks: ReplayStructureBreak[];
   h1_sweeps: ReplayLiquiditySweep[];
+  h1_obs?: ReplayOrderBlock[];
+  h1_fvgs?: ReplayFVG[];
 };
 
 type ReplayStrategyName = 'pullback' | 'breakout_retest' | 'divergence' | 'counter_pullback' | 'breakout_pyramid' | 'momentum_scalp';
@@ -397,7 +414,9 @@ function normalizeReplaySmc(value: unknown): ReplaySmcContext | undefined {
   const record = asRecord(value);
   return {
     h1_breaks: normalizeStructureBreaks(record.h1_breaks ?? record.h1Breaks ?? record.H1Breaks),
-    h1_sweeps: normalizeLiquiditySweeps(record.h1_sweeps ?? record.h1Sweeps ?? record.H1Sweeps)
+    h1_sweeps: normalizeLiquiditySweeps(record.h1_sweeps ?? record.h1Sweeps ?? record.H1Sweeps),
+    h1_obs: normalizeOrderBlocks(record.h1_obs ?? record.h1OBs ?? record.H1OBs),
+    h1_fvgs: normalizeFVGs(record.h1_fvgs ?? record.h1FVGs ?? record.H1FVGs)
   };
 }
 
@@ -441,6 +460,43 @@ function normalizeLiquiditySweeps(value: unknown): ReplayLiquiditySweep[] {
         reversed: optionalBooleanField(record, 'reversed') ?? optionalBooleanField(record, 'Reversed')
       }
     ];
+  });
+}
+
+function normalizeOrderBlocks(value: unknown): ReplayOrderBlock[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    const record = asRecord(entry);
+    const side = optionalStringField(record, 'side') ?? optionalStringField(record, 'Side');
+    if (side !== 'BUY' && side !== 'SELL') {
+      return [];
+    }
+    return [
+      {
+        index: numberField(record, 'index') || numberField(record, 'Index'),
+        side,
+        high: optionalNumberField(record, 'high') ?? optionalNumberField(record, 'High') ?? 0,
+        low: optionalNumberField(record, 'low') ?? optionalNumberField(record, 'Low') ?? 0,
+        valid: optionalBooleanField(record, 'valid') ?? optionalBooleanField(record, 'Valid') ?? false
+      }
+    ];
+  });
+}
+
+function normalizeFVGs(value: unknown): ReplayFVG[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((entry) => {
+    const record = asRecord(entry);
+    return {
+      index: numberField(record, 'index') || numberField(record, 'Index') || numberField(record, 'start_index') || numberField(record, 'StartIndex'),
+      upper_bound: optionalNumberField(record, 'upper_bound') ?? optionalNumberField(record, 'upperBound') ?? optionalNumberField(record, 'UpperBound') ?? 0,
+      lower_bound: optionalNumberField(record, 'lower_bound') ?? optionalNumberField(record, 'lowerBound') ?? optionalNumberField(record, 'LowerBound') ?? 0,
+      filled: optionalBooleanField(record, 'filled') ?? optionalBooleanField(record, 'Filled') ?? false
+    };
   });
 }
 
@@ -1075,11 +1131,11 @@ function counterPullbackLog(
         msg: `看涨CHoCH+Sweep | 价格${formatFixed(price, 2)} > 回调区${formatFixed(pullbackZone, 2)},未到位 ⏭`
       };
     }
-    const score = counterPullbackScore('BUY', last);
+    const score = counterPullbackScore('BUY', last, smc, price, atrValue);
     return {
       level: 'signal',
       strategy: name,
-      msg: `🟢 BUY 评分=${score} | 看涨反转回调: CHoCH↑+Sweep@${formatFixed(recentSweep.level, 2)} | ${counterPullbackDetails('BUY', recentChoch, recentSweep, last).join(' | ')}`
+      msg: `🟢 BUY 评分=${score} | 看涨反转回调: CHoCH↑+Sweep@${formatFixed(recentSweep.level, 2)} | ${counterPullbackDetails('BUY', recentChoch, recentSweep, last, smc, price, atrValue).join(' | ')}`
     };
   }
 
@@ -1092,11 +1148,11 @@ function counterPullbackLog(
         msg: `看跌CHoCH+Sweep | 价格${formatFixed(price, 2)} < 回调区${formatFixed(pullbackZone, 2)},未到位 ⏭`
       };
     }
-    const score = counterPullbackScore('SELL', last);
+    const score = counterPullbackScore('SELL', last, smc, price, atrValue);
     return {
       level: 'signal',
       strategy: name,
-      msg: `🔴 SELL 评分=${score} | 看跌反转回调: CHoCH↓+Sweep@${formatFixed(recentSweep.level, 2)} | ${counterPullbackDetails('SELL', recentChoch, recentSweep, last).join(' | ')}`
+      msg: `🔴 SELL 评分=${score} | 看跌反转回调: CHoCH↓+Sweep@${formatFixed(recentSweep.level, 2)} | ${counterPullbackDetails('SELL', recentChoch, recentSweep, last, smc, price, atrValue).join(' | ')}`
     };
   }
 
@@ -2045,7 +2101,7 @@ function evaluateCounterPullbackSignal(h1: EnrichedReplayBar[], price: number, s
     if (price > pullbackZone) {
       return null;
     }
-    return buildCounterPullbackSignal('BUY', price, atrValue, recentSweep.level, counterPullbackScore('BUY', last));
+    return buildCounterPullbackSignal('BUY', price, atrValue, recentSweep.level, counterPullbackScore('BUY', last, smc, price, atrValue));
   }
 
   if (recentChoch.direction === 'DOWN' && recentSweep.side === 'BEAR') {
@@ -2053,7 +2109,7 @@ function evaluateCounterPullbackSignal(h1: EnrichedReplayBar[], price: number, s
     if (price < pullbackZone) {
       return null;
     }
-    return buildCounterPullbackSignal('SELL', price, atrValue, recentSweep.level, counterPullbackScore('SELL', last));
+    return buildCounterPullbackSignal('SELL', price, atrValue, recentSweep.level, counterPullbackScore('SELL', last, smc, price, atrValue));
   }
 
   return null;
@@ -2072,7 +2128,13 @@ function recentCounterPullbackSweep(
   });
 }
 
-function counterPullbackScore(side: 'BUY' | 'SELL', last: EnrichedReplayBar): number {
+function counterPullbackScore(
+  side: 'BUY' | 'SELL',
+  last: EnrichedReplayBar,
+  smc?: ReplaySmcContext,
+  price = 0,
+  atr = 0
+): number {
   let score = 5;
   if (side === 'BUY' && last.rsi < 45) {
     score += 1;
@@ -2080,10 +2142,16 @@ function counterPullbackScore(side: 'BUY' | 'SELL', last: EnrichedReplayBar): nu
   if (side === 'SELL' && last.rsi > 55) {
     score += 1;
   }
+  if (hasCounterPullbackOrderBlock(side, smc, price, atr)) {
+    score += 1;
+  }
   if (side === 'BUY' && last.macd_hist > 0) {
     score += 1;
   }
   if (side === 'SELL' && last.macd_hist < 0) {
+    score += 1;
+  }
+  if (hasCounterPullbackFVG(smc, price, atr)) {
     score += 1;
   }
   return Math.min(score, 10);
@@ -2093,7 +2161,10 @@ function counterPullbackDetails(
   side: 'BUY' | 'SELL',
   choch: ReplayStructureBreak,
   sweep: ReplayLiquiditySweep,
-  last: EnrichedReplayBar
+  last: EnrichedReplayBar,
+  smc?: ReplaySmcContext,
+  price = 0,
+  atr = 0
 ): string[] {
   const details = [`CHoCH@${choch.index}`, `Sweep@${formatFixed(sweep.level, 2)}`];
   if (side === 'BUY' && last.rsi < 45) {
@@ -2102,13 +2173,37 @@ function counterPullbackDetails(
   if (side === 'SELL' && last.rsi > 55) {
     details.push(`RSI=${formatFixed(last.rsi, 1)}`);
   }
+  if (hasCounterPullbackOrderBlock(side, smc, price, atr)) {
+    details.push('OB确认');
+  }
   if (side === 'BUY' && last.macd_hist > 0) {
     details.push('MACD>0');
   }
   if (side === 'SELL' && last.macd_hist < 0) {
     details.push('MACD<0');
   }
+  if (hasCounterPullbackFVG(smc, price, atr)) {
+    details.push('FVG确认');
+  }
   return details;
+}
+
+function hasCounterPullbackOrderBlock(side: 'BUY' | 'SELL', smc: ReplaySmcContext | undefined, price: number, atr: number): boolean {
+  if (price <= 0 || atr <= 0) {
+    return false;
+  }
+  return (smc?.h1_obs ?? []).some((ob) => ob.side === side && ob.valid && zoneNearPrice(ob.low, ob.high, price, atr));
+}
+
+function hasCounterPullbackFVG(smc: ReplaySmcContext | undefined, price: number, atr: number): boolean {
+  if (price <= 0 || atr <= 0) {
+    return false;
+  }
+  return (smc?.h1_fvgs ?? []).some((fvg) => !fvg.filled && zoneNearPrice(fvg.lower_bound, fvg.upper_bound, price, atr));
+}
+
+function zoneNearPrice(low: number, high: number, price: number, threshold: number): boolean {
+  return high >= price - threshold && low <= price + threshold;
 }
 
 function evaluateBreakoutPyramidSignal(h1: EnrichedReplayBar[], price: number): ReplaySignal | null {
