@@ -660,14 +660,15 @@ function bootstrapTokenRecords(
 
 function tradingCoreAnalysis(store: EaStore, accountId: string, symbol: string, timestamp: string): EaRecord {
   const latestTick = store.getLatestTick(accountId, symbol) ?? {};
-  const positions = store.getPositions(accountId, symbol);
+  const positions = filterPositionsForSymbol(symbol, store.getPositions(accountId, symbol));
   const replayBars = {
     H1: store.getBars(accountId, symbol, 'H1'),
     H4: store.getBars(accountId, symbol, 'H4'),
     M30: store.getBars(accountId, symbol, 'M30'),
     M15: store.getBars(accountId, symbol, 'M15'),
     M5: store.getBars(accountId, symbol, 'M5'),
-    M1: store.getBars(accountId, symbol, 'M1')
+    M1: store.getBars(accountId, symbol, 'M1'),
+    D1: store.getBars(accountId, symbol, 'D1')
   };
   return {
     status: 'OK',
@@ -1718,6 +1719,37 @@ function currentPriceForReplay(currentPrice: number, h1Bars: EaRecord[]): number
   return typeof latestH1Close === 'number' && Number.isFinite(latestH1Close) ? latestH1Close : currentPrice;
 }
 
+function filterPositionsForSymbol(symbol: string, positions: EaRecord[]): EaRecord[] {
+  const base = baseSymbol(symbol);
+  return positions.filter((position) => {
+    const positionSymbol = stringFieldOrEmpty(position, 'symbol');
+    return positionSymbol.length === 0 || baseSymbol(positionSymbol) === base;
+  });
+}
+
+function baseSymbol(symbol: string): string {
+  const normalized = symbol.trim().toUpperCase().replace(/M#$/, '').replace(/#$/, '');
+  switch (normalized) {
+    case 'GOLD':
+    case 'XAUUSD':
+      return 'XAUUSD';
+    case 'US100':
+    case 'NAS100':
+    case 'US100CASH':
+      return 'US100CASH';
+    case 'USOIL':
+    case 'WTI':
+    case 'USOILCASH':
+      return 'USOILCASH';
+    case 'UKOIL':
+    case 'BRENT':
+    case 'UKOILCASH':
+      return 'UKOILCASH';
+    default:
+      return normalized;
+  }
+}
+
 function shanghaiTimestamp(timestamp: string): string {
   const millis = parseDateMillis(timestamp);
   if (millis == null) {
@@ -1732,11 +1764,22 @@ function pad2(value: number): string {
 }
 
 function round2(value: number): number {
-  return Math.round(value * 100) / 100;
+  return roundToEven(value, 2);
 }
 
 function round4(value: number): number {
   return Math.round(value * 10000) / 10000;
+}
+
+function roundToEven(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  const scaled = value * factor;
+  const floor = Math.floor(scaled);
+  const fraction = scaled - floor;
+  if (Math.abs(fraction - 0.5) < Number.EPSILON) {
+    return (floor % 2 === 0 ? floor : floor + 1) / factor;
+  }
+  return Math.round(scaled) / factor;
 }
 
 function accountSummaries(store: EaStore): EaRecord[] {

@@ -191,6 +191,19 @@ function pullbackBuyBars() {
   return bars;
 }
 
+function d1TrendBars() {
+  return Array.from({ length: 40 }, (_, index) => ({
+    time: `2026-04-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`,
+    open: 100 + index,
+    high: 101 + index,
+    low: 99 + index,
+    close: 100 + index,
+    adx: 35,
+    ema20: 120,
+    ema50: 100
+  }));
+}
+
 function atrExpansionBars(historyCount: number) {
   return [
     ...Array.from({ length: historyCount }, (_, index) => ({
@@ -2322,6 +2335,15 @@ describe('app-server scaffold', () => {
           open_price: 100,
           profit: 10,
           open_time: Date.parse('2026-04-13T07:00:00.000Z') / 1000
+        },
+        {
+          ticket: 1002,
+          symbol: 'XAUUSD',
+          type: 'sell',
+          lots: 1,
+          open_price: 100,
+          profit: 0,
+          open_time: Date.parse('2026-04-13T07:58:30.000Z') / 1000
         }
       ]
     });
@@ -2343,6 +2365,11 @@ describe('app-server scaffold', () => {
       hold_hours: 1,
       hold_seconds: 3600,
       pnl_percent: 10
+    });
+    expect(body.positions?.[1]).toMatchObject({
+      direction: 'SELL',
+      hold_hours: 0.02,
+      hold_seconds: 90
     });
   });
 
@@ -3639,6 +3666,12 @@ describe('app-server scaffold', () => {
       timeframe: 'H1',
       bars: pullbackBuyBars()
     });
+    store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'D1',
+      bars: d1TrendBars()
+    });
 
     const response = await server.inject({
       method: 'GET',
@@ -3648,12 +3681,13 @@ describe('app-server scaffold', () => {
 
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body) as {
-      replay?: { signal?: { strategy?: string; side?: string; entry?: number } | null };
+      replay?: { signal?: { strategy?: string; side?: string; entry?: number; score?: number } | null };
     };
     expect(body.replay?.signal).toMatchObject({
       strategy: 'pullback',
       side: 'BUY',
-      entry: 95
+      entry: 95,
+      score: 8
     });
   });
 });

@@ -6,7 +6,7 @@ export class AnalysisService {
 
   analyzeAccountSymbol(accountId: string, symbol: string) {
     const latestTick = this.store.getLatestTick(accountId, symbol) ?? {};
-    const positions = this.store.getPositions(accountId, symbol);
+    const positions = filterPositionsForSymbol(symbol, this.store.getPositions(accountId, symbol));
     const latestAIResult = this.store.getAIResults(accountId).find((result) => result.symbol === symbol);
     const h1Bars = this.store.getBars(accountId, symbol, 'H1');
     return {
@@ -21,7 +21,8 @@ export class AnalysisService {
           M30: this.store.getBars(accountId, symbol, 'M30'),
           M15: this.store.getBars(accountId, symbol, 'M15'),
           M5: this.store.getBars(accountId, symbol, 'M5'),
-          M1: this.store.getBars(accountId, symbol, 'M1')
+          M1: this.store.getBars(accountId, symbol, 'M1'),
+          D1: this.store.getBars(accountId, symbol, 'D1')
         },
         positions,
         position_states: this.store.loadPositionStates(accountId, symbol),
@@ -68,6 +69,42 @@ function currentPriceForReplay(currentPrice: number, h1Bars: EaRecord[]): number
   }
   const latestH1Close = h1Bars.at(-1)?.close;
   return typeof latestH1Close === 'number' ? latestH1Close : currentPrice;
+}
+
+function filterPositionsForSymbol(symbol: string, positions: EaRecord[]): EaRecord[] {
+  const base = baseSymbol(symbol);
+  return positions.filter((position) => {
+    const positionSymbol = stringField(position, 'symbol');
+    return positionSymbol.length === 0 || baseSymbol(positionSymbol) === base;
+  });
+}
+
+function baseSymbol(symbol: string): string {
+  const normalized = symbol.trim().toUpperCase().replace(/M#$/, '').replace(/#$/, '');
+  switch (normalized) {
+    case 'GOLD':
+    case 'XAUUSD':
+      return 'XAUUSD';
+    case 'US100':
+    case 'NAS100':
+    case 'US100CASH':
+      return 'US100CASH';
+    case 'USOIL':
+    case 'WTI':
+    case 'USOILCASH':
+      return 'USOILCASH';
+    case 'UKOIL':
+    case 'BRENT':
+    case 'UKOILCASH':
+      return 'UKOILCASH';
+    default:
+      return normalized;
+  }
+}
+
+function stringField(record: EaRecord, field: string): string {
+  const value = record[field];
+  return typeof value === 'string' ? value : '';
 }
 
 function optionalNumberField(record: EaRecord, field: string): number | undefined {

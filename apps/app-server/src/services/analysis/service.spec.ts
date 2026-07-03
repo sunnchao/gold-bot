@@ -48,6 +48,65 @@ describe('AnalysisService', () => {
       entry: 95
     });
   });
+
+  it('passes D1 bars into replay trend scoring', () => {
+    const store = createInMemoryEaStore();
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 95,
+      ask: 95
+    });
+    store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: pullbackBuyBars()
+    });
+    store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'D1',
+      bars: d1TrendBars()
+    });
+
+    const result = new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
+
+    expect(result.replay.signal).toMatchObject({
+      strategy: 'pullback',
+      side: 'BUY',
+      score: 8
+    });
+  });
+
+  it('filters unrelated position symbols before replay conflict checks', () => {
+    const store = createInMemoryEaStore();
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 95,
+      ask: 95
+    });
+    store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: pullbackBuyBars()
+    });
+    store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      positions: [{ ticket: 2002, symbol: 'GBPJPY', type: 'BUY', lots: 0.2, open_price: 95.1, profit: 1.5 }]
+    });
+
+    const result = new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
+
+    expect(result.replay.signal).toMatchObject({
+      strategy: 'pullback',
+      side: 'BUY',
+      entry: 95
+    });
+  });
 });
 
 function pullbackBuyBars() {
@@ -76,4 +135,17 @@ function pullbackBuyBars() {
     open: 95
   };
   return bars;
+}
+
+function d1TrendBars() {
+  return Array.from({ length: 40 }, (_, index) => ({
+    time: `2026-04-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`,
+    open: 100 + index,
+    high: 101 + index,
+    low: 99 + index,
+    close: 100 + index,
+    adx: 35,
+    ema20: 120,
+    ema50: 100
+  }));
 }
