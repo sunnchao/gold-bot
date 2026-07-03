@@ -1876,6 +1876,22 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(response.body)).toMatchObject({
       risk_gate: { status: 'accepted' }
     });
+    expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+      expect.objectContaining({
+        decision_id: 'tpv1_close_all',
+        stage: 'risk_gate',
+        status: 'accepted',
+        reason_codes: ['action.audit_safe'],
+        summary: expect.objectContaining({ status: 'accepted', mode: 'close', symbol: 'XAUUSD' })
+      }),
+      expect.objectContaining({
+        decision_id: 'tpv1_close_all',
+        stage: 'ai_result',
+        status: 'accepted',
+        reason_codes: ['mode.close', 'risk.high'],
+        summary: expect.objectContaining({ mode: 'close', symbol: 'XAUUSD', confidence: 87 })
+      })
+    ]);
 
     const poll = await server.inject({
       method: 'POST',

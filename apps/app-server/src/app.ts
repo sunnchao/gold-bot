@@ -626,6 +626,7 @@ function handleAIResultRoute(
   const riskGate = aiTradePlanRiskGate(deps.store, accountId, symbol, tradePlan, deps.nowIso());
   const decisionId = stringFieldOrEmpty(tradePlan, 'decision_id');
   const mode = stringFieldOrEmpty(tradePlan, 'mode');
+  recordAIDecisionTimeline(deps.store, accountId, symbol, tradePlan, riskGate, deps.nowIso());
   const riskCommandRequested = shouldQueueAIRiskCommand(parsed.body);
   const riskCommands = queueAIRiskCommands(deps, accountId, symbol, parsed.body, tradePlan, riskGate);
   const command = !riskCommandRequested && riskGate.status === 'accepted' && mode !== 'observe' && mode !== 'veto' && mode !== 'close'
@@ -658,6 +659,54 @@ function handleAIResultRoute(
       ...(command == null ? {} : { command_status: command.status })
     }
   };
+}
+
+function recordAIDecisionTimeline(store: EaStore, accountId: string, symbol: string, tradePlan: EaRecord, riskGate: EaRecord, createdAt: string): void {
+  const decisionId = stringFieldOrEmpty(tradePlan, 'decision_id');
+  store.recordDecisionEvent({
+    decision_id: decisionId,
+    account_id: accountId,
+    symbol,
+    stage: 'ai_result',
+    status: 'accepted',
+    reason_codes: stringArrayField(tradePlan, 'reason_codes'),
+    summary: {
+      decision_id: decisionId,
+      mode: stringFieldOrEmpty(tradePlan, 'mode'),
+      symbol: stringFieldOrEmpty(tradePlan, 'symbol') || symbol,
+      confidence: numberField(tradePlan, 'confidence')
+    },
+    related_command_id: '',
+    created_at: createdAt
+  });
+  store.recordDecisionEvent({
+    decision_id: decisionId,
+    account_id: accountId,
+    symbol,
+    stage: 'risk_gate',
+    status: riskGateDecisionStatus(stringFieldOrEmpty(riskGate, 'status')),
+    reason_codes: stringArrayField(riskGate, 'reason_codes'),
+    summary: {
+      decision_id: stringFieldOrEmpty(riskGate, 'decision_id'),
+      mode: stringFieldOrEmpty(riskGate, 'mode'),
+      symbol: stringFieldOrEmpty(riskGate, 'symbol') || symbol,
+      status: stringFieldOrEmpty(riskGate, 'status'),
+      audit_only: booleanField(riskGate, 'audit_only'),
+      requested_lots: numberField(riskGate, 'requested_lots'),
+      allowed_lots: numberField(riskGate, 'allowed_lots'),
+      max_risk_lots: numberField(riskGate, 'max_risk_lots'),
+      max_margin_lots: numberField(riskGate, 'max_margin_lots')
+    },
+    related_command_id: '',
+    created_at: createdAt
+  });
+}
+
+function riskGateDecisionStatus(status: string): 'pending' | 'accepted' | 'rejected' | 'clamped' {
+  if (status === 'accepted' || status === 'rejected' || status === 'clamped') {
+    return status;
+  }
+  return 'pending';
 }
 
 function shouldQueueAIRiskCommand(payload: EaRecord): boolean {
@@ -1676,6 +1725,11 @@ function booleanField(record: EaRecord, field: string): boolean {
 function stringFieldOrEmpty(record: EaRecord, field: string): string {
   const value = record[field];
   return typeof value === 'string' ? value : '';
+}
+
+function stringArrayField(record: EaRecord, field: string): string[] {
+  const value = record[field];
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 }
 
 function symbolOrDefault(payload: EaRecord): string {
