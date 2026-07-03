@@ -57,7 +57,6 @@ export function createIndicatorAlertCache(nowMs: () => number): IndicatorAlertCa
         alerts.set(key, { alert: structuredClone(alert), lastSentAtMs: now, count: (existing?.count ?? 0) + 1 });
         return true;
       }
-      existing.alert = structuredClone(alert);
       existing.count += 1;
       return false;
     },

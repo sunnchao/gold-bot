@@ -35,7 +35,7 @@ export type AIRouteHelpers = {
 export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helpers: AIRouteHelpers): JsonResponse {
   const parts = request.path.split('/').filter(Boolean);
 
-  if (parts[0] === 'api' && parts[1] === 'analysis_payload' && parts[2] != null && parts.length === 3 && request.method === 'GET') {
+  if (parts[0] === 'api' && parts[1] === 'analysis_payload' && parts[2] != null && parts.length === 3) {
     const tokenResult = requireRouteToken(deps.validTokens, request.headers, request.url);
     if (tokenResult.response != null) {
       return tokenResult.response;
@@ -48,7 +48,7 @@ export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helper
       body: helpers.analysisPayload(deps.store, parts[2], 'XAUUSD', deps.nowIso())
     };
   }
-  if (parts[0] === 'api' && parts[1] === 'v2' && parts[2] === 'analysis_payload' && parts[3] != null && parts[4] != null && parts.length === 5 && request.method === 'GET') {
+  if (parts[0] === 'api' && parts[1] === 'v2' && parts[2] === 'analysis_payload' && parts[3] != null && parts[4] != null && parts.length === 5) {
     const tokenResult = requireRouteToken(deps.validTokens, request.headers, request.url);
     if (tokenResult.response != null) {
       return tokenResult.response;
