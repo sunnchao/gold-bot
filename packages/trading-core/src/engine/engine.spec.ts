@@ -191,6 +191,28 @@ describe('strategy engine replay-backed slice', () => {
     });
   });
 
+  it('rounds forex signal prices with Go symbol precision', () => {
+    const result = analyze({
+      accountId: '90011087',
+      symbol: 'EURUSD',
+      price: 1.09567,
+      bars: {
+        H1: eurusdPullbackBuyBars()
+      }
+    });
+
+    expect(result.decision).toBe('signal');
+    expect(result.signal).toMatchObject({
+      strategy: 'pullback',
+      side: 'BUY',
+      entry: 1.09567,
+      stopLoss: 1.09513,
+      tp1: 1.09621,
+      tp2: 1.09675,
+      score: 9
+    });
+  });
+
   it('filters a pullback BUY signal when H4 is range-bound', () => {
     const result = analyze({
       accountId: '90011087',
@@ -713,6 +735,29 @@ function pullbackBuyBars() {
     ...bars[49],
     close: 95,
     open: 95
+  };
+  return bars;
+}
+
+function eurusdPullbackBuyBars() {
+  const bars = Array.from({ length: 50 }, (_, index) => ({
+    time: `2026-04-16T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 1.09567,
+    high: 1.09592,
+    low: 1.09542,
+    close: 1.09567,
+    atr: 0.00036,
+    adx: 35,
+    rsi: 45,
+    ema20: 1.0957,
+    ema50: 1.09,
+    macd_hist: 0.0001
+  }));
+
+  bars[48] = {
+    ...bars[48],
+    close: 1.09569,
+    open: 1.09569
   };
   return bars;
 }
