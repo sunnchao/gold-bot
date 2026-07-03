@@ -8,14 +8,15 @@ export class AnalysisService {
     const latestTick = this.store.getLatestTick(accountId, symbol) ?? {};
     const positions = this.store.getPositions(accountId, symbol);
     const latestAIResult = this.store.getAIResults(accountId).find((result) => result.symbol === symbol);
+    const h1Bars = this.store.getBars(accountId, symbol, 'H1');
     return {
       replay: runReplay({
         account_id: accountId,
         symbol,
         analysis_time: this.nowIso(),
-        current_price: currentPriceFromTick(latestTick),
+        current_price: currentPriceForReplay(currentPriceFromTick(latestTick), h1Bars),
         bars: {
-          H1: this.store.getBars(accountId, symbol, 'H1'),
+          H1: h1Bars,
           H4: this.store.getBars(accountId, symbol, 'H4'),
           M30: this.store.getBars(accountId, symbol, 'M30'),
           M15: this.store.getBars(accountId, symbol, 'M15'),
@@ -59,6 +60,14 @@ function currentPriceFromTick(tick: EaRecord): number {
   const ask = typeof tick.ask === 'number' ? tick.ask : undefined;
   const bid = typeof tick.bid === 'number' ? tick.bid : undefined;
   return ask ?? bid ?? 0;
+}
+
+function currentPriceForReplay(currentPrice: number, h1Bars: EaRecord[]): number {
+  if (currentPrice !== 0) {
+    return currentPrice;
+  }
+  const latestH1Close = h1Bars.at(-1)?.close;
+  return typeof latestH1Close === 'number' ? latestH1Close : currentPrice;
 }
 
 function optionalNumberField(record: EaRecord, field: string): number | undefined {

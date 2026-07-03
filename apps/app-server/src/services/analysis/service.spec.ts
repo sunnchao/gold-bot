@@ -30,6 +30,24 @@ describe('AnalysisService', () => {
       stop_loss: 93
     });
   });
+
+  it('uses the latest H1 close for replay analysis when no current tick exists', () => {
+    const store = createInMemoryEaStore();
+    store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: pullbackBuyBars()
+    });
+
+    const result = new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
+
+    expect(result.replay.signal).toMatchObject({
+      strategy: 'pullback',
+      side: 'BUY',
+      entry: 95
+    });
+  });
 });
 
 function pullbackBuyBars() {
