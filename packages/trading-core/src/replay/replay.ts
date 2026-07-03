@@ -98,7 +98,7 @@ export type ReplaySmcContext = {
   h1_fvgs?: ReplayFVG[];
 };
 
-type ReplayStrategyName = 'pullback' | 'breakout_retest' | 'divergence' | 'counter_pullback' | 'breakout_pyramid' | 'momentum_scalp';
+type ReplayStrategyName = 'pullback' | 'breakout_retest' | 'divergence' | 'counter_pullback' | 'breakout_pyramid' | 'momentum_scalp' | 'scale_in';
 
 export type ReplaySignal = {
   side: 'BUY' | 'SELL';

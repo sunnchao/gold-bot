@@ -4,6 +4,7 @@ export const EA_STRATEGY_NAMES = [
   'divergence',
   'breakout_pyramid',
   'counter_pullback',
+  'scale_in',
   'range',
   'momentum_scalp',
   'ai_signal'
