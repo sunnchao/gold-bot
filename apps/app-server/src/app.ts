@@ -466,6 +466,9 @@ function validateEaPayload(path: string, body: EaRecord, store: EaStore): string
     case '/positions':
       return normalizePositionsPayload(body, store);
     case '/order_result':
+      if (hasInvalidOptionalString(body, ['command_id', 'result', 'error'])) {
+        return 'invalid JSON';
+      }
       if (stringFieldOrEmpty(body, 'command_id').trim().length === 0) {
         return 'missing command_id';
       }
@@ -533,6 +536,9 @@ function normalizeTickPayload(body: EaRecord): string | null {
 }
 
 function normalizeBarsPayload(body: EaRecord): string | null {
+  if (hasInvalidOptionalString(body, ['symbol', 'timeframe'])) {
+    return 'invalid JSON';
+  }
   if (body.bars == null) {
     body.bars = [];
     return null;
@@ -549,7 +555,6 @@ function normalizeBarsPayload(body: EaRecord): string | null {
       'high',
       'low',
       'close',
-      'volume',
       'ema20',
       'ema50',
       'ema200',
@@ -582,6 +587,15 @@ function normalizeBarsPayload(body: EaRecord): string | null {
     ])) {
       return 'invalid JSON';
     }
+    if (hasInvalidOptionalInteger(bar, ['volume'])) {
+      return 'invalid JSON';
+    }
+    if (hasInvalidOptionalString(bar, ['macd_divergence', 'rsi_divergence'])) {
+      return 'invalid JSON';
+    }
+    if (hasInvalidOptionalStringArray(bar, ['candlestick_patterns'])) {
+      return 'invalid JSON';
+    }
     const time = bar.time;
     if (time == null) {
       continue;
@@ -599,6 +613,9 @@ function normalizeBarsPayload(body: EaRecord): string | null {
 }
 
 function normalizePositionsPayload(body: EaRecord, store: EaStore): string | null {
+  if (hasInvalidOptionalString(body, ['symbol'])) {
+    return 'invalid JSON';
+  }
   if (body.positions == null) {
     body.positions = [];
     return null;
@@ -2364,6 +2381,13 @@ function hasInvalidOptionalString(record: EaRecord, fields: readonly string[]): 
   return fields.some((field) => {
     const value = record[field];
     return value != null && typeof value !== 'string';
+  });
+}
+
+function hasInvalidOptionalStringArray(record: EaRecord, fields: readonly string[]): boolean {
+  return fields.some((field) => {
+    const value = record[field];
+    return value != null && (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string'));
   });
 }
 

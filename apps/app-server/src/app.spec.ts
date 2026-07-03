@@ -886,6 +886,42 @@ describe('app-server scaffold', () => {
         assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
       },
       {
+        path: '/bars',
+        body: { account_id: '90011087', symbol: 123, timeframe: 'H1', bars: [] },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
+      },
+      {
+        path: '/bars',
+        body: { account_id: '90011087', symbol: 'XAUUSD', timeframe: 60, bars: [] },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', '')).toEqual([])
+      },
+      {
+        path: '/bars',
+        body: { account_id: '90011087', timeframe: 'H1', bars: [{ volume: 10.5 }] },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
+      },
+      {
+        path: '/bars',
+        body: { account_id: '90011087', timeframe: 'H1', bars: [{ macd_divergence: 123 }] },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
+      },
+      {
+        path: '/bars',
+        body: { account_id: '90011087', timeframe: 'H1', bars: [{ candlestick_patterns: ['hammer', 123] }] },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
+      },
+      {
+        path: '/positions',
+        body: { account_id: '90011087', symbol: 123, positions: [] },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getPositions('90011087')).toEqual([])
+      },
+      {
         path: '/positions',
         body: { account_id: '90011087', positions: [{ ticket: '123' }] },
         message: 'invalid JSON',
@@ -924,6 +960,12 @@ describe('app-server scaffold', () => {
       {
         path: '/order_result',
         body: { account_id: '90011087', command_id: 'cmd_1', result: 'filled', ticket: 321.5 },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
+      },
+      {
+        path: '/order_result',
+        body: { account_id: '90011087', command_id: 'cmd_1', result: 'filled', error: 500 },
         message: 'invalid JSON',
         assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
       }

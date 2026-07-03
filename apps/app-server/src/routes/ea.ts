@@ -96,7 +96,7 @@ export function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, helper
         helpers.stringFieldOrEmpty(parsed.body, 'command_id'),
         helpers.stringFieldOrEmpty(parsed.body, 'result'),
         typeof parsed.body.ticket === 'number' ? parsed.body.ticket : undefined,
-        helpers.stringFieldOrEmpty(parsed.body, 'error') || helpers.stringFieldOrEmpty(parsed.body, 'error_text'),
+        helpers.stringFieldOrEmpty(parsed.body, 'error'),
         deps.nowIso()
       );
       if (deps.onOrderResult == null) {
