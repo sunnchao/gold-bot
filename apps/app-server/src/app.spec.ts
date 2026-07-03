@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInMemoryEaStore, createSqliteEaStore, type EaCommand } from '@gold-bot/persistence';
@@ -137,6 +137,31 @@ describe('app-server scaffold', () => {
     expect(response.headers['content-type']).toContain('text/plain');
     expect(response.body).toContain('# HELP goldbot_http_requests_total');
     expect(response.body).toContain('goldbot_http_requests_total');
+  });
+
+  it('serves dashboard static files with Go-compatible SPA fallbacks', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gold-bot-dashboard-'));
+    try {
+      const dist = join(dir, 'web', 'dashboard', 'dist');
+      mkdirSync(join(dist, 'accounts', '__dynamic__'), { recursive: true });
+      writeFileSync(join(dist, 'index.html'), '<main>dashboard shell</main>');
+      writeFileSync(join(dist, 'accounts', '__dynamic__', 'index.html'), '<main>account detail</main>');
+      const server = createAppServer({ releaseRoot: dir });
+
+      const root = await server.inject({ method: 'GET', url: '/' });
+      const spa = await server.inject({ method: 'GET', url: '/audit' });
+      const account = await server.inject({ method: 'GET', url: '/accounts/90011087' });
+
+      expect(root.statusCode).toBe(200);
+      expect(root.headers['content-type']).toContain('text/html');
+      expect(root.body).toBe('<main>dashboard shell</main>');
+      expect(spa.statusCode).toBe(200);
+      expect(spa.body).toBe('<main>dashboard shell</main>');
+      expect(account.statusCode).toBe(200);
+      expect(account.body).toBe('<main>account detail</main>');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('serves public EA release version metadata', async () => {

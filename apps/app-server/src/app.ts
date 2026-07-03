@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { join } from 'node:path';
+import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EA_COMPAT_ENDPOINTS, isEaCompatEndpoint, isEaStrategyName, type HeaderMap } from '@gold-bot/shared-contracts';
 import { createInMemoryEaStore, persistenceStatus, type CommandCandidate, type EaRecord, type EaStore, type StoredCommand } from '@gold-bot/persistence';
@@ -397,6 +397,11 @@ async function routeRequest(
         eventStreamSnapshot
       }
     );
+  }
+
+  const dashboardResponse = staticDashboardResponse(method, path, deps.releaseRoot);
+  if (dashboardResponse != null) {
+    return dashboardResponse;
   }
 
   return { statusCode: 404, body: { status: 'ERROR', message: 'not found' } };
@@ -1659,6 +1664,111 @@ function prometheusMetricsResponse(): JsonResponse {
       ''
     ].join('\n')
   };
+}
+
+function staticDashboardResponse(method: string, path: string, releaseRoot: string): JsonResponse | null {
+  const distDir = join(releaseRoot, 'web', 'dashboard', 'dist');
+  if (!isDirectory(distDir)) {
+    return null;
+  }
+  if (method !== 'GET' && method !== 'HEAD') {
+    return {
+      statusCode: 405,
+      headers: {
+        Allow: 'GET, HEAD',
+        'Content-Type': 'text/plain; charset=utf-8'
+      },
+      body: null,
+      rawBody: 'method not allowed\n'
+    };
+  }
+
+  const target = resolveDashboardFile(distDir, path);
+  if (target == null) {
+    return null;
+  }
+  return {
+    statusCode: 200,
+    headers: {
+      'Content-Type': contentTypeForPath(target)
+    },
+    body: null,
+    rawBody: method === 'HEAD' ? '' : readFileSync(target)
+  };
+}
+
+function resolveDashboardFile(distDir: string, requestPath: string): string | undefined {
+  const cleaned = cleanDashboardPath(requestPath);
+  if (cleaned == null) {
+    return undefined;
+  }
+
+  const candidates = cleaned.length === 0
+    ? [join(distDir, 'index.html')]
+    : [
+        join(distDir, cleaned),
+        join(distDir, cleaned, 'index.html'),
+        join(distDir, `${cleaned}.html`),
+        ...(cleaned.startsWith('accounts/')
+          ? [
+              join(distDir, 'accounts', '__dynamic__', 'index.html'),
+              join(distDir, 'accounts', '__dynamic__.html')
+            ]
+          : []),
+        ...(extname(cleaned).length === 0 ? [join(distDir, 'index.html')] : [])
+      ];
+
+  return candidates.find((candidate) => isFile(candidate));
+}
+
+function cleanDashboardPath(requestPath: string): string | undefined {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(requestPath);
+  } catch {
+    return undefined;
+  }
+  const cleaned = normalize(`/${decoded}`).replace(/^[/\\]+/, '');
+  if (cleaned === '.') {
+    return '';
+  }
+  if (cleaned === '..' || cleaned.startsWith('../') || cleaned.startsWith('..\\')) {
+    return undefined;
+  }
+  return cleaned;
+}
+
+function contentTypeForPath(path: string): string {
+  switch (extname(path).toLowerCase()) {
+    case '.html':
+      return 'text/html; charset=utf-8';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.js':
+      return 'application/javascript; charset=utf-8';
+    case '.json':
+      return 'application/json';
+    case '.txt':
+      return 'text/plain; charset=utf-8';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function currentEaRelease(releaseRoot: string): { ok: true; info: EaReleaseInfo } | { ok: false; message: string } {
