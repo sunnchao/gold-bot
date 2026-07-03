@@ -895,6 +895,42 @@ describe('persistence scaffold', () => {
         cleanup();
       }
     });
+
+    it(`expires pending signals using UTC-normalized timestamps in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        store.savePendingSignal({
+          id: 7,
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          side: 'buy',
+          score: 87,
+          strategy: 'momentum_scalp',
+          status: 'pending',
+          created_at: '2026-04-13T07:59:00.000Z',
+          expires_at: '2026-04-13T16:00:00+08:00'
+        });
+        store.savePendingSignal({
+          id: 8,
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          side: 'sell',
+          score: 74,
+          strategy: 'range',
+          status: 'pending',
+          created_at: '2026-04-13T08:00:00.000Z',
+          expires_at: '2026-04-13T16:02:00+08:00'
+        });
+
+        expect(store.expirePendingSignals('2026-04-13T08:00:01.000Z')).toBe(1);
+        expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([
+          expect.objectContaining({ id: 8, status: 'pending' })
+        ]);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
   }
 
   it('updates and expires pending signal arbitration state', () => {

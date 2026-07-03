@@ -1336,7 +1336,7 @@ function expirePendingSignalsInMemory(signals: Map<string, EaRecord[]>, nowIso: 
   let expired = 0;
   for (const entries of signals.values()) {
     for (const signal of entries) {
-      if (stringField(signal, 'status') === 'pending' && stringField(signal, 'expires_at') < nowIso) {
+      if (stringField(signal, 'status') === 'pending' && isPendingSignalExpired(signal, nowIso)) {
         signal.status = 'timeout';
         signal.arbitration_result = 'timeout';
         signal.arbitration_reason = 'expired';
@@ -1469,6 +1469,21 @@ function updatePendingSignalInSqlite(db: DatabaseSync, id: number, result: strin
   return false;
 }
 
+function isPendingSignalExpired(signal: EaRecord, nowIso: string): boolean {
+  const expiresAt = stringField(signal, 'expires_at');
+  const expiresMs = timestampMillis(expiresAt);
+  const nowMs = timestampMillis(nowIso);
+  if (expiresMs != null && nowMs != null) {
+    return expiresMs < nowMs;
+  }
+  return expiresAt < nowIso;
+}
+
+function timestampMillis(value: string): number | null {
+  const millis = new Date(value).getTime();
+  return Number.isFinite(millis) ? millis : null;
+}
+
 function expirePendingSignalsInSqlite(db: DatabaseSync, nowIso: string): number {
   const select = db.prepare(`
     SELECT rowid AS row_id, payload_json FROM ea_events
@@ -1479,7 +1494,7 @@ function expirePendingSignalsInSqlite(db: DatabaseSync, nowIso: string): number 
   let expired = 0;
   for (const row of select.all() as Array<{ row_id: number; payload_json: string }>) {
     const payload = fromJson(row.payload_json) as EaRecord;
-    if (stringField(payload, 'status') === 'pending' && stringField(payload, 'expires_at') < nowIso) {
+    if (stringField(payload, 'status') === 'pending' && isPendingSignalExpired(payload, nowIso)) {
       payload.status = 'timeout';
       payload.arbitration_result = 'timeout';
       payload.arbitration_reason = 'expired';
