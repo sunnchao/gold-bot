@@ -760,18 +760,18 @@ function buildAIRiskCommandCandidates(
 ): CommandCandidate[] {
   const exitSuggestion = stringFieldOrEmpty(payload, 'exit_suggestion').toLowerCase();
   const timestamp = aiRiskCommandTimestamp(nowIso);
+  const timestampNanos = aiRiskCommandTimestampNanos(nowIso);
   const confidence = payload.confidence;
   const alertReason = stringFieldOrEmpty(payload, 'alert_reason');
   if (exitSuggestion === 'close_short') {
-    return buildCloseShortRiskCommands(store, accountId, symbol, timestamp, alertReason, confidence, tradePlan, riskGate);
+    return buildCloseShortRiskCommands(store, accountId, symbol, timestampNanos, alertReason, confidence, tradePlan, riskGate);
   }
 
   const action = exitSuggestion === 'close_all' ? 'CLOSE_ALL' : 'CLOSE_PARTIAL';
   const candidate: CommandCandidate = {
     command_id: `ai_close_${timestamp}`,
     action,
-    source: 'ai_result',
-    symbol,
+    source: 'ai_risk_alert',
     reason: exitSuggestion === 'close_all' ? `AI风险警报(全平): ${alertReason}` : `AI风险警报(减仓50%): ${alertReason}`,
     confidence
   };
@@ -786,7 +786,7 @@ function buildCloseShortRiskCommands(
   store: EaStore,
   accountId: string,
   symbol: string,
-  timestamp: number,
+  timestamp: string,
   alertReason: string,
   confidence: unknown,
   tradePlan?: EaRecord,
@@ -807,7 +807,7 @@ function buildCloseShortRiskCommands(
     const candidate: CommandCandidate = {
       command_id: `ai_close_${timestamp}_${ticket}`,
       action: 'CLOSE',
-      source: 'ai_result',
+      source: 'ai_risk_alert',
       ticket,
       symbol,
       reason: `AI风险警报(平空): ${alertReason}`,
@@ -835,6 +835,14 @@ function aiRiskCommandTimestamp(nowIso: string): number {
     return Math.floor(millis / 1000);
   }
   return Math.floor(Date.now() / 1000);
+}
+
+function aiRiskCommandTimestampNanos(nowIso: string): string {
+  const millis = Date.parse(nowIso);
+  if (Number.isFinite(millis)) {
+    return (BigInt(millis) * 1_000_000n).toString();
+  }
+  return (BigInt(Date.now()) * 1_000_000n).toString();
 }
 
 function parseTradePlanPayload(payload: EaRecord, expectedAccountId: string, expectedSymbol: string): {

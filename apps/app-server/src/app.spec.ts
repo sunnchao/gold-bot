@@ -1928,8 +1928,10 @@ describe('app-server scaffold', () => {
     expect(pollBody.commands[0]).toMatchObject({
       action: 'CLOSE_ALL',
       reason: 'AI风险警报(全平): volatility spike',
-      confidence: 87
+      confidence: 87,
+      source: 'ai_risk_alert'
     });
+    expect(pollBody.commands[0]).not.toHaveProperty('symbol');
   });
 
   it('queues legacy AI close_short risk alerts only for matching SELL positions', async () => {
@@ -1972,8 +1974,10 @@ describe('app-server scaffold', () => {
     for (const command of pollBody.commands) {
       expect(command).toMatchObject({
         action: 'CLOSE',
-        reason: 'AI风险警报(平空): 多周期强bullish共振'
+        reason: 'AI风险警报(平空): 多周期强bullish共振',
+        source: 'ai_risk_alert'
       });
+      expect(String(command.command_id)).toMatch(/^ai_close_1776067200000000000_\d+$/);
     }
   });
 
@@ -2035,7 +2039,7 @@ describe('app-server scaffold', () => {
         decision_id: 'tpv1_close_all',
         stage: 'command_enqueued',
         status: 'pending',
-        reason_codes: ['command.CLOSE_ALL', 'source.ai_result'],
+        reason_codes: ['command.CLOSE_ALL', 'source.ai_risk_alert'],
         summary: expect.objectContaining({ action: 'CLOSE_ALL' })
       }),
       expect.objectContaining({
@@ -2064,10 +2068,12 @@ describe('app-server scaffold', () => {
     expect(pollBody.count).toBe(1);
     expect(pollBody.commands[0]).toMatchObject({
       action: 'CLOSE_ALL',
+      source: 'ai_risk_alert',
       decision_id: 'tpv1_close_all',
       trade_plan_mode: 'close',
       risk_gate: { status: 'accepted' }
     });
+    expect(pollBody.commands[0]).not.toHaveProperty('symbol');
   });
 
   it('does not queue V2 AI risk commands when the trade-plan risk gate rejects', async () => {
