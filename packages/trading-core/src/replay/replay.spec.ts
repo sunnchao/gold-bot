@@ -745,6 +745,25 @@ describe('replay harness Go oracle slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
+  it('matches the Go breakout pyramid BUY guard from replay SMC short order blocks', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 102,
+      bars: { H1: breakoutPyramidBuySignalBars() },
+      smc: {
+        H1ShortOBs: [{ Index: 28, Side: 'SELL', High: 102.2, Low: 101.8, Valid: true }]
+      }
+    });
+
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: '突破加仓',
+      msg: '前方有空头OB 102.20 (距离0.2点), 突破风险高 ⏭'
+    });
+    expect(result.canProduceLiveCommands).toBe(false);
+  });
+
   it('matches the Go breakout pyramid SELL guard ahead of bullish order block', () => {
     const result = runReplay({
       account_id: '90011087',
@@ -757,6 +776,25 @@ describe('replay harness Go oracle slice', () => {
       level: 'info',
       strategy: '突破加仓',
       msg: '前方有多头OB 98.60 (距离0.2点), 突破风险高 ⏭'
+    });
+    expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('matches the Go breakout pyramid SELL guard from replay SMC short order blocks', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 98,
+      bars: { H1: breakoutPyramidSellSignalBars() },
+      smc: {
+        H1ShortOBs: [{ Index: 28, Side: 'BUY', High: 98.2, Low: 97.8, Valid: true }]
+      }
+    });
+
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: '突破加仓',
+      msg: '前方有多头OB 97.80 (距离0.2点), 突破风险高 ⏭'
     });
     expect(result.canProduceLiveCommands).toBe(false);
   });

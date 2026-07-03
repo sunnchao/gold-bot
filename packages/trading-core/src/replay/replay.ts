@@ -94,6 +94,7 @@ export type ReplaySmcContext = {
   h1_breaks: ReplayStructureBreak[];
   h1_sweeps: ReplayLiquiditySweep[];
   h1_obs?: ReplayOrderBlock[];
+  h1_short_obs?: ReplayOrderBlock[];
   h1_fvgs?: ReplayFVG[];
 };
 
@@ -286,7 +287,7 @@ function collectReplayCandidates(
     evaluateBreakoutRetestSignal(h1, price),
     evaluateDivergenceSignal(h1, price),
     evaluateCounterPullbackSignal(h1, price, smc),
-    evaluateBreakoutPyramidSignal(h1, price),
+    evaluateBreakoutPyramidSignal(h1, price, smc),
     evaluateMomentumScalpSignal(m15, m5, m1, price, momentumConfig)
   ].filter((signal): signal is ReplaySignal => signal != null);
 }
@@ -416,6 +417,7 @@ function normalizeReplaySmc(value: unknown): ReplaySmcContext | undefined {
     h1_breaks: normalizeStructureBreaks(record.h1_breaks ?? record.h1Breaks ?? record.H1Breaks),
     h1_sweeps: normalizeLiquiditySweeps(record.h1_sweeps ?? record.h1Sweeps ?? record.H1Sweeps),
     h1_obs: normalizeOrderBlocks(record.h1_obs ?? record.h1OBs ?? record.H1OBs),
+    h1_short_obs: normalizeOrderBlocks(record.h1_short_obs ?? record.h1ShortOBs ?? record.H1ShortOBs),
     h1_fvgs: normalizeFVGs(record.h1_fvgs ?? record.h1FVGs ?? record.H1FVGs)
   };
 }
@@ -718,7 +720,7 @@ function buildReplayLogs(
       breakoutRetestLog(h1, price, rawSignal),
       divergenceLog(h1, rawSignal),
       ...counterPullbackLogs(snapshot.smc, h1, price, rawSignal),
-      breakoutPyramidLog(h1, price, rawSignal),
+      breakoutPyramidLog(h1, price, rawSignal, snapshot.smc),
       scaleInLog(snapshot.positions ?? [])
     );
   }
@@ -1159,7 +1161,12 @@ function counterPullbackLog(
   return { level: 'info', strategy: name, msg: '无CHoCH+Sweep组合 ⏭' };
 }
 
-function breakoutPyramidLog(h1: EnrichedReplayBar[], price: number, signal?: ReplaySignal | null): ReplayLog {
+function breakoutPyramidLog(
+  h1: EnrichedReplayBar[],
+  price: number,
+  signal?: ReplaySignal | null,
+  smc?: ReplaySmcContext
+): ReplayLog {
   const name = '突破加仓';
   if (h1.length < 30) {
     return { level: 'info', strategy: name, msg: '数据不足 ⏭' };
@@ -1186,7 +1193,7 @@ function breakoutPyramidLog(h1: EnrichedReplayBar[], price: number, signal?: Rep
   }
 
   if (last.close > last.bb_upper && last.ema20 > last.ema50) {
-    const blockedOb = breakoutPyramidBlockingOrderBlock(h1, 'BUY');
+    const blockedOb = breakoutPyramidBlockingOrderBlock(h1, 'BUY', smc);
     if (blockedOb != null) {
       return {
         level: 'info',
@@ -1197,7 +1204,7 @@ function breakoutPyramidLog(h1: EnrichedReplayBar[], price: number, signal?: Rep
   }
 
   if (last.close < last.bb_lower && last.ema20 < last.ema50) {
-    const blockedOb = breakoutPyramidBlockingOrderBlock(h1, 'SELL');
+    const blockedOb = breakoutPyramidBlockingOrderBlock(h1, 'SELL', smc);
     if (blockedOb != null) {
       return {
         level: 'info',
@@ -1218,16 +1225,30 @@ function breakoutPyramidLog(h1: EnrichedReplayBar[], price: number, signal?: Rep
   return { level: 'info', strategy: name, msg };
 }
 
-function breakoutPyramidBlockingOrderBlock(h1: EnrichedReplayBar[], side: 'BUY' | 'SELL'): BreakoutPyramidOrderBlock | undefined {
+function breakoutPyramidBlockingOrderBlock(
+  h1: EnrichedReplayBar[],
+  side: 'BUY' | 'SELL',
+  smc?: ReplaySmcContext
+): BreakoutPyramidOrderBlock | undefined {
   const last = h1[h1.length - 1];
   if (side === 'BUY') {
-    return breakoutPyramidContinuationOrderBlocks(h1, 'SELL', 20, 'BULL').find(
+    return breakoutPyramidShortOrderBlocks(h1, smc, 'SELL', 'BULL').find(
       (ob) => ob.valid && ob.high > last.bb_upper && ob.high < last.bb_upper + last.atr * 2
     );
   }
-  return breakoutPyramidContinuationOrderBlocks(h1, 'BUY', 20, 'BEAR').find(
+  return breakoutPyramidShortOrderBlocks(h1, smc, 'BUY', 'BEAR').find(
     (ob) => ob.valid && ob.low < last.bb_lower && ob.low > last.bb_lower - last.atr * 2
   );
+}
+
+function breakoutPyramidShortOrderBlocks(
+  h1: EnrichedReplayBar[],
+  smc: ReplaySmcContext | undefined,
+  obSide: 'BUY' | 'SELL',
+  trendDirection: 'BULL' | 'BEAR'
+): BreakoutPyramidOrderBlock[] {
+  const smcBlocks = (smc?.h1_short_obs ?? []).filter((ob) => ob.side === obSide);
+  return [...smcBlocks, ...breakoutPyramidContinuationOrderBlocks(h1, obSide, 20, trendDirection)];
 }
 
 type BreakoutPyramidOrderBlock = {
@@ -2206,7 +2227,7 @@ function zoneNearPrice(low: number, high: number, price: number, threshold: numb
   return high >= price - threshold && low <= price + threshold;
 }
 
-function evaluateBreakoutPyramidSignal(h1: EnrichedReplayBar[], price: number): ReplaySignal | null {
+function evaluateBreakoutPyramidSignal(h1: EnrichedReplayBar[], price: number, smc?: ReplaySmcContext): ReplaySignal | null {
   if (h1.length < 30 || price <= 0) {
     return null;
   }
@@ -2217,14 +2238,14 @@ function evaluateBreakoutPyramidSignal(h1: EnrichedReplayBar[], price: number): 
   }
 
   if (last.close > last.bb_upper && last.ema20 > last.ema50) {
-    if (breakoutPyramidBlockingOrderBlock(h1, 'BUY') != null) {
+    if (breakoutPyramidBlockingOrderBlock(h1, 'BUY', smc) != null) {
       return null;
     }
     return buildBreakoutPyramidSignal('BUY', price, atrValue, last, breakoutPyramidScore('BUY', last));
   }
 
   if (last.close < last.bb_lower && last.ema20 < last.ema50) {
-    if (breakoutPyramidBlockingOrderBlock(h1, 'SELL') != null) {
+    if (breakoutPyramidBlockingOrderBlock(h1, 'SELL', smc) != null) {
       return null;
     }
     return buildBreakoutPyramidSignal('SELL', price, atrValue, last, breakoutPyramidScore('SELL', last));
