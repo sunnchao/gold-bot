@@ -110,6 +110,7 @@ describe('persistence scaffold', () => {
 
     const delivered = store.pollCommands('90011087');
     expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ source: 'ai_result' });
     expect(store.getCommand(stored.command_id)?.status).toBe('delivered');
 
     store.reconcileCommandResult('90011087', stored.command_id, 'filled', 1001);

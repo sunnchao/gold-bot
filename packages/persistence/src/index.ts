@@ -148,10 +148,7 @@ export function createInMemoryEaStore(): EaStore {
       return cloneArray(state.orderResults.get(accountId) ?? []);
     },
     enqueueCommand(accountId, command) {
-      state.commands.set(command.command_id, createStoredCommand(accountId, {
-        source: 'ea_analysis',
-        ...cloneCommand(command)
-      }, 'queued'));
+      state.commands.set(command.command_id, createStoredCommand(accountId, cloneCommand(command), 'queued'));
     },
     saveCommandCandidate(accountId, candidate) {
       const commandId = typeof candidate.command_id === 'string' && candidate.command_id.length > 0
@@ -1181,7 +1178,7 @@ function cloneArray(value: unknown[]): EaRecord[] {
 function createStoredCommand(accountId: string, candidate: CommandCandidate | EaCommand, status: CommandStatus): StoredCommand {
   const source = normalizeCommandSource(candidate.source);
   const commandId = typeof candidate.command_id === 'string' && candidate.command_id.length > 0 ? candidate.command_id : `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  return {
+  const stored = {
     ...cloneRecord(candidate as EaRecord),
     account_id: accountId,
     command_id: commandId,
@@ -1190,6 +1187,8 @@ function createStoredCommand(accountId: string, candidate: CommandCandidate | Ea
     status,
     created_at: currentTimestamp()
   } as StoredCommand;
+  setPollSourceVisible(stored, Object.prototype.hasOwnProperty.call(candidate, 'source'));
+  return stored;
 }
 
 function cloneStoredCommand(value: StoredCommand | undefined): StoredCommand | undefined {
@@ -1209,11 +1208,28 @@ function toEaCommand(command: StoredCommand): EaCommand {
   const out = cloneRecord(command as EaRecord) as EaCommand;
   delete (out as EaRecord).account_id;
   delete (out as EaRecord).status;
-  delete (out as EaRecord).source;
+  if (!isPollSourceVisible(command)) {
+    delete (out as EaRecord).source;
+  }
   delete (out as EaRecord).created_at;
   delete (out as EaRecord).delivered_at;
   delete (out as EaRecord).result;
+  if (out.ticket === undefined) {
+    delete (out as EaRecord).ticket;
+  }
   return out;
+}
+
+function setPollSourceVisible(command: StoredCommand, visible: boolean): void {
+  Object.defineProperty(command, '__poll_source_visible', {
+    value: visible,
+    enumerable: false,
+    configurable: true
+  });
+}
+
+function isPollSourceVisible(command: StoredCommand): boolean {
+  return (command as EaRecord).__poll_source_visible === true;
 }
 
 type RuntimeCommandRow = {
@@ -1243,7 +1259,7 @@ function buildRuntimeCommand(commandId: string, row: RuntimeCommandRow): StoredC
   const payload = fromJson(row.payload_json) as EaRecord;
   const status = isCommandStatus(row.status) ? row.status : 'draft';
   const source = isCommandSource(row.source) ? row.source : 'ea_analysis';
-  return {
+  const command = {
     ...(payload as EaCommand),
     account_id: row.account_id,
     command_id: typeof payload.command_id === 'string' && payload.command_id.length > 0 ? payload.command_id : commandId,
@@ -1255,4 +1271,6 @@ function buildRuntimeCommand(commandId: string, row: RuntimeCommandRow): StoredC
     result: row.result.length > 0 ? row.result : undefined,
     ticket: typeof row.ticket === 'number' ? row.ticket : undefined
   };
+  setPollSourceVisible(command, Object.prototype.hasOwnProperty.call(payload, 'source'));
+  return command;
 }
