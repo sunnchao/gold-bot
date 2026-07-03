@@ -572,7 +572,7 @@ function bootstrapTokenRecords(
 
 function tradingCoreAnalysis(store: EaStore, accountId: string, symbol: string, timestamp: string): EaRecord {
   const latestTick = store.getLatestTick(accountId, symbol) ?? {};
-  const positions = store.getPositions(accountId);
+  const positions = store.getPositions(accountId, symbol);
   const replayBars = {
     H1: store.getBars(accountId, symbol, 'H1'),
     H4: store.getBars(accountId, symbol, 'H4'),
@@ -791,7 +791,7 @@ function buildCloseShortRiskCommands(
   tradePlan?: EaRecord,
   riskGate?: EaRecord
 ): CommandCandidate[] {
-  return store.getPositions(accountId).flatMap((position): CommandCandidate[] => {
+  return store.getPositions(accountId, symbol).flatMap((position): CommandCandidate[] => {
     const ticket = numberField(position, 'ticket');
     if (ticket <= 0) {
       return [];
@@ -1020,7 +1020,7 @@ function aiTradePlanRiskGate(store: EaStore, accountId: string, symbol: string, 
         ask: numberField(latestTick, 'ask'),
         spread: numberField(latestTick, 'spread')
       },
-      positions: store.getPositions(accountId).map((position) => ({
+      positions: store.getPositions(accountId, symbol).map((position) => ({
         ticket: numberField(position, 'ticket'),
         symbol: stringFieldOrEmpty(position, 'symbol'),
         type: stringFieldOrEmpty(position, 'type'),
@@ -1095,7 +1095,7 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
   const registration = store.getRegistration(accountId) ?? {};
   const heartbeat = store.getHeartbeat(accountId) ?? {};
   const latestTick = store.getLatestTick(accountId, symbol) ?? {};
-  const positions = store.getPositions(accountId);
+  const positions = store.getPositions(accountId, symbol);
   const barsByTimeframe = analysisBarsByTimeframe(store, accountId, symbol);
   const enrichedBarsByTimeframe = enrichBarsByTimeframe(barsByTimeframe);
   const marketStatus = analysisMarketStatus(heartbeat, latestTick, timestamp);

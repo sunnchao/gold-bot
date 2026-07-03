@@ -1768,6 +1768,32 @@ describe('app-server scaffold', () => {
     ]);
   });
 
+  it('filters analysis payload positions to the requested symbol', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      positions: [{ ticket: 1001, symbol: 'XAUUSD', type: 'BUY', lots: 0.1 }]
+    });
+    store.savePositions({
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      positions: [{ ticket: 2002, symbol: 'GBPJPY', type: 'SELL', lots: 0.2 }]
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect((JSON.parse(response.body) as { positions: Array<{ ticket: number }> }).positions).toEqual([
+      expect.objectContaining({ ticket: 1001 })
+    ]);
+  });
+
   it('queues legacy AI close_all risk alerts for EA poll', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });

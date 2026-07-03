@@ -6,7 +6,7 @@ export class AnalysisService {
 
   analyzeAccountSymbol(accountId: string, symbol: string) {
     const latestTick = this.store.getLatestTick(accountId, symbol) ?? {};
-    const positions = this.store.getPositions(accountId);
+    const positions = this.store.getPositions(accountId, symbol);
     return {
       replay: runReplay({
         account_id: accountId,

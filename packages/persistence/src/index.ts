@@ -32,7 +32,7 @@ export type EaStore = {
   saveBars(payload: EaRecord): void;
   getBars(accountId: string, symbol: string, timeframe: string): EaRecord[];
   savePositions(payload: EaRecord): void;
-  getPositions(accountId: string): EaRecord[];
+  getPositions(accountId: string, symbol?: string): EaRecord[];
   saveOrderResult(payload: EaRecord): void;
   getOrderResults(accountId: string): EaRecord[];
   enqueueCommand(accountId: string, command: EaCommand): void;
@@ -134,10 +134,15 @@ export function createInMemoryEaStore(): EaStore {
     },
     savePositions(payload) {
       const positions = Array.isArray(payload.positions) ? payload.positions : [];
-      state.positions.set(accountId(payload), cloneArray(positions));
+      state.positions.set(symbolKey(accountId(payload), symbolOrDefault(payload)), cloneArray(positions));
     },
-    getPositions(accountId) {
-      return cloneArray(state.positions.get(accountId) ?? []);
+    getPositions(accountId, symbol) {
+      if (symbol != null && symbol.length > 0) {
+        return cloneArray(state.positions.get(symbolKey(accountId, symbol)) ?? []);
+      }
+      return Array.from(state.positions.entries())
+        .filter(([key]) => key.startsWith(`${accountId}:`))
+        .flatMap(([, positions]) => cloneArray(positions));
     },
     saveOrderResult(payload) {
       const key = accountId(payload);
@@ -274,7 +279,7 @@ export function createInMemoryEaStore(): EaStore {
         ...state.heartbeats.keys(),
         ...Array.from(state.ticks.keys(), accountFromCompoundKey),
         ...Array.from(state.bars.keys(), accountFromCompoundKey),
-        ...state.positions.keys(),
+        ...Array.from(state.positions.keys(), accountFromCompoundKey),
         ...state.orderResults.keys(),
         ...state.decisionEvents.map((event) => event.account_id),
         ...Array.from(state.pendingSignals.keys(), accountFromCompoundKey),
@@ -294,11 +299,8 @@ export function createInMemoryEaStore(): EaStore {
       for (const key of state.bars.keys()) {
         appendSymbolFromKey(out, key, accountId);
       }
-      for (const position of state.positions.get(accountId) ?? []) {
-        const symbol = position.symbol;
-        if (typeof symbol === 'string') {
-          appendUnique(out, symbol);
-        }
+      for (const key of state.positions.keys()) {
+        appendSymbolFromKey(out, key, accountId);
       }
       for (const event of state.decisionEvents) {
         if (event.account_id === accountId) {
@@ -590,7 +592,10 @@ export function createSqliteEaStore(path: string): EaStore {
     savePositions(payload) {
       saveSnapshot.run('positions', accountId(payload), symbolOrDefault(payload), '', toJson(payload));
     },
-    getPositions(accountId) {
+    getPositions(accountId, symbol) {
+      if (symbol != null && symbol.length > 0) {
+        return (snapshotRecord(getSnapshot, 'positions', accountId, symbol, '')?.positions as EaRecord[] | undefined) ?? [];
+      }
       const rows = snapshotRows(db, 'positions', accountId);
       return rows.flatMap((row) => (Array.isArray(row.positions) ? (row.positions as EaRecord[]) : []));
     },

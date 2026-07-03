@@ -61,6 +61,25 @@ describe('persistence scaffold', () => {
     ]);
   });
 
+  it('isolates position snapshots by account and symbol while preserving account-wide reads', () => {
+    const store = createInMemoryEaStore();
+
+    store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      positions: [{ ticket: 1001, symbol: 'XAUUSD', type: 'BUY', lots: 0.1 }]
+    });
+    store.savePositions({
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      positions: [{ ticket: 2002, symbol: 'GBPJPY', type: 'SELL', lots: 0.2 }]
+    });
+
+    expect(store.getPositions('90011087', 'XAUUSD').map((position) => position.ticket)).toEqual([1001]);
+    expect(store.getPositions('90011087', 'GBPJPY').map((position) => position.ticket)).toEqual([2002]);
+    expect(store.getPositions('90011087').map((position) => position.ticket).sort()).toEqual([1001, 2002]);
+  });
+
   it('delivers explicitly queued commands once without generating commands itself', () => {
     const store = createInMemoryEaStore();
     const command: EaCommand = {
