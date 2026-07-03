@@ -161,6 +161,36 @@ describe('strategy engine replay-backed slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
+  it('passes AI stop loss suggestions through to the replay engine', () => {
+    const result = analyze({
+      accountId: '90011087',
+      symbol: 'XAUUSD',
+      price: 95,
+      bars: {
+        H1: pullbackBuyBars()
+      },
+      aiResult: {
+        suggested_sl: 93
+      }
+    });
+
+    expect(result.decision).toBe('signal');
+    expect(result.signal).toMatchObject({
+      strategy: 'pullback',
+      side: 'BUY',
+      entry: 95,
+      stopLoss: 93,
+      tp1: 98,
+      tp2: 101,
+      score: 9
+    });
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: 'AI止损',
+      message: '🤖 AI止损覆盖: 92.00 → 93.00 (基于支撑阻力位)'
+    });
+  });
+
   it('filters a pullback BUY signal when H4 is range-bound', () => {
     const result = analyze({
       accountId: '90011087',

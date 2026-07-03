@@ -15,6 +15,18 @@ export type StrategyInput = {
   symbol: string;
   price: number;
   bars: Record<string, StrategyBar[]>;
+  aiResult?: {
+    suggestedSL?: number;
+    suggested_sl?: number;
+    suggestedTP?: number;
+    suggested_tp?: number;
+  };
+  ai_result?: {
+    suggestedSL?: number;
+    suggested_sl?: number;
+    suggestedTP?: number;
+    suggested_tp?: number;
+  };
   smc?: ReplaySmcContext;
 };
 
@@ -59,6 +71,7 @@ export function analyze(_input: StrategyInput): StrategyDecision {
     symbol: _input.symbol,
     current_price: _input.price,
     bars: _input.bars,
+    ai_result: _input.ai_result ?? _input.aiResult,
     smc: _input.smc
   });
   if (replay.signal != null) {
