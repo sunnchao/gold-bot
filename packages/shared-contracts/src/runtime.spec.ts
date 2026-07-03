@@ -8,7 +8,7 @@ describe('runtime contracts', () => {
 
   it('freezes the supported command statuses and sources', () => {
     expect(commandStatuses).toEqual(['draft', 'shadow_only', 'queued', 'delivered', 'acked', 'rejected', 'failed', 'superseded']);
-    expect(commandSources).toEqual(['ea_analysis', 'position_review', 'ai_result', 'ai_risk_alert', 'ai_approve']);
+    expect(commandSources).toEqual(['ea_analysis', 'live_strategy', 'position_review', 'ai_result', 'ai_risk_alert', 'ai_approve']);
   });
 
   it('recognizes valid runtime types and rejects unknown ones', () => {
@@ -19,6 +19,7 @@ describe('runtime contracts', () => {
     expect(isCommandSource('ai_result')).toBe(true);
     expect(isCommandSource('ai_risk_alert')).toBe(true);
     expect(isCommandSource('ai_approve')).toBe(true);
+    expect(isCommandSource('live_strategy')).toBe(true);
     expect(isCommandSource('manual')).toBe(false);
   });
 });

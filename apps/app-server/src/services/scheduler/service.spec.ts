@@ -8,6 +8,13 @@ describe('SchedulerService', () => {
   it('publishes replay signals through the command lifecycle for cutover accounts', () => {
     const store = createInMemoryEaStore();
     store.setRuntimeMode('90011087', 'cutover');
+    store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
+    store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3335, high: 3337, low: 3333, close: 3336, atr: 2 }]
+    });
     const commandLifecycle = new CommandLifecycleService(store);
     const scheduler = new SchedulerService(
       {
@@ -17,29 +24,40 @@ describe('SchedulerService', () => {
               signal: {
                 strategy: 'pullback',
                 side: 'BUY',
-                entry: 3335.7,
+                entry: 3335,
                 stop_loss: 3330,
                 tp1: 3345,
                 tp2: 3355,
-                score: 8
+                score: 8,
+                atr: 2
               },
               position_commands: null
             }
           };
         }
       } as never,
-      commandLifecycle
+      commandLifecycle,
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
     );
 
+    scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
     scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
 
     const commands = store.listCommands('90011087');
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
-      source: 'ea_analysis',
+      source: 'live_strategy',
       status: 'queued',
-      strategy: 'pullback'
+      strategy: 'pullback',
+      trigger_key: 'H1:2026-04-13T07:00:00.000Z',
+      analysis_mode: 'bars',
+      order_type: 'BUY_LIMIT',
+      expiration: Math.floor(Date.parse('2026-04-13T08:00:00.000Z') / 1000) + 24 * 60 * 60
     });
+    expect(String(commands[0].command_id)).toMatch(/^live_[0-9a-f]{16}$/);
+    expect(commands[0].decision_id).toBe(commands[0].command_id);
   });
 
   it('skips replay analysis for non-live strategy timeframes', () => {

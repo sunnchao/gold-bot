@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { CommandCandidate, EaRecord, EaStore } from '@gold-bot/persistence';
 import { AnalysisService } from '../analysis/service.js';
 import { CommandLifecycleService } from '../command-lifecycle/service.js';
@@ -8,7 +9,8 @@ export class SchedulerService {
     private readonly analysis: AnalysisService,
     private readonly commandLifecycle: CommandLifecycleService,
     private readonly shadow?: ShadowService,
-    private readonly store?: Pick<EaStore, 'getHeartbeat'>
+    private readonly store?: Pick<EaStore, 'getHeartbeat' | 'getLatestTick' | 'getBars' | 'getCommand'>,
+    private readonly nowIso: () => string = () => new Date().toISOString()
   ) {}
 
   enqueueAnalysis(accountId: string, symbol: string, timeframe = ''): void {
@@ -67,10 +69,21 @@ export class SchedulerService {
     if (signal == null) {
       return;
     }
+    const signalRecord = signal as unknown as EaRecord;
+    const bars = this.barsByTimeframe(accountId, symbol);
+    const triggerKey = liveDecisionKey(stringField(signalRecord, 'strategy'), bars);
+    const commandId = liveCommandId(accountId, symbol, signalRecord, triggerKey);
+    if (this.store?.getCommand(commandId) != null) {
+      return;
+    }
+    const currentPrice = liveCurrentPrice(this.store?.getLatestTick(accountId, symbol) ?? {}, bars);
+    const atr = latestAtr(bars.H1) || numberField(signalRecord, 'atr');
+    const orderType = orderTypeForSignal(currentPrice, numberField(signalRecord, 'entry'), atr, stringField(signalRecord, 'side'));
     const candidate: CommandCandidate = {
-      command_id: `sig_${accountId}_${symbol}_${Date.now()}`,
+      command_id: commandId,
+      decision_id: commandId,
       action: 'SIGNAL',
-      source: 'ea_analysis',
+      source: 'live_strategy',
       strategy: signal.strategy,
       symbol,
       type: signal.side,
@@ -78,9 +91,34 @@ export class SchedulerService {
       sl: signal.stop_loss,
       tp1: signal.tp1,
       tp2: signal.tp2,
-      score: signal.score
+      score: signal.score,
+      atr: numberField(signalRecord, 'atr'),
+      scale_in_parent_ticket: numberField(signalRecord, 'scale_in_parent_ticket'),
+      weighted_avg_entry: numberField(signalRecord, 'weighted_avg_entry'),
+      unified_sl: numberField(signalRecord, 'unified_sl'),
+      scale_in_count: numberField(signalRecord, 'scale_in_count'),
+      trigger_key: triggerKey,
+      analysis_mode: 'bars',
+      order_type: orderType
     };
+    if (booleanField(signalRecord, 'fib_enhanced')) {
+      candidate.fib_enhanced = true;
+    }
+    if (orderType !== 'market') {
+      candidate.expiration = unixSeconds(this.nowIso()) + 24 * 60 * 60;
+    }
     this.commandLifecycle.acceptCandidate(accountId, candidate);
+  }
+
+  private barsByTimeframe(accountId: string, symbol: string): Record<string, EaRecord[]> {
+    return {
+      H1: this.store?.getBars(accountId, symbol, 'H1') ?? [],
+      H4: this.store?.getBars(accountId, symbol, 'H4') ?? [],
+      M30: this.store?.getBars(accountId, symbol, 'M30') ?? [],
+      M15: this.store?.getBars(accountId, symbol, 'M15') ?? [],
+      M5: this.store?.getBars(accountId, symbol, 'M5') ?? [],
+      M1: this.store?.getBars(accountId, symbol, 'M1') ?? []
+    };
   }
 }
 
@@ -90,4 +128,90 @@ function isLiveStrategyTimeframe(timeframe: string): boolean {
 
 function explicitBoolean(record: EaRecord, field: string): boolean | undefined {
   return typeof record[field] === 'boolean' ? record[field] : undefined;
+}
+
+function liveDecisionKey(strategy: string, bars: Record<string, EaRecord[]>): string {
+  return strategy === 'momentum_scalp'
+    ? lastLiveBarRef(bars, 'M1', 'M5', 'M15', 'H1')
+    : lastLiveBarRef(bars, 'H1', 'M15', 'M5', 'M30', 'H4', 'M1');
+}
+
+function lastLiveBarRef(bars: Record<string, EaRecord[]>, ...order: string[]): string {
+  for (const timeframe of order) {
+    const last = bars[timeframe]?.at(-1);
+    const time = last == null ? '' : stringField(last, 'time').trim();
+    if (time.length > 0) {
+      return `${timeframe}:${time}`;
+    }
+  }
+  return 'no-bars';
+}
+
+function liveCommandId(accountId: string, symbol: string, signal: EaRecord, decisionKey: string): string {
+  const seed = [
+    accountId,
+    symbol.toUpperCase(),
+    stringField(signal, 'strategy'),
+    stringField(signal, 'side'),
+    decisionKey
+  ].join('|');
+  return `live_${createHash('sha1').update(seed).digest('hex').slice(0, 16)}`;
+}
+
+function liveCurrentPrice(tick: EaRecord, bars: Record<string, EaRecord[]>): number {
+  const bid = numberField(tick, 'bid');
+  const ask = numberField(tick, 'ask');
+  if (bid > 0 && ask > 0) {
+    return (bid + ask) / 2;
+  }
+  if (ask > 0) {
+    return ask;
+  }
+  if (bid > 0) {
+    return bid;
+  }
+  for (const timeframe of ['H1', 'M15', 'M5', 'M1', 'M30', 'H4']) {
+    const close = numberField(bars[timeframe]?.at(-1) ?? {}, 'close');
+    if (close > 0) {
+      return close;
+    }
+  }
+  return 0;
+}
+
+function latestAtr(bars: EaRecord[]): number {
+  const last = bars.at(-1);
+  return last == null ? 0 : numberField(last, 'atr') || numberField(last, 'ATR');
+}
+
+function orderTypeForSignal(price: number, entry: number, atr: number, side: string): string {
+  if (atr <= 0) {
+    return 'market';
+  }
+  if (Math.abs(price - entry) <= atr * 0.3) {
+    return 'market';
+  }
+  if (side === 'BUY') {
+    return entry <= price ? 'BUY_LIMIT' : 'BUY_STOP';
+  }
+  return entry >= price ? 'SELL_LIMIT' : 'SELL_STOP';
+}
+
+function unixSeconds(value: string): number {
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) ? Math.floor(millis / 1000) : Math.floor(Date.now() / 1000);
+}
+
+function numberField(record: EaRecord, field: string): number {
+  const value = record[field];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function stringField(record: EaRecord, field: string): string {
+  const value = record[field];
+  return typeof value === 'string' ? value : '';
+}
+
+function booleanField(record: EaRecord, field: string): boolean {
+  return record[field] === true;
 }

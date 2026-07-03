@@ -146,7 +146,7 @@ export function createAppServer(options: AppServerOptions = {}) {
   const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso);
   const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
   const commandLifecycle = new CommandLifecycleService(baseDeps.store, options.defaultRuntimeMode ?? 'oracle', shadow);
-  const scheduler = new SchedulerService(analysis, commandLifecycle, shadow, baseDeps.store);
+  const scheduler = new SchedulerService(analysis, commandLifecycle, shadow, baseDeps.store, baseDeps.nowIso);
   const deps: AppServerDeps = {
     ...baseDeps,
     commandLifecycle,

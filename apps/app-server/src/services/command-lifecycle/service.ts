@@ -44,6 +44,9 @@ export class CommandLifecycleService {
 }
 
 function shadowSourceForCommand(source: StoredCommand['source']): ShadowRuntimeSnapshot['source'] {
+  if (source === 'live_strategy') {
+    return 'ea_analysis';
+  }
   return source === 'ai_risk_alert' || source === 'ai_approve' ? 'ai_result' : source;
 }
 
