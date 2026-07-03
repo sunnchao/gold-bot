@@ -1299,6 +1299,7 @@ describe('app-server scaffold', () => {
       positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY', lots: 0.1, open_price: 3330, profit: 5.25 }]
     });
     store.saveAIResult('90011087', 'XAUUSD', { bias: 'bullish', confidence: 82 });
+    store.saveAIResult('90011087', 'GBPJPY', { bias: 'bearish', confidence: 64 });
     store.recordDecisionEvent({
       decision_id: 'tpv1_old',
       account_id: '90011087',

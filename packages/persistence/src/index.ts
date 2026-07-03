@@ -95,7 +95,7 @@ type StoreState = {
   shadowSnapshots: Map<string, ShadowRuntimeSnapshot>;
   decisionEvents: DecisionEvent[];
   pendingSignals: Map<string, EaRecord[]>;
-  aiResults: Map<string, EaRecord[]>;
+  aiResults: Map<string, EaRecord>;
   apiTokens: Map<string, StoredApiToken>;
   nextCommandId: number;
   nextDecisionEventId: number;
@@ -318,11 +318,12 @@ export function createInMemoryEaStore(): EaStore {
       return expirePendingSignalsInMemory(state.pendingSignals, nowIso);
     },
     saveAIResult(accountId, symbol, payload) {
-      const current = state.aiResults.get(accountId) ?? [];
-      state.aiResults.set(accountId, [...current, { account_id: accountId, symbol, ...cloneRecord(payload) }]);
+      state.aiResults.set(symbolKey(accountId, symbol), { account_id: accountId, symbol, ...cloneRecord(payload) });
     },
     getAIResults(accountId) {
-      return cloneArray(state.aiResults.get(accountId) ?? []);
+      return Array.from(state.aiResults.entries())
+        .filter(([key]) => key.startsWith(`${accountId}:`))
+        .map(([, result]) => cloneRecord(result));
     },
     saveApiToken(payload) {
       const token = normalizeApiToken(payload);
@@ -372,11 +373,8 @@ export function createInMemoryEaStore(): EaStore {
       for (const key of state.pendingSignals.keys()) {
         appendSymbolFromKey(out, key, accountId);
       }
-      for (const aiResult of state.aiResults.get(accountId) ?? []) {
-        const symbol = aiResult.symbol;
-        if (typeof symbol === 'string') {
-          appendUnique(out, symbol);
-        }
+      for (const key of state.aiResults.keys()) {
+        appendSymbolFromKey(out, key, accountId);
       }
       return out;
     },
@@ -514,6 +512,11 @@ export function createSqliteEaStore(path: string): EaStore {
   const getSnapshot = db.prepare(`
     SELECT payload_json FROM ea_snapshots
     WHERE kind = ? AND account_id = ? AND symbol = ? AND timeframe = ?
+  `);
+  const selectSnapshotsByKindAccount = db.prepare(`
+    SELECT payload_json FROM ea_snapshots
+    WHERE kind = ? AND account_id = ?
+    ORDER BY rowid ASC
   `);
   const insertEvent = db.prepare(`
     INSERT INTO ea_events (kind, account_id, symbol, payload_json, delivered)
@@ -940,10 +943,10 @@ export function createSqliteEaStore(path: string): EaStore {
       return expirePendingSignalsInSqlite(db, nowIso);
     },
     saveAIResult(accountId, symbol, payload) {
-      insertEvent.run('ai_result', accountId, symbol, toJson({ account_id: accountId, symbol, ...payload }), 1);
+      saveSnapshot.run('ai_result', accountId, symbol, '', toJson({ account_id: accountId, symbol, ...payload }));
     },
     getAIResults(accountId) {
-      return eventPayloads(selectEventsAnyDelivery, 'ai_result', accountId);
+      return eventPayloads(selectSnapshotsByKindAccount, 'ai_result', accountId);
     },
     saveApiToken(payload) {
       const token = normalizeApiToken(payload);

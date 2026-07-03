@@ -183,6 +183,23 @@ describe('persistence scaffold', () => {
         cleanup();
       }
     });
+
+    it(`keeps only the latest AI result per symbol in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        store.saveAIResult('90011087', 'XAUUSD', { confidence: 70, bias: 'old' });
+        store.saveAIResult('90011087', 'GBPJPY', { confidence: 61, bias: 'cross' });
+        store.saveAIResult('90011087', 'XAUUSD', { confidence: 82, bias: 'new' });
+
+        expect(store.getAIResults('90011087')).toEqual([
+          { account_id: '90011087', symbol: 'XAUUSD', confidence: 82, bias: 'new' },
+          { account_id: '90011087', symbol: 'GBPJPY', confidence: 61, bias: 'cross' }
+        ]);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
   }
 
   it('delivers explicitly queued commands once without generating commands itself', () => {

@@ -1586,8 +1586,9 @@ function accountSummaries(store: EaStore): EaRecord[] {
 
 function accountDetail(store: EaStore, accountId: string, timestamp: string): EaRecord {
   const payload = analysisPayload(store, accountId, 'XAUUSD', timestamp);
-  const aiResults = store.getAIResults(accountId);
-  const latestAIResult = aiResults.length === 0 ? {} : stripNodeAIResultEnvelope(aiResults[aiResults.length - 1]);
+  const defaultSymbolAIResult = store.getAIResults(accountId)
+    .find((record) => stringFieldOrEmpty(record, 'symbol').toUpperCase() === 'XAUUSD');
+  const latestAIResult = defaultSymbolAIResult == null ? {} : stripNodeAIResultEnvelope(defaultSymbolAIResult);
   return {
     status: 'OK',
     account: payload.account,
