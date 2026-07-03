@@ -146,7 +146,7 @@ export function createAppServer(options: AppServerOptions = {}) {
   const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso);
   const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
   const commandLifecycle = new CommandLifecycleService(baseDeps.store, options.defaultRuntimeMode ?? 'oracle', shadow);
-  const scheduler = new SchedulerService(analysis, commandLifecycle, shadow);
+  const scheduler = new SchedulerService(analysis, commandLifecycle, shadow, baseDeps.store);
   const deps: AppServerDeps = {
     ...baseDeps,
     commandLifecycle,
@@ -277,7 +277,7 @@ async function routeRequest(
         validTokens: deps.validTokens,
         tokenAccounts: deps.tokenAccounts,
         adminTokens: deps.adminTokens,
-        onBarsSaved: (accountId, symbol) => deps.scheduler.enqueueAnalysis(accountId, symbol),
+        onBarsSaved: (accountId, symbol, timeframe) => deps.scheduler.enqueueAnalysis(accountId, symbol, timeframe),
         onPositionsSaved: (accountId, symbol) => deps.scheduler.enqueuePositionReview(accountId, symbol),
         onOrderResult: (accountId, commandId, result, ticket, errorText, createdAt) => deps.commandLifecycle.reconcile(accountId, commandId, result, ticket, errorText, createdAt),
       },

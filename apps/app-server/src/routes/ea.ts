@@ -19,7 +19,7 @@ export type EaRouteDeps = {
   validTokens: Set<string> | null;
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;
-  onBarsSaved?: (accountId: string, symbol: string) => void;
+  onBarsSaved?: (accountId: string, symbol: string, timeframe: string) => void;
   onPositionsSaved?: (accountId: string, symbol: string) => void;
   onOrderResult?: (accountId: string, commandId: string, result: string, ticket?: number, errorText?: string, createdAt?: string) => void;
 };
@@ -74,7 +74,7 @@ export function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, helper
       return ok({ status: 'OK' });
     case '/bars':
       deps.store.saveBars(parsed.body);
-      deps.onBarsSaved?.(accountId, helpers.symbolOrDefault(parsed.body));
+      deps.onBarsSaved?.(accountId, helpers.symbolOrDefault(parsed.body), helpers.stringFieldOrEmpty(parsed.body, 'timeframe'));
       return ok({
         status: 'OK',
         received: Array.isArray(parsed.body.bars) ? parsed.body.bars.length : 0

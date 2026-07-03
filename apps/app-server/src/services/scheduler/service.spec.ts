@@ -31,7 +31,7 @@ describe('SchedulerService', () => {
       commandLifecycle
     );
 
-    scheduler.enqueueAnalysis('90011087', 'XAUUSD');
+    scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
 
     const commands = store.listCommands('90011087');
     expect(commands).toHaveLength(1);
@@ -40,6 +40,81 @@ describe('SchedulerService', () => {
       status: 'queued',
       strategy: 'pullback'
     });
+  });
+
+  it('skips replay analysis for non-live strategy timeframes', () => {
+    const store = createInMemoryEaStore();
+    store.setRuntimeMode('90011087', 'cutover');
+    let calls = 0;
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          calls += 1;
+          return {
+            replay: {
+              signal: {
+                strategy: 'pullback',
+                side: 'BUY',
+                entry: 3335.7,
+                stop_loss: 3330,
+                tp1: 3345,
+                tp2: 3355,
+                score: 8
+              },
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store
+    );
+
+    scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'D1');
+
+    expect(calls).toBe(0);
+    expect(store.listCommands('90011087')).toEqual([]);
+  });
+
+  it('skips replay analysis when EA runtime is not tradeable', () => {
+    const store = createInMemoryEaStore();
+    store.setRuntimeMode('90011087', 'cutover');
+    store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: false,
+      is_trade_allowed: true
+    });
+    let calls = 0;
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          calls += 1;
+          return {
+            replay: {
+              signal: {
+                strategy: 'pullback',
+                side: 'BUY',
+                entry: 3335.7,
+                stop_loss: 3330,
+                tp1: 3345,
+                tp2: 3355,
+                score: 8
+              },
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store
+    );
+
+    scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+
+    expect(calls).toBe(0);
+    expect(store.listCommands('90011087')).toEqual([]);
   });
 
   it('publishes replay position commands through the command lifecycle for cutover accounts', () => {
