@@ -865,6 +865,36 @@ describe('persistence scaffold', () => {
         cleanup();
       }
     });
+
+    it(`allocates pending signal ids before recording candidate decisions in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        store.savePendingSignal({
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          side: 'buy',
+          score: 87,
+          strategy: 'momentum_scalp',
+          status: 'pending',
+          created_at: '2026-04-13T08:00:00.000Z',
+          expires_at: '2026-04-13T08:01:00.000Z'
+        });
+
+        expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([
+          expect.objectContaining({ id: 1, strategy: 'momentum_scalp' })
+        ]);
+        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+          expect.objectContaining({
+            decision_id: 'candidate_90011087_XAUUSD_1',
+            stage: 'candidate_signal',
+            summary: expect.objectContaining({ signal_id: 1 })
+          })
+        ]);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
   }
 
   it('updates and expires pending signal arbitration state', () => {

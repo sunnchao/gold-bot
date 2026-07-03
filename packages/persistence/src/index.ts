@@ -100,6 +100,7 @@ type StoreState = {
   apiTokens: Map<string, StoredApiToken>;
   nextCommandId: number;
   nextDecisionEventId: number;
+  nextPendingSignalId: number;
 };
 
 export function createInMemoryEaStore(): EaStore {
@@ -120,7 +121,8 @@ export function createInMemoryEaStore(): EaStore {
     aiResults: new Map(),
     apiTokens: new Map(),
     nextCommandId: 1,
-    nextDecisionEventId: 1
+    nextDecisionEventId: 1,
+    nextPendingSignalId: 1
   };
 
   return {
@@ -305,6 +307,12 @@ export function createInMemoryEaStore(): EaStore {
     savePendingSignal(payload) {
       const key = symbolKey(accountId(payload), symbolOrDefault(payload));
       const signal = normalizePendingSignal(payload);
+      const explicitId = numericField(signal, 'id');
+      if (explicitId > 0) {
+        state.nextPendingSignalId = Math.max(state.nextPendingSignalId, explicitId + 1);
+      } else {
+        signal.id = state.nextPendingSignalId++;
+      }
       const current = state.pendingSignals.get(key) ?? [];
       state.pendingSignals.set(key, [...current, signal]);
       const event = candidateSignalDecisionEvent(signal);
@@ -936,6 +944,9 @@ export function createSqliteEaStore(path: string): EaStore {
     },
     savePendingSignal(payload) {
       const signal = normalizePendingSignal(payload);
+      if (numericField(signal, 'id') <= 0) {
+        signal.id = nextPendingSignalIdInSqlite(db);
+      }
       insertEvent.run('pending_signal', accountId(payload), symbolOrDefault(payload), toJson(signal), 1);
       const event = candidateSignalDecisionEvent(signal);
       if (event != null) {
@@ -1425,6 +1436,19 @@ function ensureSqliteColumn(db: DatabaseSync, table: string, column: string, def
 
 function eventPayloads(statement: { all(...params: unknown[]): unknown[] }, ...params: unknown[]): EaRecord[] {
   return (statement.all(...params) as Array<{ payload_json: string }>).map((row) => fromJson(row.payload_json) as EaRecord);
+}
+
+function nextPendingSignalIdInSqlite(db: DatabaseSync): number {
+  const rows = db.prepare(`
+    SELECT payload_json FROM ea_events
+    WHERE kind = 'pending_signal'
+    ORDER BY rowid ASC
+  `).all() as Array<{ payload_json: string }>;
+  const maxId = rows.reduce((max, row) => {
+    const payload = fromJson(row.payload_json) as EaRecord;
+    return Math.max(max, numericField(payload, 'id'));
+  }, 0);
+  return maxId + 1;
 }
 
 function updatePendingSignalInSqlite(db: DatabaseSync, id: number, result: string, reason: string): boolean {
