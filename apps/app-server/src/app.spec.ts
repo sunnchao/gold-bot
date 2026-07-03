@@ -1352,6 +1352,34 @@ describe('app-server scaffold', () => {
     expect(connectedCard).toMatchObject({ value: '1' });
   });
 
+  it('accepts Go-compatible non-GET methods for admin read handlers', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    store.saveRegistration({
+      account_id: '90011087',
+      broker: 'Demo Broker',
+      server_name: 'Demo-1'
+    });
+    store.saveHeartbeat({
+      account_id: '90011087',
+      balance: 1000.5,
+      equity: 1100.25,
+      market_open: true,
+      is_trade_allowed: true
+    });
+
+    for (const url of ['/api/v1/accounts', '/api/v1/accounts/90011087', '/api/v1/overview', '/api/v1/audit']) {
+      const response = await server.inject({
+        method: 'POST',
+        url,
+        headers: apiAdminHeaders
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ status: 'OK' });
+    }
+  });
+
   it('serves Go-compatible account detail behind admin auth', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });

@@ -52,6 +52,11 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
     (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'overview') ||
     (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'audit') ||
     (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'events' && parts[3] === 'stream');
+  const isGoMethodAgnosticAdminRead =
+    (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'accounts' && parts.length === 3) ||
+    (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'accounts' && parts[3] != null && parts.length === 4) ||
+    (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'overview' && parts.length === 3) ||
+    (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'audit' && parts.length === 3);
 
   if (parts[0] === 'api' && parts[1] === 'trigger_ai' && parts.length === 2) {
     const tokenResult = requireRouteToken(deps.validTokens, request.headers, request.url);
@@ -236,7 +241,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       }
     };
   }
-  if (request.method !== 'GET') {
+  if (request.method !== 'GET' && !isGoMethodAgnosticAdminRead) {
     return error(405, 'method not allowed');
   }
   if (isAccountBoundRead) {

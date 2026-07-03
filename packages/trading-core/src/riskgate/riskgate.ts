@@ -159,6 +159,15 @@ export function evaluateMarketFilters(input: MarketFilterInput): MarketFilterRes
 }
 
 export function evaluateRiskGate(input: RiskGateInput): RiskGateResult {
+  if (input.plan == null) {
+    return {
+      status: 'accepted',
+      auditOnly: false,
+      reasonCodes: ['plan.absent'],
+      canProduceLiveCommands: false
+    };
+  }
+
   const now = input.now == null ? new Date() : new Date(input.now);
   const mode = input.plan.mode.toLowerCase();
   const symbol = baseSymbol(input.plan.symbol);

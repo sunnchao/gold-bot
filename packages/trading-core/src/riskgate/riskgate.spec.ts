@@ -45,6 +45,18 @@ function validInput(): RiskGateInput {
 }
 
 describe('riskgate parity slice', () => {
+  it('accepts absent plan with Go parity reason code', () => {
+    const input = validInput();
+    input.plan = undefined as any;
+
+    expect(() => evaluateRiskGate(input)).not.toThrow();
+    const result = evaluateRiskGate(input);
+
+    expect(result.status).toBe('accepted');
+    expect(result.auditOnly).toBe(false);
+    expect(result.reasonCodes).toContain('plan.absent');
+  });
+
   it.each([
     ['closed market', (input: RiskGateInput) => (input.runtime.marketOpen = false), 'market.closed'],
     ['trade disabled', (input: RiskGateInput) => (input.runtime.isTradeAllowed = false), 'market.trade_not_allowed'],
