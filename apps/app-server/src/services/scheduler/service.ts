@@ -4,7 +4,11 @@ import { AnalysisService } from '../analysis/service.js';
 import { CommandLifecycleService } from '../command-lifecycle/service.js';
 import type { ShadowService } from '../shadow/service.js';
 
+const AI_STOP_LOSS_MODIFY_COOLDOWN_MS = 5 * 60 * 1000;
+
 export class SchedulerService {
+  private readonly aiStopLossQueuedAtMs = new Map<string, number>();
+
   constructor(
     private readonly analysis: AnalysisService,
     private readonly commandLifecycle: CommandLifecycleService,
@@ -42,16 +46,17 @@ export class SchedulerService {
       if (this.store?.getCommand(candidate.command_id ?? '') != null) {
         continue;
       }
+      if (this.isAIStopLossCooldownActive(accountId, symbol, candidate)) {
+        continue;
+      }
       this.commandLifecycle.acceptCandidate(accountId, candidate);
+      this.rememberAIStopLossQueued(accountId, symbol, candidate);
     }
   }
 
   private canRunLiveAnalysis(accountId: string): boolean {
     const heartbeat = this.store?.getHeartbeat(accountId);
-    if (heartbeat == null) {
-      return true;
-    }
-    return explicitBoolean(heartbeat, 'market_open') !== false && explicitBoolean(heartbeat, 'is_trade_allowed') !== false;
+    return explicitBoolean(heartbeat ?? {}, 'market_open') === true && explicitBoolean(heartbeat ?? {}, 'is_trade_allowed') === true;
   }
 
   private publishReplaySignal(accountId: string, symbol: string): void {
@@ -132,8 +137,39 @@ export class SchedulerService {
       if (candidate == null || this.store?.getCommand(candidate.command_id ?? '') != null) {
         continue;
       }
+      if (this.isAIStopLossCooldownActive(accountId, symbol, candidate)) {
+        continue;
+      }
       this.commandLifecycle.acceptCandidate(accountId, candidate);
+      this.rememberAIStopLossQueued(accountId, symbol, candidate);
     }
+  }
+
+  private isAIStopLossCooldownActive(accountId: string, symbol: string, candidate: CommandCandidate): boolean {
+    if (!isAIStopLossModifyCandidate(candidate)) {
+      return false;
+    }
+    const ticket = numberField(candidate, 'ticket');
+    if (ticket <= 0) {
+      return false;
+    }
+    const queuedAtMs = candidateTimestampMs(candidate, this.nowIso);
+    const lastQueuedAtMs = this.aiStopLossQueuedAtMs.get(aiStopLossCooldownKey(accountId, symbol, ticket));
+    return lastQueuedAtMs != null && queuedAtMs - lastQueuedAtMs < AI_STOP_LOSS_MODIFY_COOLDOWN_MS;
+  }
+
+  private rememberAIStopLossQueued(accountId: string, symbol: string, candidate: CommandCandidate): void {
+    if (!isAIStopLossModifyCandidate(candidate)) {
+      return;
+    }
+    const ticket = numberField(candidate, 'ticket');
+    if (ticket <= 0) {
+      return;
+    }
+    this.aiStopLossQueuedAtMs.set(
+      aiStopLossCooldownKey(accountId, symbol, ticket),
+      candidateTimestampMs(candidate, this.nowIso)
+    );
   }
 
   private latestAIResult(accountId: string, symbol: string): EaRecord | undefined {
@@ -256,6 +292,23 @@ function isLiveStrategyTimeframe(timeframe: string): boolean {
 
 function explicitBoolean(record: EaRecord, field: string): boolean | undefined {
   return typeof record[field] === 'boolean' ? record[field] : undefined;
+}
+
+function isAIStopLossModifyCandidate(candidate: CommandCandidate): boolean {
+  return candidate.source === 'ai_stop_loss' && candidate.action === 'MODIFY';
+}
+
+function aiStopLossCooldownKey(accountId: string, symbol: string, ticket: number): string {
+  return [accountId, symbol.toUpperCase(), ticket].join('|');
+}
+
+function candidateTimestampMs(candidate: CommandCandidate, fallbackNowIso: () => string): number {
+  const triggerTimeMs = Date.parse(stringField(candidate, 'trigger_time'));
+  if (Number.isFinite(triggerTimeMs)) {
+    return triggerTimeMs;
+  }
+  const fallbackMs = Date.parse(fallbackNowIso());
+  return Number.isFinite(fallbackMs) ? fallbackMs : Date.now();
 }
 
 function liveDecisionKey(strategy: string, bars: Record<string, EaRecord[]>): string {
