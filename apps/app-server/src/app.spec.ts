@@ -1286,6 +1286,49 @@ describe('app-server scaffold', () => {
     }
   });
 
+  it('uses heartbeat presence for admin connected state and overview count', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    store.saveRegistration({
+      account_id: '90011087',
+      broker: 'Demo Broker',
+      server_name: 'Demo-1'
+    });
+    store.saveRegistration({
+      account_id: '90022000',
+      broker: 'Demo Broker',
+      server_name: 'Demo-2'
+    });
+    store.saveHeartbeat({
+      account_id: '90011087',
+      balance: 1000.5,
+      equity: 1100.25,
+      market_open: true,
+      is_trade_allowed: true
+    });
+
+    const accounts = await server.inject({
+      method: 'GET',
+      url: '/api/v1/accounts',
+      headers: apiAdminHeaders
+    });
+    const overview = await server.inject({
+      method: 'GET',
+      url: '/api/v1/overview',
+      headers: apiAdminHeaders
+    });
+
+    expect(accounts.statusCode).toBe(200);
+    expect((JSON.parse(accounts.body) as { accounts: Array<{ account_id: string; connected: boolean }> }).accounts).toEqual([
+      expect.objectContaining({ account_id: '90011087', connected: true }),
+      expect.objectContaining({ account_id: '90022000', connected: false })
+    ]);
+    expect(overview.statusCode).toBe(200);
+    const connectedCard = (JSON.parse(overview.body) as { cards: Array<{ title: string; value: string }> }).cards
+      .find((card) => card.title === 'Connected Accounts');
+    expect(connectedCard).toMatchObject({ value: '1' });
+  });
+
   it('serves Go-compatible account detail behind admin auth', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });

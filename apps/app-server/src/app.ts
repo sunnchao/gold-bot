@@ -1328,7 +1328,7 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
       account_id: accountId,
       balance: numberField(heartbeat, 'balance'),
       broker: stringFieldOrEmpty(registration, 'broker'),
-      connected: true,
+      connected: accountConnected(heartbeat),
       currency: stringFieldOrEmpty(registration, 'currency'),
       equity: numberField(heartbeat, 'equity'),
       free_margin: numberField(heartbeat, 'free_margin'),
@@ -1665,7 +1665,7 @@ function accountSummaries(store: EaStore): EaRecord[] {
       account_id: accountId,
       balance: numberField(heartbeat, 'balance'),
       broker: stringFieldOrEmpty(registration, 'broker'),
-      connected: true,
+      connected: accountConnected(heartbeat),
       equity: numberField(heartbeat, 'equity'),
       is_trade_allowed: booleanField(heartbeat, 'is_trade_allowed'),
       market_open: booleanField(heartbeat, 'market_open'),
@@ -1699,7 +1699,7 @@ function stripNodeAIResultEnvelope(record: EaRecord): EaRecord {
 }
 
 function overviewCards(accounts: EaRecord[]): EaRecord[] {
-  const connected = accounts.length;
+  const connected = accounts.filter((account) => account.connected === true).length;
   const tradeable = accounts.filter((account) => account.market_open === true && account.is_trade_allowed === true).length;
   return [
     {
@@ -1727,6 +1727,13 @@ function overviewCards(accounts: EaRecord[]): EaRecord[] {
       value: 'Baseline Only'
     }
   ];
+}
+
+function accountConnected(heartbeat: EaRecord): boolean {
+  if (typeof heartbeat.connected === 'boolean') {
+    return heartbeat.connected;
+  }
+  return Object.keys(heartbeat).length > 0;
 }
 
 function auditChecks(report: ReturnType<typeof buildShadowReport>): EaRecord[] {
