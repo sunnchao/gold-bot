@@ -163,6 +163,34 @@ function flatBars(count: number, close: number) {
   }));
 }
 
+function pullbackBuyBars() {
+  const bars = Array.from({ length: 50 }, (_, index) => ({
+    time: `2026-04-16T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 95,
+    high: 96,
+    low: 94,
+    close: 95,
+    atr: 2,
+    adx: 35,
+    rsi: 45,
+    ema20: 95.8,
+    ema50: 90,
+    macd_hist: 1
+  }));
+
+  bars[48] = {
+    ...bars[48],
+    close: 95.2,
+    open: 95.2
+  };
+  bars[49] = {
+    ...bars[49],
+    close: 95,
+    open: 95
+  };
+  return bars;
+}
+
 function atrExpansionBars(historyCount: number) {
   return [
     ...Array.from({ length: historyCount }, (_, index) => ({
@@ -2272,6 +2300,82 @@ describe('app-server scaffold', () => {
     ]);
   });
 
+  it('matches Go-compatible analysis payload position fields and timestamp formatting', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00.000Z' });
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 109.8,
+      ask: 110,
+      time: '2026-04-13T08:00:00.000Z'
+    });
+    store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      positions: [
+        {
+          ticket: 1001,
+          symbol: 'XAUUSD',
+          type: 'buy',
+          lots: 1,
+          open_price: 100,
+          profit: 10,
+          open_time: Date.parse('2026-04-13T07:00:00.000Z') / 1000
+        }
+      ]
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      timestamp?: string;
+      positions?: Array<Record<string, unknown>>;
+    };
+    expect(body.timestamp).toBe('2026-04-13T16:00:00+08:00');
+    expect(body.positions?.[0]).toMatchObject({
+      direction: 'BUY',
+      hold_hours: 1,
+      hold_seconds: 3600,
+      pnl_percent: 10
+    });
+  });
+
+  it('caps Go-compatible analysis payload bars without changing indicator history count', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00.000Z' });
+    store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: flatBars(1001, 2000).map((bar, index) => ({
+        ...bar,
+        time: `bar-${index}`
+      }))
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      bars?: Record<string, Array<{ time?: string }>>;
+      indicators?: Record<string, { bars_count?: number } | null>;
+    };
+    expect(body.bars?.H1).toHaveLength(1000);
+    expect(body.bars?.H1?.[0]).toMatchObject({ time: 'bar-1' });
+    expect(body.bars?.H1?.at(-1)).toMatchObject({ time: 'bar-1000' });
+    expect(body.indicators?.H1).toMatchObject({ bars_count: 1001 });
+  });
+
   it('queues legacy AI close_all risk alerts for EA poll', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
@@ -3524,5 +3628,32 @@ describe('app-server scaffold', () => {
     });
     expect(JSON.parse(poll.body)).toEqual({ status: 'OK', commands: [], count: 0 });
     expect(store.pollCommands('90011087')).toEqual([]);
+  });
+
+  it('uses the latest H1 close for trading-core analysis when no current tick exists', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-16T12:00:00.000Z' });
+    store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: pullbackBuyBars()
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/analysis/90011087/XAUUSD/trading-core',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      replay?: { signal?: { strategy?: string; side?: string; entry?: number } | null };
+    };
+    expect(body.replay?.signal).toMatchObject({
+      strategy: 'pullback',
+      side: 'BUY',
+      entry: 95
+    });
   });
 });

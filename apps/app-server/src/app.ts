@@ -88,6 +88,7 @@ type EaReleaseInfo = {
 
 const ALLOWED_STRATEGY_MAPPING_KEYS = ['20250231', '20250232', '20250233', '20250234', '20250235', '20250236', '20250237', '20250238'] as const;
 const DEFAULT_RELEASE_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
+const ANALYSIS_PAYLOAD_BARS_LIMIT = 1000;
 
 const DEFAULT_STRATEGY_MAPPING: EaRecord = {
   '20250231': 'pullback',
@@ -675,7 +676,7 @@ function tradingCoreAnalysis(store: EaStore, accountId: string, symbol: string, 
       account_id: accountId,
       symbol,
       analysis_time: timestamp,
-      current_price: currentPriceFromTick(latestTick),
+      current_price: currentPriceForReplay(currentPriceFromTick(latestTick), replayBars.H1),
       bars: replayBars,
       positions
     }),
@@ -1357,6 +1358,7 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
   const positions = store.getPositions(accountId, symbol);
   const barsByTimeframe = analysisBarsByTimeframe(store, accountId, symbol);
   const enrichedBarsByTimeframe = enrichBarsByTimeframe(barsByTimeframe);
+  const payloadBarsByTimeframe = recentBarsByTimeframe(enrichedBarsByTimeframe, ANALYSIS_PAYLOAD_BARS_LIMIT);
   const marketStatus = analysisMarketStatus(heartbeat, latestTick, timestamp);
   const trendBarsByTimeframe = {
     ...enrichedBarsByTimeframe,
@@ -1375,7 +1377,7 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
       margin: numberField(heartbeat, 'margin'),
       server_name: stringFieldOrEmpty(registration, 'server_name')
     },
-    bars: enrichedBarsByTimeframe,
+    bars: payloadBarsByTimeframe,
     harmonic_context: null,
     indicators: indicatorPacks(enrichedBarsByTimeframe),
     market: {
@@ -1399,7 +1401,7 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
             symbol,
             spread: numberField(latestTick, 'spread')
           },
-          bars: enrichedBarsByTimeframe
+          bars: payloadBarsByTimeframe
         }
       })
     },
@@ -1409,13 +1411,13 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
       mt4_server_time: stringFieldOrEmpty(heartbeat, 'server_time'),
       tradeable: marketStatus.marketOpen && marketStatus.isTradeAllowed
     },
-    positions: positions.map((position) => normalizeAnalysisPosition(position, latestTick)),
+    positions: positions.map((position) => normalizeAnalysisPosition(position, latestTick, timestamp)),
     status: 'OK',
     strategy_mapping: analysisStrategyMapping({
       ...DEFAULT_STRATEGY_MAPPING,
       ...(recordField(registration, 'strategy_mapping') ?? {})
     }),
-    timestamp,
+    timestamp: shanghaiTimestamp(timestamp),
     trend_context: trendContext(trendBarsByTimeframe)
   };
 }
@@ -1448,6 +1450,14 @@ function enrichBarsByTimeframe(barsByTimeframe: Record<string, EaRecord[]>): Rec
   const out: Record<string, EaRecord[]> = {};
   for (const [timeframe, bars] of Object.entries(barsByTimeframe)) {
     out[timeframe] = enrichAnalysisBars(bars);
+  }
+  return out;
+}
+
+function recentBarsByTimeframe(barsByTimeframe: Record<string, EaRecord[]>, limit: number): Record<string, EaRecord[]> {
+  const out: Record<string, EaRecord[]> = {};
+  for (const [timeframe, bars] of Object.entries(barsByTimeframe)) {
+    out[timeframe] = limit > 0 && bars.length > limit ? bars.slice(bars.length - limit) : bars;
   }
   return out;
 }
@@ -1650,19 +1660,20 @@ function rollingMean(values: readonly number[], period: number): number[] {
   return out;
 }
 
-function normalizeAnalysisPosition(position: EaRecord, latestTick: EaRecord): EaRecord {
+function normalizeAnalysisPosition(position: EaRecord, latestTick: EaRecord, timestamp: string): EaRecord {
   const type = stringFieldOrEmpty(position, 'type');
   const currentPrice = numberField(latestTick, 'ask');
   const entryPrice = numberField(position, 'entry_price') || numberField(position, 'open_price');
   const profit = numberField(position, 'profit');
   const lots = numberField(position, 'lots');
+  const holdSeconds = holdSecondsFromOpenTime(numberField(position, 'open_time'), timestamp);
   return {
     comment: stringFieldOrEmpty(position, 'comment'),
     current_price: currentPrice,
-    direction: type,
+    direction: type.trim().toUpperCase(),
     entry_price: entryPrice,
-    hold_hours: numberField(position, 'hold_hours'),
-    hold_seconds: numberField(position, 'hold_seconds'),
+    hold_hours: round2(holdSeconds / 3600),
+    hold_seconds: holdSeconds,
     lots,
     magic: numberField(position, 'magic'),
     pnl_percent: numberField(position, 'pnl_percent') || pnlPercent(profit, entryPrice, lots),
@@ -1688,7 +1699,40 @@ function pnlPercent(profit: number, entryPrice: number, lots: number): number {
   if (entryPrice === 0 || lots === 0) {
     return 0;
   }
-  return round4((profit / (entryPrice * lots * 100)) * 100);
+  return round4((profit / (entryPrice * lots)) * 100);
+}
+
+function holdSecondsFromOpenTime(openTime: number, timestamp: string): number {
+  if (openTime <= 0) {
+    return 0;
+  }
+  const nowMillis = parseDateMillis(timestamp);
+  return nowMillis == null ? 0 : Math.trunc(nowMillis / 1000) - Math.trunc(openTime);
+}
+
+function currentPriceForReplay(currentPrice: number, h1Bars: EaRecord[]): number {
+  if (currentPrice !== 0) {
+    return currentPrice;
+  }
+  const latestH1Close = h1Bars.at(-1)?.close;
+  return typeof latestH1Close === 'number' && Number.isFinite(latestH1Close) ? latestH1Close : currentPrice;
+}
+
+function shanghaiTimestamp(timestamp: string): string {
+  const millis = parseDateMillis(timestamp);
+  if (millis == null) {
+    return timestamp;
+  }
+  const date = new Date(millis + 8 * 60 * 60 * 1000);
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}T${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}:${pad2(date.getUTCSeconds())}+08:00`;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function round4(value: number): number {
