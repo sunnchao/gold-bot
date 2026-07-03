@@ -2020,9 +2020,11 @@ describe('app-server scaffold', () => {
       });
       expect(response.statusCode).toBe(200);
       if (name === 'ai-result-v2-trade-plan') {
-        expect(JSON.parse(response.body)).toMatchObject({
-          ...(fixture.response.body as Record<string, unknown>),
-          command_status: 'shadow_only'
+        const body = JSON.parse(response.body) as Record<string, unknown>;
+        expect(body).toMatchObject(fixture.response.body as Record<string, unknown>);
+        expect(body).not.toHaveProperty('command_status');
+        expect(body).toMatchObject({
+          risk_gate: { audit_only: true, canProduceLiveCommands: false }
         });
       } else {
         expect(JSON.parse(response.body)).toEqual(fixture.response.body);
@@ -2327,7 +2329,7 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(poll.body)).toMatchObject({ count: 0, commands: [] });
   });
 
-  it('keeps accepted AI trade-plan commands shadow_only while the account is in shadow mode', async () => {
+  it('does not create poll commands for audit-only AI approve plans in shadow mode', async () => {
     const store = createInMemoryEaStore();
     store.setRuntimeMode('90011087', 'shadow');
     const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
@@ -2375,31 +2377,27 @@ describe('app-server scaffold', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toMatchObject({
-      command_status: 'shadow_only'
+      risk_gate: { status: 'accepted', audit_only: true, canProduceLiveCommands: false }
     });
-    expect(store.listCommands('90011087').map((command) => command.status)).toEqual(['shadow_only']);
+    expect(JSON.parse(response.body)).not.toHaveProperty('command_status');
+    expect(store.listCommands('90011087')).toEqual([]);
     expect(store.pollCommands('90011087')).toEqual([]);
-    expect(store.listShadowComparisons()).toEqual([
-      expect.objectContaining({
-        account_id: '90011087',
-        symbol: 'XAUUSD',
-        protocol_ok: true,
-        signal_drift: false,
-        command_drift: false,
-        oracle_compared: false,
-        source: 'ai_result'
-      })
-    ]);
+    expect(store.listShadowComparisons()).toEqual([]);
     expect(store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ai_result')).toEqual(
       expect.objectContaining({
         account_id: '90011087',
         symbol: 'XAUUSD',
-        source: 'ai_result'
+        source: 'ai_result',
+        command: expect.objectContaining({
+          decision_id: 'tpv1_shadow_mode',
+          mode: 'approve',
+          risk_gate: expect.objectContaining({ audit_only: true, canProduceLiveCommands: false })
+        })
       })
     );
   });
 
-  it('queues accepted AI trade-plan commands only for cutover accounts', async () => {
+  it('does not queue audit-only AI approve plans for cutover accounts', async () => {
     const store = createInMemoryEaStore();
     store.setRuntimeMode('90011087', 'cutover');
     const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
@@ -2440,16 +2438,18 @@ describe('app-server scaffold', () => {
           confidence: 80,
           expires_at: '2099-06-06T09:15:00Z',
           reason_codes: ['mode.approve', 'side.buy'],
-          narrative: 'cutover mode should queue commands'
+          narrative: 'cutover mode must not override Go audit-only guard'
         }
       }
     });
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toMatchObject({
-      command_status: 'queued'
+      risk_gate: { status: 'accepted', audit_only: true, canProduceLiveCommands: false }
     });
-    expect(store.pollCommands('90011087')).toHaveLength(1);
+    expect(JSON.parse(response.body)).not.toHaveProperty('command_status');
+    expect(store.listCommands('90011087')).toEqual([]);
+    expect(store.pollCommands('90011087')).toEqual([]);
   });
 
   it('returns audit-only trade plan risk gate rejects without queueing poll commands', async () => {

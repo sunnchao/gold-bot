@@ -678,7 +678,7 @@ function handleAIResultRoute(
   publishAIResultEvents(deps.events, accountId, symbol, parsed.body, tradePlan, riskGate, eventTimestamp);
   const riskCommandRequested = shouldQueueAIRiskCommand(parsed.body);
   const riskCommands = queueAIRiskCommands(deps, accountId, symbol, parsed.body, tradePlan, riskGate);
-  const command = !riskCommandRequested && riskGate.status === 'accepted' && mode !== 'observe' && mode !== 'veto' && mode !== 'close'
+  const command = !riskCommandRequested && shouldQueueAIPending(tradePlan, riskGate)
     ? deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(accountId, symbol, tradePlan))
     : undefined;
   deps.shadow.recordRuntimeSnapshot({
@@ -849,6 +849,24 @@ function aiRiskGateAllowsCommand(tradePlan?: EaRecord, riskGate?: EaRecord): boo
   }
   const status = stringFieldOrEmpty(riskGate ?? {}, 'status');
   return status === 'accepted' || status === 'clamped';
+}
+
+function shouldQueueAIPending(tradePlan: EaRecord, riskGate: EaRecord): boolean {
+  const mode = stringFieldOrEmpty(tradePlan, 'mode');
+  if (mode !== 'approve') {
+    return false;
+  }
+  const side = stringFieldOrEmpty(tradePlan, 'side');
+  if (side !== 'buy' && side !== 'sell') {
+    return false;
+  }
+  if (stringFieldOrEmpty(riskGate, 'status') === 'rejected') {
+    return false;
+  }
+  if (booleanField(riskGate, 'audit_only')) {
+    return false;
+  }
+  return numberField(tradePlan, 'confidence') >= 60;
 }
 
 function buildAIRiskCommandCandidates(
