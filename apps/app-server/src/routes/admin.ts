@@ -153,8 +153,8 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
     if (request.method !== 'POST') {
       return error(405, 'method not allowed');
     }
-    const signalId = Number(parts[2]);
-    if (!Number.isSafeInteger(signalId)) {
+    const signalId = parsePathInteger(parts[2]);
+    if (signalId == null) {
       return error(400, 'invalid signal_id');
     }
     const parsed = parseJsonObject(request.rawBody);
@@ -340,6 +340,14 @@ function parseDecisionLimit(raw: string): number | undefined | null {
   }
   const limit = Number(raw);
   return Number.isSafeInteger(limit) && limit >= 1 ? limit : null;
+}
+
+function parsePathInteger(raw: string): number | null {
+  if (!/^[+-]?[0-9]+$/.test(raw)) {
+    return null;
+  }
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : null;
 }
 
 function stringField(record: EaRecord, field: string): string {

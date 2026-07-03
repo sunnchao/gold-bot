@@ -471,7 +471,7 @@ function validateEaPayload(path: string, body: EaRecord, store: EaStore): string
       if (stringFieldOrEmpty(body, 'result').trim().length === 0) {
         return 'missing result';
       }
-      if (hasInvalidOptionalNumber(body, ['ticket'])) {
+      if (hasInvalidOptionalInteger(body, ['ticket'])) {
         return 'invalid JSON';
       }
       return null;
@@ -614,7 +614,10 @@ function normalizePositionsPayload(body: EaRecord, store: EaStore): string | nul
     if (!isRecord(position)) {
       return 'invalid JSON';
     }
-    if (hasInvalidOptionalNumber(position, ['ticket', 'lots', 'open_price', 'sl', 'tp', 'profit', 'open_time', 'magic'])) {
+    if (hasInvalidOptionalInteger(position, ['ticket', 'open_time', 'magic'])) {
+      return 'invalid JSON';
+    }
+    if (hasInvalidOptionalNumber(position, ['lots', 'open_price', 'sl', 'tp', 'profit'])) {
       return 'invalid JSON';
     }
     if (hasInvalidOptionalString(position, ['symbol', 'type', 'comment', 'strategy'])) {
@@ -2260,6 +2263,13 @@ function hasInvalidOptionalNumber(record: EaRecord, fields: readonly string[]): 
   return fields.some((field) => {
     const value = record[field];
     return value != null && (typeof value !== 'number' || !Number.isFinite(value));
+  });
+}
+
+function hasInvalidOptionalInteger(record: EaRecord, fields: readonly string[]): boolean {
+  return fields.some((field) => {
+    const value = record[field];
+    return value != null && (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value));
   });
 }
 

@@ -809,6 +809,24 @@ describe('app-server scaffold', () => {
         assertNotPersisted: () => expect(store.getPositions('90011087')).toEqual([])
       },
       {
+        path: '/positions',
+        body: { account_id: '90011087', positions: [{ ticket: 123.45 }] },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getPositions('90011087')).toEqual([])
+      },
+      {
+        path: '/positions',
+        body: { account_id: '90011087', positions: [{ open_time: 1712971200.5 }] },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getPositions('90011087')).toEqual([])
+      },
+      {
+        path: '/positions',
+        body: { account_id: '90011087', positions: [{ magic: 20250238.5 }] },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getPositions('90011087')).toEqual([])
+      },
+      {
         path: '/register',
         body: { account_id: '90011087', strategy_mapping: { '20250231': 123 } },
         message: 'invalid JSON',
@@ -817,6 +835,12 @@ describe('app-server scaffold', () => {
       {
         path: '/order_result',
         body: { account_id: '90011087', command_id: 'cmd_1', result: 'filled', ticket: '321' },
+        message: 'invalid JSON',
+        assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
+      },
+      {
+        path: '/order_result',
+        body: { account_id: '90011087', command_id: 'cmd_1', result: 'filled', ticket: 321.5 },
         message: 'invalid JSON',
         assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
       }
@@ -974,17 +998,19 @@ describe('app-server scaffold', () => {
     }
   });
 
-  it('returns 405 for unsupported EA route methods', async () => {
+  it('accepts Go-compatible non-POST EA route methods when the JSON body is valid', async () => {
     const server = createAppServer();
     const response = await server.inject({
       method: 'GET',
-      url: '/poll'
+      url: '/poll',
+      body: { account_id: '90011087' }
     });
 
-    expect(response.statusCode).toBe(405);
+    expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({
-      status: 'ERROR',
-      message: 'method not allowed'
+      status: 'OK',
+      commands: [],
+      count: 0
     });
   });
 
@@ -1601,6 +1627,22 @@ describe('app-server scaffold', () => {
       status: 'ERROR',
       message: "result must be 'approved' or 'rejected'"
     });
+  });
+
+  it('rejects non-integer arbitration signal id text like Go ParseInt', async () => {
+    const server = createApiServer();
+
+    for (const signalId of ['1.0', '1.5']) {
+      const response = await server.inject({
+        method: 'POST',
+        url: `/api/arbitration/${signalId}`,
+        headers: apiAdminHeaders,
+        body: { result: 'approved', reason: 'manual ok' }
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: 'invalid signal_id' });
+    }
   });
 
   it('expires stale pending signals behind admin auth', async () => {

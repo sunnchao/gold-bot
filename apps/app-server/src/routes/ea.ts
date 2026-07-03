@@ -31,10 +31,6 @@ export type EaRouteHelpers = {
 };
 
 export function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, helpers: EaRouteHelpers): JsonResponse {
-  if (request.method !== 'POST') {
-    return error(405, 'method not allowed');
-  }
-
   if (deps.validTokens != null) {
     const token = extractRouteToken(request.headers, request.url);
     if (token == null || !deps.validTokens.has(token)) {
