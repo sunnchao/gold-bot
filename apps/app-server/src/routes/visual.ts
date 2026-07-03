@@ -108,8 +108,8 @@ function visualAI(results: EaRecord[], symbol: string): EaRecord {
   const tradePlan = recordField(result, 'trade_plan') ?? {};
   const entryZone = recordField(tradePlan, 'entry_zone') ?? {};
   const riskGate = recordField(result, 'risk_gate') ?? recordField(tradePlan, 'risk_gate') ?? {};
-  return {
-    has_result: true,
+  const summary = {
+    has_result: false,
     bias: stringField(result, 'bias'),
     confidence: numberField(result, 'confidence'),
     exit_suggestion: stringField(result, 'exit_suggestion'),
@@ -125,6 +125,27 @@ function visualAI(results: EaRecord[], symbol: string): EaRecord {
     risk_gate_status: stringField(result, 'risk_gate_status') || stringField(riskGate, 'status'),
     narrative: stringField(result, 'narrative') || stringField(tradePlan, 'narrative')
   };
+  summary.has_result = visualSummaryHasResult(summary);
+  return summary;
+}
+
+function visualSummaryHasResult(summary: EaRecord): boolean {
+  return (
+    stringField(summary, 'bias').length > 0 ||
+    numberField(summary, 'confidence') > 0 ||
+    stringField(summary, 'exit_suggestion').length > 0 ||
+    summary.risk_alert === true ||
+    stringField(summary, 'alert_reason').length > 0 ||
+    stringField(summary, 'decision_id').length > 0 ||
+    stringField(summary, 'trade_plan_mode').length > 0 ||
+    stringField(summary, 'side').length > 0 ||
+    numberField(summary, 'entry_min') > 0 ||
+    numberField(summary, 'entry_max') > 0 ||
+    numberField(summary, 'stop_loss') > 0 ||
+    numberField(summary, 'take_profit') > 0 ||
+    stringField(summary, 'risk_gate_status').length > 0 ||
+    stringField(summary, 'narrative').length > 0
+  );
 }
 
 function alertMatchesVisualPoll(alert: IndicatorAlert, symbol: string, timeframe: string): boolean {

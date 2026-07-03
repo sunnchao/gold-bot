@@ -665,6 +665,40 @@ describe('app-server scaffold', () => {
     });
   });
 
+  it('keeps visual AI summary empty for Go-compatible blank AI results', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:05:00.000Z' });
+    store.saveAIResult('90011087', 'XAUUSD', {});
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/visual/poll',
+      headers: apiUserHeaders,
+      body: { account_id: '90011087', symbol: 'XAUUSD', timeframe: 'H1' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      ai: {
+        has_result: false,
+        bias: '',
+        confidence: 0,
+        exit_suggestion: '',
+        risk_alert: false,
+        alert_reason: '',
+        decision_id: '',
+        trade_plan_mode: '',
+        side: '',
+        entry_min: 0,
+        entry_max: 0,
+        stop_loss: 0,
+        take_profit: 0,
+        risk_gate_status: '',
+        narrative: ''
+      }
+    });
+  });
+
   it('accepts safe EA lifecycle routes with Go-shaped responses and stores payloads', async () => {
     const store = createInMemoryEaStore();
     const server = createAppServer({ store, nowUnix: () => 1772342400 });
