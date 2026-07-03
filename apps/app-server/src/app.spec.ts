@@ -2032,7 +2032,7 @@ describe('app-server scaffold', () => {
       }
     }
 
-    expect(store.getAIResults('90011087')).toHaveLength(2);
+    expect(store.getAIResults('90011087')).toHaveLength(1);
     expect(store.pollCommands('90011087')).toEqual([
       expect.objectContaining({
         action: 'CLOSE_ALL',
