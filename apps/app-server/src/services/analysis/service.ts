@@ -1,5 +1,5 @@
-import { runReplay, summarizePositions, type PositionManagerPosition } from '@gold-bot/trading-core';
-import type { EaRecord, EaStore } from '@gold-bot/persistence';
+import { runReplay, summarizePositions, type PositionManagerPosition, type PositionManagerState } from '@gold-bot/trading-core';
+import type { EaRecord, EaStore, PositionStateRecord } from '@gold-bot/persistence';
 
 export class AnalysisService {
   constructor(private readonly store: EaStore, private readonly nowIso: () => string) {}
@@ -21,7 +21,8 @@ export class AnalysisService {
           M5: this.store.getBars(accountId, symbol, 'M5'),
           M1: this.store.getBars(accountId, symbol, 'M1')
         },
-        positions
+        positions,
+        position_states: this.store.loadPositionStates(accountId, symbol)
       }),
       positionSummary: summarizePositions({
         accountId,
@@ -29,6 +30,16 @@ export class AnalysisService {
         positions: positions.map(toPositionManagerPosition)
       })
     };
+  }
+
+  persistPositionStates(accountId: string, symbol: string, states: PositionManagerState[] | null): void {
+    if (states == null) {
+      return;
+    }
+    for (const state of states) {
+      this.store.savePositionState(accountId, symbol, toPositionStateRecord(state, this.nowIso()));
+    }
+    this.store.deleteStalePositionStates(accountId, symbol, states.map((state) => state.ticket));
   }
 }
 
@@ -50,5 +61,18 @@ function toPositionManagerPosition(position: EaRecord): PositionManagerPosition 
     comment: typeof position.comment === 'string' ? position.comment : '',
     strategy: typeof position.strategy === 'string' ? position.strategy : '',
     magic: typeof position.magic === 'number' ? position.magic : undefined
+  };
+}
+
+function toPositionStateRecord(state: PositionManagerState, nowIso: string): PositionStateRecord {
+  return {
+    ticket: state.ticket,
+    tp1_hit: state.tp1Hit ?? state.tp1_hit ?? false,
+    tp2_hit: state.tp2Hit ?? state.tp2_hit ?? false,
+    max_profit_atr: state.maxProfitAtr ?? state.max_profit_atr ?? 0,
+    be_moved: state.beMoved ?? state.be_moved ?? false,
+    be_trigger_atr: state.beTriggerAtr ?? state.be_trigger_atr ?? 1.0,
+    open_time: state.openTime ?? state.open_time ?? nowIso,
+    last_modify_time: nowIso
   };
 }

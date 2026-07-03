@@ -206,6 +206,14 @@ describe('replay harness Go oracle slice', () => {
       { action: 'MODIFY', ticket: 202, new_sl: 3340, reason: 'breakeven_1.6ATR' },
       { action: 'CLOSE', ticket: 202, lots: 0.2, reason: 'TP1_1.6ATR' }
     ]);
+    expect(result.position_states).toEqual([
+      expect.objectContaining({
+        ticket: 202,
+        beMoved: true,
+        tp1Hit: true,
+        maxProfitAtr: expect.closeTo(1.6, 5)
+      })
+    ]);
     expect(result.canProduceLiveCommands).toBe(false);
   });
 

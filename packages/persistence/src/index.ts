@@ -22,6 +22,17 @@ export type EaCommand = EaRecord & {
   action: string;
 };
 
+export type PositionStateRecord = {
+  ticket: number;
+  tp1_hit: boolean;
+  tp2_hit: boolean;
+  max_profit_atr: number;
+  be_moved: boolean;
+  be_trigger_atr: number;
+  open_time: string;
+  last_modify_time: string;
+};
+
 export type EaStore = {
   saveRegistration(payload: EaRecord): void;
   getRegistration(accountId: string): EaRecord | undefined;
@@ -33,6 +44,9 @@ export type EaStore = {
   getBars(accountId: string, symbol: string, timeframe: string): EaRecord[];
   savePositions(payload: EaRecord): void;
   getPositions(accountId: string, symbol?: string): EaRecord[];
+  savePositionState(accountId: string, symbol: string, state: PositionStateRecord): void;
+  loadPositionStates(accountId: string, symbol: string): PositionStateRecord[];
+  deleteStalePositionStates(accountId: string, symbol: string, activeTickets: number[]): void;
   saveOrderResult(payload: EaRecord): void;
   getOrderResults(accountId: string): EaRecord[];
   enqueueCommand(accountId: string, command: EaCommand): void;
@@ -73,6 +87,7 @@ type StoreState = {
   ticks: Map<string, EaRecord>;
   bars: Map<string, EaRecord[]>;
   positions: Map<string, EaRecord[]>;
+  positionStates: Map<string, PositionStateRecord>;
   orderResults: Map<string, EaRecord[]>;
   runtimeModes: Map<string, RuntimeMode>;
   commands: Map<string, StoredCommand>;
@@ -93,6 +108,7 @@ export function createInMemoryEaStore(): EaStore {
     ticks: new Map(),
     bars: new Map(),
     positions: new Map(),
+    positionStates: new Map(),
     orderResults: new Map(),
     runtimeModes: new Map(),
     commands: new Map(),
@@ -143,6 +159,24 @@ export function createInMemoryEaStore(): EaStore {
       return Array.from(state.positions.entries())
         .filter(([key]) => key.startsWith(`${accountId}:`))
         .flatMap(([, positions]) => cloneArray(positions));
+    },
+    savePositionState(accountId, symbol, positionState) {
+      state.positionStates.set(positionStateKey(accountId, symbol, positionState.ticket), normalizePositionState(positionState));
+    },
+    loadPositionStates(accountId, symbol) {
+      return Array.from(state.positionStates.entries())
+        .filter(([key]) => key.startsWith(`${accountId}:${symbol}:`))
+        .map(([, positionState]) => structuredClone(positionState))
+        .sort((left, right) => left.ticket - right.ticket);
+    },
+    deleteStalePositionStates(accountId, symbol, activeTickets) {
+      const active = new Set(activeTickets);
+      for (const key of state.positionStates.keys()) {
+        const [stateAccount, stateSymbol, ticket] = key.split(':');
+        if (stateAccount === accountId && stateSymbol === symbol && !active.has(Number(ticket))) {
+          state.positionStates.delete(key);
+        }
+      }
     },
     saveOrderResult(payload) {
       const key = accountId(payload);
@@ -390,6 +424,19 @@ export function createSqliteEaStore(path: string): EaStore {
       error_text TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS position_states (
+      account_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      ticket INTEGER NOT NULL,
+      tp1_hit INTEGER NOT NULL DEFAULT 0,
+      tp2_hit INTEGER NOT NULL DEFAULT 0,
+      max_profit_atr REAL NOT NULL DEFAULT 0,
+      be_moved INTEGER NOT NULL DEFAULT 0,
+      be_trigger_atr REAL NOT NULL DEFAULT 1.0,
+      open_time TEXT NOT NULL DEFAULT '',
+      last_modify_time TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (account_id, symbol, ticket)
+    );
     CREATE INDEX IF NOT EXISTS idx_ea_events_kind_account_delivered
       ON ea_events(kind, account_id, delivered, created_at);
     CREATE INDEX IF NOT EXISTS idx_runtime_commands_account_status_created
@@ -476,6 +523,39 @@ export function createSqliteEaStore(path: string): EaStore {
     ORDER BY rowid ASC
   `);
   const markDelivered = db.prepare(`UPDATE ea_events SET delivered = 1 WHERE rowid = ?`);
+  const upsertPositionState = db.prepare(`
+    INSERT INTO position_states (
+      account_id,
+      symbol,
+      ticket,
+      tp1_hit,
+      tp2_hit,
+      max_profit_atr,
+      be_moved,
+      be_trigger_atr,
+      open_time,
+      last_modify_time
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, symbol, ticket)
+    DO UPDATE SET
+      tp1_hit = excluded.tp1_hit,
+      tp2_hit = excluded.tp2_hit,
+      max_profit_atr = excluded.max_profit_atr,
+      be_moved = excluded.be_moved,
+      be_trigger_atr = excluded.be_trigger_atr,
+      open_time = excluded.open_time,
+      last_modify_time = excluded.last_modify_time
+  `);
+  const selectPositionStates = db.prepare(`
+    SELECT ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, open_time, last_modify_time
+    FROM position_states
+    WHERE account_id = ? AND symbol = ?
+    ORDER BY ticket ASC
+  `);
+  const deletePositionStatesForSymbol = db.prepare(`
+    DELETE FROM position_states
+    WHERE account_id = ? AND symbol = ?
+  `);
   const selectSnapshotAccounts = db.prepare(`SELECT DISTINCT account_id FROM ea_snapshots ORDER BY account_id ASC`);
   const selectEventAccounts = db.prepare(`SELECT DISTINCT account_id FROM ea_events ORDER BY account_id ASC`);
   const selectSnapshotSymbols = db.prepare(`
@@ -625,6 +705,35 @@ export function createSqliteEaStore(path: string): EaStore {
       }
       const rows = snapshotRows(db, 'positions', accountId);
       return rows.flatMap((row) => (Array.isArray(row.positions) ? (row.positions as EaRecord[]) : []));
+    },
+    savePositionState(accountId, symbol, state) {
+      const normalized = normalizePositionState(state);
+      upsertPositionState.run(
+        accountId,
+        symbol,
+        normalized.ticket,
+        normalized.tp1_hit ? 1 : 0,
+        normalized.tp2_hit ? 1 : 0,
+        normalized.max_profit_atr,
+        normalized.be_moved ? 1 : 0,
+        normalized.be_trigger_atr,
+        normalized.open_time,
+        normalized.last_modify_time
+      );
+    },
+    loadPositionStates(accountId, symbol) {
+      return (selectPositionStates.all(accountId, symbol) as PositionStateRow[]).map(positionStateFromRow);
+    },
+    deleteStalePositionStates(accountId, symbol, activeTickets) {
+      if (activeTickets.length === 0) {
+        deletePositionStatesForSymbol.run(accountId, symbol);
+        return;
+      }
+      const placeholders = activeTickets.map(() => '?').join(', ');
+      db.prepare(`
+        DELETE FROM position_states
+        WHERE account_id = ? AND symbol = ? AND ticket NOT IN (${placeholders})
+      `).run(accountId, symbol, ...activeTickets);
     },
     saveOrderResult(payload) {
       insertEvent.run('order_result', accountId(payload), '', toJson(payload), 1);
@@ -1023,6 +1132,44 @@ function normalizePendingSignal(payload: EaRecord): EaRecord {
   return out;
 }
 
+function normalizePositionState(state: PositionStateRecord): PositionStateRecord {
+  const now = currentTimestamp();
+  return {
+    ticket: state.ticket,
+    tp1_hit: state.tp1_hit === true,
+    tp2_hit: state.tp2_hit === true,
+    max_profit_atr: Number.isFinite(state.max_profit_atr) ? state.max_profit_atr : 0,
+    be_moved: state.be_moved === true,
+    be_trigger_atr: Number.isFinite(state.be_trigger_atr) ? state.be_trigger_atr : 1.0,
+    open_time: state.open_time.length > 0 ? state.open_time : now,
+    last_modify_time: state.last_modify_time.length > 0 ? state.last_modify_time : now
+  };
+}
+
+type PositionStateRow = {
+  ticket: number;
+  tp1_hit: number;
+  tp2_hit: number;
+  max_profit_atr: number;
+  be_moved: number;
+  be_trigger_atr: number;
+  open_time: string;
+  last_modify_time: string;
+};
+
+function positionStateFromRow(row: PositionStateRow): PositionStateRecord {
+  return {
+    ticket: Number(row.ticket),
+    tp1_hit: row.tp1_hit !== 0,
+    tp2_hit: row.tp2_hit !== 0,
+    max_profit_atr: Number(row.max_profit_atr),
+    be_moved: row.be_moved !== 0,
+    be_trigger_atr: Number(row.be_trigger_atr),
+    open_time: row.open_time,
+    last_modify_time: row.last_modify_time
+  };
+}
+
 function normalizeApiToken(payload: StoredApiTokenInput): StoredApiToken {
   return {
     token: payload.token,
@@ -1081,6 +1228,10 @@ function numericField(payload: EaRecord, field: string): number {
 
 function symbolKey(accountId: string, symbol: string): string {
   return `${accountId}:${symbol}`;
+}
+
+function positionStateKey(accountId: string, symbol: string, ticket: number): string {
+  return `${accountId}:${symbol}:${ticket}`;
 }
 
 function barKey(accountId: string, symbol: string, timeframe: string): string {

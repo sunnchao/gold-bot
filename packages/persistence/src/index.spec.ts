@@ -80,6 +80,111 @@ describe('persistence scaffold', () => {
     expect(store.getPositions('90011087').map((position) => position.ticket).sort()).toEqual([1001, 2002]);
   });
 
+  for (const testCase of [
+    {
+      name: 'in-memory',
+      create() {
+        return {
+          store: createInMemoryEaStore(),
+          cleanup() {}
+        };
+      }
+    },
+    {
+      name: 'sqlite',
+      create() {
+        const dir = mkdtempSync(join(tmpdir(), 'gold-bot-position-state-'));
+        return {
+          store: createSqliteEaStore(join(dir, 'ea.sqlite')),
+          cleanup() {
+            rmSync(dir, { recursive: true, force: true });
+          }
+        };
+      }
+    }
+  ]) {
+    it(`stores symbol-scoped position manager states in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        store.savePositionState('90011087', 'XAUUSD', {
+          ticket: 1001,
+          tp1_hit: true,
+          tp2_hit: false,
+          max_profit_atr: 1.6,
+          be_moved: true,
+          be_trigger_atr: 1.5,
+          open_time: '2026-04-13T06:00:00.000Z',
+          last_modify_time: '2026-04-13T08:00:00.000Z'
+        });
+        store.savePositionState('90011087', 'GBPJPY', {
+          ticket: 1001,
+          tp1_hit: false,
+          tp2_hit: false,
+          max_profit_atr: 0.4,
+          be_moved: false,
+          be_trigger_atr: 1.5,
+          open_time: '2026-04-13T06:05:00.000Z',
+          last_modify_time: '2026-04-13T08:05:00.000Z'
+        });
+
+        expect(store.loadPositionStates('90011087', 'XAUUSD')).toEqual([
+          {
+            ticket: 1001,
+            tp1_hit: true,
+            tp2_hit: false,
+            max_profit_atr: 1.6,
+            be_moved: true,
+            be_trigger_atr: 1.5,
+            open_time: '2026-04-13T06:00:00.000Z',
+            last_modify_time: '2026-04-13T08:00:00.000Z'
+          }
+        ]);
+
+        store.savePositionState('90011087', 'XAUUSD', {
+          ticket: 1001,
+          tp1_hit: true,
+          tp2_hit: true,
+          max_profit_atr: 2.4,
+          be_moved: true,
+          be_trigger_atr: 1.5,
+          open_time: '2026-04-13T06:00:00.000Z',
+          last_modify_time: '2026-04-13T09:00:00.000Z'
+        });
+        store.savePositionState('90011087', 'XAUUSD', {
+          ticket: 1002,
+          tp1_hit: false,
+          tp2_hit: false,
+          max_profit_atr: 0.2,
+          be_moved: false,
+          be_trigger_atr: 1.5,
+          open_time: '2026-04-13T07:00:00.000Z',
+          last_modify_time: '2026-04-13T07:00:00.000Z'
+        });
+
+        expect(store.loadPositionStates('90011087', 'XAUUSD').map((state) => state.ticket)).toEqual([1001, 1002]);
+        store.deleteStalePositionStates('90011087', 'XAUUSD', [1001]);
+        expect(store.loadPositionStates('90011087', 'XAUUSD')).toEqual([
+          {
+            ticket: 1001,
+            tp1_hit: true,
+            tp2_hit: true,
+            max_profit_atr: 2.4,
+            be_moved: true,
+            be_trigger_atr: 1.5,
+            open_time: '2026-04-13T06:00:00.000Z',
+            last_modify_time: '2026-04-13T09:00:00.000Z'
+          }
+        ]);
+        expect(store.loadPositionStates('90011087', 'GBPJPY').map((state) => state.ticket)).toEqual([1001]);
+        store.deleteStalePositionStates('90011087', 'XAUUSD', []);
+        expect(store.loadPositionStates('90011087', 'XAUUSD')).toEqual([]);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
+  }
+
   it('delivers explicitly queued commands once without generating commands itself', () => {
     const store = createInMemoryEaStore();
     const command: EaCommand = {

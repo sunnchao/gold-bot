@@ -16,6 +16,7 @@ export class SchedulerService {
 
   enqueuePositionReview(accountId: string, symbol: string): void {
     const result = this.analysis.analyzeAccountSymbol(accountId, symbol);
+    this.analysis.persistPositionStates?.(accountId, symbol, result.replay.position_states ?? null);
     this.shadow?.recordRuntimeSnapshot({
       account_id: accountId,
       symbol,

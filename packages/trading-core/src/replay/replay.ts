@@ -110,6 +110,7 @@ export type ReplayResult = {
   signal: ReplaySignal | null;
   logs: ReplayLog[];
   position_commands: ReplayPositionCommand[] | null;
+  position_states: PositionManagerState[] | null;
   canProduceLiveCommands: false;
 };
 
@@ -227,7 +228,7 @@ export function runReplay(raw: unknown): ReplayResult {
   const positionFilterResult = applyPositionConflictFilter(selectedSignal, normalizePositionManagerPositions(snapshot.positions ?? []));
   const aiStopLossResult = applyAIStopLossOverride(positionFilterResult.signal, snapshot.ai_result);
   const aiTakeProfitResult = applyAITakeProfitOverride(aiStopLossResult.signal, snapshot.ai_result);
-  const positionCommands = evaluateReplayPositionCommands(snapshot, enrichedH1, currentPrice);
+  const positionReview = evaluateReplayPositionCommands(snapshot, enrichedH1, currentPrice);
 
   return {
     signal: aiTakeProfitResult.signal,
@@ -247,7 +248,8 @@ export function runReplay(raw: unknown): ReplayResult {
       [...aiStopLossResult.logs, ...aiTakeProfitResult.logs],
       momentumConfig
     ),
-    position_commands: positionCommands.length === 0 ? null : positionCommands,
+    position_commands: positionReview.commands.length === 0 ? null : positionReview.commands,
+    position_states: positionReview.states,
     canProduceLiveCommands: false
   };
 }
@@ -521,14 +523,22 @@ function enrichBars(bars: ReplayRawBar[]): EnrichedReplayBar[] {
   }));
 }
 
-function evaluateReplayPositionCommands(snapshot: ReplaySnapshot, enrichedH1: EnrichedReplayBar[], currentPrice: number): ReplayPositionCommand[] {
-  if ((snapshot.positions?.length ?? 0) === 0 || enrichedH1.length < 5 || currentPrice <= 0) {
-    return [];
+type ReplayPositionReview = {
+  commands: ReplayPositionCommand[];
+  states: PositionManagerState[] | null;
+};
+
+function evaluateReplayPositionCommands(snapshot: ReplaySnapshot, enrichedH1: EnrichedReplayBar[], currentPrice: number): ReplayPositionReview {
+  if ((snapshot.positions?.length ?? 0) === 0) {
+    return { commands: [], states: [] };
+  }
+  if (enrichedH1.length < 5 || currentPrice <= 0) {
+    return { commands: [], states: null };
   }
 
   const currentAtr = enrichedH1[enrichedH1.length - 1]?.atr ?? 0;
   if (currentAtr <= 0 || Number.isNaN(currentAtr)) {
-    return [];
+    return { commands: [], states: null };
   }
 
   const result = evaluatePositionManagerCommands({
@@ -543,7 +553,10 @@ function evaluateReplayPositionCommands(snapshot: ReplaySnapshot, enrichedH1: En
     states: normalizePositionManagerStates(snapshot.position_states ?? [])
   });
 
-  return result.advisories.map(toReplayPositionCommand);
+  return {
+    commands: result.advisories.map(toReplayPositionCommand),
+    states: result.nextStates
+  };
 }
 
 function averageAtr(h1Bars: EnrichedReplayBar[]): number {
