@@ -479,6 +479,14 @@ describe('app-server scaffold', () => {
         strength: 8
       }
     });
+    const pollWrongShape = await server.inject({
+      method: 'POST',
+      url: '/indicator_alert/poll',
+      headers: apiUserHeaders,
+      body: {
+        account_id: 123
+      }
+    });
 
     expect(method.statusCode).toBe(405);
     expect(JSON.parse(method.body)).toEqual({ status: 'ERROR', message: 'method not allowed' });
@@ -486,6 +494,8 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(json.body)).toEqual({ status: 'ERROR', message: 'invalid json' });
     expect(wrongShape.statusCode).toBe(400);
     expect(JSON.parse(wrongShape.body)).toEqual({ status: 'ERROR', message: 'invalid json' });
+    expect(pollWrongShape.statusCode).toBe(400);
+    expect(JSON.parse(pollWrongShape.body)).toEqual({ status: 'ERROR', message: 'invalid json' });
   });
 
   it('serves visual poll with tick, AI trade plan, and matching alerts', async () => {

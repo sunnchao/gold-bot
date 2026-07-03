@@ -96,6 +96,10 @@ export function handleIndicatorAlertRoute(request: IndicatorAlertRouteRequest, d
     };
   }
   if (request.path === '/indicator_alert/poll') {
+    const accountId = parsed.body.account_id;
+    if (accountId != null && typeof accountId !== 'string') {
+      return error(400, 'invalid json');
+    }
     const alerts = deps.alerts.recent();
     return {
       statusCode: 200,
