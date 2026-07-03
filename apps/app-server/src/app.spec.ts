@@ -1144,6 +1144,34 @@ describe('app-server scaffold', () => {
     expect(rejected.statusCode).toBe(401);
   });
 
+  it('deletes the lexicographically first API token matching a prefix like Go', async () => {
+    const server = createApiServer({
+      validTokens: [fixtureAdminToken, 'shared-bbb-token', 'shared-aaa-token'],
+      adminTokens: [fixtureAdminToken],
+      tokenAccounts: {
+        'shared-bbb-token': ['90011087'],
+        'shared-aaa-token': ['90011087']
+      }
+    });
+
+    const deleted = await server.inject({
+      method: 'DELETE',
+      url: '/api/tokens/shared-',
+      headers: apiAdminHeaders
+    });
+    const listed = await server.inject({
+      method: 'GET',
+      url: '/api/tokens',
+      headers: apiAdminHeaders
+    });
+
+    expect(deleted.statusCode).toBe(200);
+    expect(JSON.parse(deleted.body)).toEqual({ status: 'OK', revoked: 'shar...oken' });
+    const tokens = (JSON.parse(listed.body) as { tokens: Record<string, { full_token: string }> }).tokens;
+    expect(Object.values(tokens).map((token) => token.full_token)).not.toContain('shared-aaa-token');
+    expect(Object.values(tokens).map((token) => token.full_token)).toContain('shared-bbb-token');
+  });
+
   it('loads persisted API tokens from the app store on startup', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gold-bot-token-admin-'));
     const dbPath = join(dir, 'ea.sqlite');

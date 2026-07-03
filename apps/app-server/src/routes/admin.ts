@@ -375,12 +375,9 @@ function listTokenRecords(records: Map<string, ApiTokenRecord>): EaRecord {
 }
 
 function findTokenByPrefix(records: Map<string, ApiTokenRecord>, prefix: string): string | undefined {
-  for (const token of records.keys()) {
-    if (token === prefix || token.startsWith(prefix)) {
-      return token;
-    }
-  }
-  return undefined;
+  return Array.from(records.keys())
+    .filter((token) => token === prefix || token.startsWith(prefix))
+    .sort()[0];
 }
 
 function maskToken(token: string): string {
