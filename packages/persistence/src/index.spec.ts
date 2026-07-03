@@ -1,8 +1,36 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createInMemoryEaStore, createSqliteEaStore, persistenceStatus, type EaCommand } from './index.js';
+
+function withAdvancingDate<T>(startIso: string, stepMs: number, callback: () => T): T {
+  const RealDate = Date;
+  const startMs = RealDate.parse(startIso);
+  let calls = 0;
+  class AdvancingDate extends RealDate {
+    constructor(value?: string | number | Date) {
+      if (value == null) {
+        super(startMs + calls * stepMs);
+        calls += 1;
+      } else {
+        super(value);
+      }
+    }
+
+    static now(): number {
+      const value = startMs + calls * stepMs;
+      calls += 1;
+      return value;
+    }
+  }
+  vi.stubGlobal('Date', AdvancingDate);
+  try {
+    return callback();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
 
 describe('persistence scaffold', () => {
   it('declares that persistence does not write live commands', () => {
@@ -536,6 +564,47 @@ describe('persistence scaffold', () => {
           })
         ]);
       } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
+
+    it(`uses one delivered_at timestamp for each poll batch in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        const first = store.saveCommandCandidate('90011087', {
+          command_id: 'sig_batch_a',
+          source: 'ai_result',
+          symbol: 'XAUUSD',
+          action: 'SIGNAL',
+          strategy: 'ai_signal',
+          decision_id: 'tpv1_batch_a'
+        });
+        const second = store.saveCommandCandidate('90011087', {
+          command_id: 'sig_batch_b',
+          source: 'ai_result',
+          symbol: 'XAUUSD',
+          action: 'SIGNAL',
+          strategy: 'ai_signal',
+          decision_id: 'tpv1_batch_b'
+        });
+        store.promoteCommand(first.command_id);
+        store.promoteCommand(second.command_id);
+
+        withAdvancingDate('2026-04-13T08:00:00.000Z', 1000, () => {
+          expect(store.pollCommands('90011087')).toHaveLength(2);
+        });
+
+        const firstDeliveredAt = store.getCommand(first.command_id)?.delivered_at;
+        const secondDeliveredAt = store.getCommand(second.command_id)?.delivered_at;
+        expect(firstDeliveredAt).toBe('2026-04-13T08:00:00.000Z');
+        expect(secondDeliveredAt).toBe(firstDeliveredAt);
+        const deliveredEvents = store
+          .listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'delivered' })
+          .filter((event) => event.stage === 'command_delivered');
+        expect(new Set(deliveredEvents.map((event) => event.created_at))).toEqual(new Set([firstDeliveredAt]));
+      } finally {
+        vi.unstubAllGlobals();
         store.close?.();
         cleanup();
       }

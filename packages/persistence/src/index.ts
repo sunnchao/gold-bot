@@ -872,8 +872,8 @@ export function createSqliteEaStore(path: string): EaStore {
     pollCommands(accountId) {
       const rows = selectQueuedRuntimeCommands.all(accountId) as RuntimeCommandListRow[];
       const delivered: StoredCommand[] = [];
+      const deliveredAt = currentTimestamp();
       for (const row of rows) {
-        const deliveredAt = currentTimestamp();
         updateRuntimeCommandStatus.run('delivered', deliveredAt, deliveredAt, row.command_id);
         const command = runtimeCommandFromListRow({ ...row, status: 'delivered', delivered_at: deliveredAt });
         recordCommandDecisionInSqlite(insertDecisionEvent, command, 'command_delivered', 'delivered', deliveredAt);
