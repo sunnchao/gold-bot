@@ -646,15 +646,12 @@ function tradingCoreAnalysis(store: EaStore, accountId: string, symbol: string, 
 }
 
 function handleAIResultRoute(
-  method: string,
+  _method: string,
   accountId: string,
   symbol: string,
   rawBody: string,
   deps: Pick<AppServerDeps, 'store' | 'nowIso' | 'commandLifecycle' | 'shadow' | 'events' | 'aiApproveCooldown'>
 ): JsonResponse {
-  if (method !== 'POST') {
-    return { statusCode: 405, body: { status: 'ERROR', message: 'method not allowed' } };
-  }
   const parsed = parseJsonObject(rawBody);
   if (!parsed.ok) {
     return { statusCode: 400, body: { status: 'ERROR', message: 'invalid JSON' } };
