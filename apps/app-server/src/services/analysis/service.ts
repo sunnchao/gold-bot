@@ -7,6 +7,7 @@ export class AnalysisService {
   analyzeAccountSymbol(accountId: string, symbol: string) {
     const latestTick = this.store.getLatestTick(accountId, symbol) ?? {};
     const positions = this.store.getPositions(accountId, symbol);
+    const latestAIResult = this.store.getAIResults(accountId).find((result) => result.symbol === symbol);
     return {
       replay: runReplay({
         account_id: accountId,
@@ -22,7 +23,8 @@ export class AnalysisService {
           M1: this.store.getBars(accountId, symbol, 'M1')
         },
         positions,
-        position_states: this.store.loadPositionStates(accountId, symbol)
+        position_states: this.store.loadPositionStates(accountId, symbol),
+        ai_result: replayAIResult(latestAIResult)
       }),
       positionSummary: summarizePositions({
         accountId,
@@ -43,10 +45,25 @@ export class AnalysisService {
   }
 }
 
+function replayAIResult(payload: EaRecord | undefined): { suggested_sl?: number; suggested_tp?: number } | undefined {
+  if (payload == null) {
+    return undefined;
+  }
+  return {
+    suggested_sl: optionalNumberField(payload, 'suggested_sl'),
+    suggested_tp: optionalNumberField(payload, 'suggested_tp')
+  };
+}
+
 function currentPriceFromTick(tick: EaRecord): number {
   const ask = typeof tick.ask === 'number' ? tick.ask : undefined;
   const bid = typeof tick.bid === 'number' ? tick.bid : undefined;
   return ask ?? bid ?? 0;
+}
+
+function optionalNumberField(record: EaRecord, field: string): number | undefined {
+  const value = record[field];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function toPositionManagerPosition(position: EaRecord): PositionManagerPosition {
