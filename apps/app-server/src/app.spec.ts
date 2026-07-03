@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInMemoryEaStore, createSqliteEaStore, type EaCommand } from '@gold-bot/persistence';
+import { createSseHub, type SseEvent } from '@gold-bot/observability';
 import { createAppServer, type AppServerOptions } from './app.js';
 import { authorizeRouteAccount, extractRouteToken } from './middleware/auth.js';
 
@@ -24,6 +27,107 @@ function createApiServer(options: AppServerOptions = {}) {
   });
 }
 
+function openSseStream(port: number, path: string): Promise<{
+  response: IncomingMessage;
+  close: () => void;
+}> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        hostname: '127.0.0.1',
+        port,
+        method: 'GET',
+        path
+      },
+      (response) => {
+        response.setEncoding('utf8');
+        resolve({
+          response,
+          close: () => req.destroy()
+        });
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function collectSseFrames(response: IncomingMessage, count: number): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    let buffer = '';
+    const frames: string[] = [];
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`timed out waiting for ${count} SSE frames`));
+    }, 2_000);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      response.off('data', onData);
+      response.off('error', onError);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk: string) => {
+      buffer += chunk;
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        frames.push(buffer.slice(0, boundary + 2));
+        buffer = buffer.slice(boundary + 2);
+        if (frames.length === count) {
+          cleanup();
+          resolve(frames);
+          return;
+        }
+        boundary = buffer.indexOf('\n\n');
+      }
+    };
+    response.on('data', onData);
+    response.on('error', onError);
+  });
+}
+
+function parseSseFrame(frame: string): Record<string, unknown> {
+  const prefix = 'data: ';
+  expect(frame.startsWith(prefix)).toBe(true);
+  return JSON.parse(frame.slice(prefix.length).trim()) as Record<string, unknown>;
+}
+
+function postJson(port: number, path: string, headers: Record<string, string>, body: unknown): Promise<{
+  statusCode: number;
+  body: string;
+}> {
+  return new Promise((resolve, reject) => {
+    const rawBody = JSON.stringify(body);
+    const req = httpRequest(
+      {
+        hostname: '127.0.0.1',
+        port,
+        method: 'POST',
+        path,
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(rawBody)
+        }
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        response.on('end', () => {
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString('utf8')
+          });
+        });
+      }
+    );
+    req.on('error', reject);
+    req.end(rawBody);
+  });
+}
+
 function readFixture(name: string) {
   return JSON.parse(readFileSync(join(fixtureRoot, `${name}.json`), 'utf8')) as {
     request?: { method: string; path: string; headers?: Record<string, string>; body?: unknown };
@@ -35,13 +139,6 @@ function readAdminFixture(name: string) {
   return JSON.parse(readFileSync(join(adminFixtureRoot, `${name}.json`), 'utf8')) as {
     request: { method: string; path: string; headers?: Record<string, string>; body?: unknown };
     response: { body?: unknown; body_ref?: string };
-  };
-}
-
-function readAdminStreamFixture(name: string) {
-  return JSON.parse(readFileSync(join(adminFixtureRoot, `${name}.json`), 'utf8')) as {
-    request: { method: string; path: string; headers?: Record<string, string> };
-    response: { frames: string[] };
   };
 }
 
@@ -1764,23 +1861,93 @@ describe('app-server scaffold', () => {
     });
   });
 
-  it('serves a dashboard-compatible SSE snapshot stream', async () => {
+  it('exposes an injectable SSE route without a synthetic snapshot frame', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
-    const fixture = readAdminStreamFixture('events-stream-sample');
 
     store.saveRegistration({ account_id: '90011087' });
     store.saveHeartbeat({ account_id: '90011087' });
 
     const response = await server.inject({
-      method: fixture.request.method,
-      url: fixture.request.path,
-      headers: fixture.request.headers
+      method: 'GET',
+      url: '/api/v1/events/stream',
+      headers: apiAdminHeaders
     });
 
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toBe('text/event-stream');
-    expect(response.body).toBe(fixture.response.frames.join(''));
+    expect(response.headers['cache-control']).toBe('no-cache');
+    expect(response.headers.connection).toBe('keep-alive');
+    expect(response.body).toBe('');
+  });
+
+  it('streams live AI result SSE events over HTTP', async () => {
+    const store = createInMemoryEaStore();
+    const app = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const httpServer = await app.listen(0, '127.0.0.1');
+    const port = (httpServer.address() as AddressInfo).port;
+    const stream = await openSseStream(port, `/api/v1/events/stream?token=${fixtureAdminToken}`);
+
+    try {
+      expect(stream.response.statusCode).toBe(200);
+      expect(stream.response.headers['content-type']).toBe('text/event-stream');
+      expect(stream.response.headers['cache-control']).toBe('no-cache');
+      expect(stream.response.headers.connection).toBe('keep-alive');
+
+      const framesPromise = collectSseFrames(stream.response, 2);
+      const post = await postJson(
+        port,
+        '/api/ai_result/90011087',
+        apiUserHeaders,
+        {
+          suggested_sl: 0,
+          suggested_tp: 0,
+          confidence: 64,
+          reasoning: 'provider returned no levels'
+        }
+      );
+      expect(post.statusCode).toBe(200);
+      expect(JSON.parse(post.body)).toEqual({ status: 'OK', received: true });
+
+      const frames = (await framesPromise).map(parseSseFrame);
+      expect(frames[0]).toMatchObject({
+        event_id: 'evt_ai_fail_1776067200000000000',
+        event_type: 'ai_analysis_failed',
+        account_id: '90011087',
+        source: 'api.ai_result',
+        timestamp: '2026-04-13T08:00:00.000Z',
+        payload: {
+          suggested_sl: 0,
+          suggested_tp: 0,
+          confidence: 64,
+          reasoning: 'provider returned no levels'
+        }
+      });
+      expect(frames[1]).toMatchObject({
+        event_id: 'evt_ai_1776067200000000000',
+        event_type: 'ai_result',
+        account_id: '90011087',
+        source: 'api.ai_result',
+        timestamp: '2026-04-13T08:00:00.000Z',
+        payload: {
+          suggested_sl: 0,
+          suggested_tp: 0,
+          confidence: 64,
+          reasoning: 'provider returned no levels'
+        }
+      });
+    } finally {
+      stream.close();
+      await new Promise<void>((resolve, reject) => {
+        httpServer.close((error) => {
+          if (error != null) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    }
   });
 
   it('serves analysis payloads and stores AI results in audit-only mode', async () => {
@@ -1983,7 +2150,10 @@ describe('app-server scaffold', () => {
 
   it('queues accepted V2 AI risk commands with trade-plan metadata', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const events = createSseHub<SseEvent>();
+    const publishedEvents: SseEvent[] = [];
+    events.subscribe((event) => publishedEvents.push(event));
+    const server = createApiServer({ store, events, nowIso: () => '2026-04-13T16:00:00+08:00' });
     store.saveRegistration({ account_id: '90011087', leverage: 500 });
     store.saveHeartbeat({
       account_id: '90011087',
@@ -2034,6 +2204,24 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(response.body)).toMatchObject({
       risk_gate: { status: 'accepted' }
     });
+    expect(publishedEvents).toContainEqual(
+      expect.objectContaining({
+        event_id: 'evt_ai_1776067200000000000',
+        event_type: 'ai_result',
+        account_id: '90011087',
+        source: 'api.ai_result',
+        timestamp: '2026-04-13T08:00:00.000Z',
+        payload: expect.objectContaining({
+          trade_plan_summary: {
+            decision_id: 'tpv1_close_all',
+            mode: 'close',
+            symbol: 'XAUUSD',
+            confidence: 87
+          },
+          risk_gate: expect.objectContaining({ status: 'accepted' })
+        })
+      })
+    );
     expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
       expect.objectContaining({
         decision_id: 'tpv1_close_all',

@@ -21,10 +21,10 @@ import {
   summarizePositions,
   type PositionManagerPosition
 } from '@gold-bot/trading-core';
-import { buildShadowReport, formatSseFrame } from '@gold-bot/observability';
+import { buildShadowReport, createSseHub, eventStreamHeaders, formatSseFrame, type SseEvent, type SseHub } from '@gold-bot/observability';
 import { type JsonResponse } from './http/response.js';
 import { parseJsonObject } from './http/json.js';
-import { requireRouteToken } from './middleware/auth.js';
+import { requireAdminRoute, requireRouteToken } from './middleware/auth.js';
 import { handleEaRoute as routeEa } from './routes/ea.js';
 import { handleAdminRoute as routeAdmin, type ApiTokenRecord } from './routes/admin.js';
 import { handleAIRoute as routeAI } from './routes/ai.js';
@@ -58,6 +58,7 @@ export type AppServerOptions = {
   adminTokens?: readonly string[];
   defaultRuntimeMode?: RuntimeMode;
   releaseRoot?: string;
+  events?: SseHub<SseEvent>;
 };
 
 type AppServerDeps = {
@@ -70,6 +71,7 @@ type AppServerDeps = {
   tokenRecords: Map<string, ApiTokenRecord>;
   releaseRoot: string;
   alerts: IndicatorAlertCache;
+  events: SseHub<SseEvent>;
   commandLifecycle: CommandLifecycleService;
   scheduler: SchedulerService;
   shadow: ShadowService;
@@ -134,7 +136,8 @@ export function createAppServer(options: AppServerOptions = {}) {
     adminTokens,
     tokenRecords,
     releaseRoot: options.releaseRoot ?? DEFAULT_RELEASE_ROOT,
-    alerts: createIndicatorAlertCache(() => nowUnix() * 1000)
+    alerts: createIndicatorAlertCache(() => nowUnix() * 1000),
+    events: options.events ?? createSseHub<SseEvent>()
   };
   const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso);
   const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
@@ -165,16 +168,53 @@ export function createAppServer(options: AppServerOptions = {}) {
 }
 
 async function handleHttpRequest(req: IncomingMessage, res: ServerResponse, deps: AppServerDeps): Promise<void> {
+  const method = req.method ?? 'GET';
+  const url = req.url ?? '/';
+  const path = new URL(url, 'http://localhost').pathname;
+  if (method === 'GET' && path === '/api/v1/events/stream') {
+    streamEvents(req, res, deps);
+    return;
+  }
   const response = await routeRequest(
     {
-      method: req.method ?? 'GET',
-      url: req.url ?? '/',
+      method,
+      url,
       headers: req.headers,
       rawBody: await readRawBody(req)
     },
     deps
   );
   writeResponse(res, response);
+}
+
+function streamEvents(req: IncomingMessage, res: ServerResponse, deps: AppServerDeps): void {
+  const tokenResult = requireAdminRoute(deps.validTokens, deps.adminTokens, req.headers, req.url ?? '/');
+  if (tokenResult.response != null) {
+    writeResponse(res, tokenResult.response);
+    return;
+  }
+
+  res.statusCode = 200;
+  for (const [name, value] of Object.entries(eventStreamHeaders())) {
+    res.setHeader(name, value);
+  }
+  res.flushHeaders();
+
+  let closed = false;
+  const unsubscribe = deps.events.subscribe((event) => {
+    if (!closed) {
+      res.write(formatSseFrame(event));
+    }
+  });
+  const cleanup = () => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    unsubscribe();
+  };
+  req.on('close', cleanup);
+  res.on('close', cleanup);
 }
 
 async function routeRequest(
@@ -606,7 +646,7 @@ function handleAIResultRoute(
   accountId: string,
   symbol: string,
   rawBody: string,
-  deps: Pick<AppServerDeps, 'store' | 'nowIso' | 'commandLifecycle' | 'shadow'>
+  deps: Pick<AppServerDeps, 'store' | 'nowIso' | 'commandLifecycle' | 'shadow' | 'events'>
 ): JsonResponse {
   if (method !== 'POST') {
     return { statusCode: 405, body: { status: 'ERROR', message: 'method not allowed' } };
@@ -617,9 +657,11 @@ function handleAIResultRoute(
   }
 
   deps.store.saveAIResult(accountId, symbol, parsed.body);
+  const eventTimestamp = deps.nowIso();
   const tradePlanPayload = parseTradePlanPayload(parsed.body, accountId, symbol);
   const tradePlan = tradePlanPayload.tradePlan;
   if (tradePlan == null) {
+    publishAIResultEvents(deps.events, accountId, symbol, parsed.body, undefined, undefined, eventTimestamp);
     if (tradePlanPayload.validation == null) {
       queueAIRiskCommands(deps, accountId, symbol, parsed.body);
     }
@@ -629,10 +671,11 @@ function handleAIResultRoute(
     };
   }
 
-  const riskGate = aiTradePlanRiskGate(deps.store, accountId, symbol, tradePlan, deps.nowIso());
+  const riskGate = aiTradePlanRiskGate(deps.store, accountId, symbol, tradePlan, eventTimestamp);
   const decisionId = stringFieldOrEmpty(tradePlan, 'decision_id');
   const mode = stringFieldOrEmpty(tradePlan, 'mode');
-  recordAIDecisionTimeline(deps.store, accountId, symbol, tradePlan, riskGate, deps.nowIso());
+  recordAIDecisionTimeline(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp);
+  publishAIResultEvents(deps.events, accountId, symbol, parsed.body, tradePlan, riskGate, eventTimestamp);
   const riskCommandRequested = shouldQueueAIRiskCommand(parsed.body);
   const riskCommands = queueAIRiskCommands(deps, accountId, symbol, parsed.body, tradePlan, riskGate);
   const command = !riskCommandRequested && riskGate.status === 'accepted' && mode !== 'observe' && mode !== 'veto' && mode !== 'close'
@@ -706,6 +749,65 @@ function recordAIDecisionTimeline(store: EaStore, accountId: string, symbol: str
     related_command_id: '',
     created_at: createdAt
   });
+}
+
+function publishAIResultEvents(
+  events: SseHub<SseEvent>,
+  accountId: string,
+  symbol: string,
+  payload: EaRecord,
+  tradePlan: EaRecord | undefined,
+  riskGate: EaRecord | undefined,
+  createdAt: string
+): void {
+  const timestamp = eventTimestamp(createdAt);
+  const nanos = aiRiskCommandTimestampNanos(createdAt);
+  if (isAIAnalysisFailure(payload)) {
+    events.publish({
+      event_id: `evt_ai_fail_${nanos}`,
+      event_type: 'ai_analysis_failed',
+      account_id: accountId,
+      source: 'api.ai_result',
+      timestamp,
+      payload
+    });
+  }
+  events.publish({
+    event_id: `evt_ai_${nanos}`,
+    event_type: 'ai_result',
+    account_id: accountId,
+    source: 'api.ai_result',
+    timestamp,
+    payload: aiResultEventPayload(payload, symbol, tradePlan, riskGate)
+  });
+}
+
+function isAIAnalysisFailure(payload: EaRecord): boolean {
+  return numberField(payload, 'suggested_sl') === 0 && numberField(payload, 'suggested_tp') === 0;
+}
+
+function aiResultEventPayload(payload: EaRecord, symbol: string, tradePlan?: EaRecord, riskGate?: EaRecord): EaRecord {
+  if (tradePlan == null) {
+    return payload;
+  }
+  return {
+    ...payload,
+    trade_plan_summary: {
+      decision_id: stringFieldOrEmpty(tradePlan, 'decision_id'),
+      mode: stringFieldOrEmpty(tradePlan, 'mode'),
+      symbol: stringFieldOrEmpty(tradePlan, 'symbol') || symbol,
+      confidence: numberField(tradePlan, 'confidence')
+    },
+    risk_gate: riskGate ?? {}
+  };
+}
+
+function eventTimestamp(value: string): string {
+  const millis = Date.parse(value);
+  if (Number.isFinite(millis)) {
+    return new Date(millis).toISOString();
+  }
+  return value;
 }
 
 function riskGateDecisionStatus(status: string): 'pending' | 'accepted' | 'rejected' | 'clamped' {
@@ -1592,19 +1694,8 @@ function buildAuditBody(store: EaStore, timestamp: string): EaRecord {
   };
 }
 
-function eventStreamSnapshot(store: EaStore, timestamp: string): string {
-  const accountId = store.listAccountIds()[0];
-  if (accountId == null) {
-    return '';
-  }
-  return formatSseFrame({
-    event_id: 'evt_1',
-    event_type: 'heartbeat',
-    account_id: accountId,
-    source: 'test',
-    timestamp,
-    payload: { status: 'OK' }
-  });
+function eventStreamSnapshot(_store: EaStore, _timestamp: string): string {
+  return '';
 }
 
 function eaVersionResponse(releaseRoot: string): JsonResponse {

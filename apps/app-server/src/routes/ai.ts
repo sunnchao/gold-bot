@@ -2,6 +2,7 @@ import type { EaRecord, EaStore } from '@gold-bot/persistence';
 import type { CommandLifecycleService } from '../services/command-lifecycle/service.js';
 import type { ShadowService } from '../services/shadow/service.js';
 import type { HeaderMap } from '@gold-bot/shared-contracts';
+import type { SseEvent, SseHub } from '@gold-bot/observability';
 import { authorizeApiAccount, requireRouteToken } from '../middleware/auth.js';
 import { error, type JsonResponse } from '../http/response.js';
 
@@ -18,6 +19,7 @@ export type AIRouteDeps = {
   nowIso: () => string;
   commandLifecycle: CommandLifecycleService;
   shadow: ShadowService;
+  events: SseHub<SseEvent>;
   validTokens: Set<string> | null;
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;

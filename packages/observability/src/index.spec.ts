@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildShadowReport, formatSseFrame, healthPayload } from './index.js';
+import { buildShadowReport, createSseHub, formatSseFrame, healthPayload } from './index.js';
 
 describe('observability scaffold', () => {
   it('returns a stable health payload shape', () => {
@@ -8,6 +8,19 @@ describe('observability scaffold', () => {
 
   it('formats SSE frames with JSON payloads', () => {
     expect(formatSseFrame({ status: 'OK' })).toBe('data: {"status":"OK"}\n\n');
+  });
+
+  it('publishes events to current SSE subscribers only', () => {
+    const hub = createSseHub<{ event_type: string }>();
+    const received: string[] = [];
+    const unsubscribe = hub.subscribe((event) => received.push(event.event_type));
+
+    hub.publish({ event_type: 'ai_result' });
+    unsubscribe();
+    hub.publish({ event_type: 'ai_analysis_failed' });
+
+    expect(received).toEqual(['ai_result']);
+    expect(hub.subscriberCount()).toBe(0);
   });
 
   it('builds a placeholder report when no shadow comparisons exist', () => {
