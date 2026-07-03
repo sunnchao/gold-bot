@@ -664,10 +664,15 @@ function handleAIResultRoute(
   const eventTimestamp = deps.nowIso();
   const tradePlanPayload = parseTradePlanPayload(parsed.body, accountId, symbol);
   const tradePlan = tradePlanPayload.tradePlan;
+  const dualTradePlan = parseDualTradePlanPayload(parsed.body, accountId, symbol);
   if (tradePlan == null) {
     publishAIResultEvents(deps.events, accountId, symbol, parsed.body, undefined, undefined, eventTimestamp);
+    const riskCommandRequested = shouldQueueAIRiskCommand(parsed.body);
     if (tradePlanPayload.validation == null) {
       queueAIRiskCommands(deps, accountId, symbol, parsed.body);
+    }
+    if (!riskCommandRequested && dualTradePlan?.valid === true) {
+      queueAIApprovePendingCommands(deps, accountId, symbol, dualTradePlans(dualTradePlan), {}, eventTimestamp);
     }
     return {
       statusCode: 200,
@@ -682,23 +687,16 @@ function handleAIResultRoute(
   publishAIResultEvents(deps.events, accountId, symbol, parsed.body, tradePlan, riskGate, eventTimestamp);
   const riskCommandRequested = shouldQueueAIRiskCommand(parsed.body);
   const riskCommands = queueAIRiskCommands(deps, accountId, symbol, parsed.body, tradePlan, riskGate);
-  let command: StoredCommand | undefined;
-  if (!riskCommandRequested && shouldQueueAIPending(tradePlan, riskGate)) {
-    const pendingGate = evaluateAIApprovePendingGate({
-      store: deps.store,
+  const command = !riskCommandRequested
+    ? queueAIApprovePendingCommands(
+      deps,
       accountId,
       symbol,
-      tradePlan,
-      nowIso: eventTimestamp,
-      cooldown: deps.aiApproveCooldown
-    });
-    if (pendingGate.accepted) {
-      command = deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp));
-      if (command.status === 'queued') {
-        deps.aiApproveCooldown.mark(symbol, eventTimestamp);
-      }
-    }
-  }
+      dualTradePlan?.valid === true ? dualTradePlans(dualTradePlan) : [tradePlan],
+      riskGate,
+      eventTimestamp
+    )
+    : undefined;
   deps.shadow.recordRuntimeSnapshot({
     account_id: accountId,
     symbol,
@@ -726,6 +724,49 @@ function handleAIResultRoute(
       ...(command == null ? {} : { command_status: command.status })
     }
   };
+}
+
+type DualTradePlan = {
+  valid: boolean;
+  buy?: EaRecord;
+  sell?: EaRecord;
+};
+
+function queueAIApprovePendingCommands(
+  deps: Pick<AppServerDeps, 'store' | 'commandLifecycle' | 'aiApproveCooldown'>,
+  accountId: string,
+  symbol: string,
+  tradePlans: EaRecord[],
+  riskGate: EaRecord,
+  eventTimestamp: string
+): StoredCommand | undefined {
+  let firstCommand: StoredCommand | undefined;
+  for (const tradePlan of tradePlans) {
+    if (!shouldQueueAIPending(tradePlan, riskGate)) {
+      continue;
+    }
+    const pendingGate = evaluateAIApprovePendingGate({
+      store: deps.store,
+      accountId,
+      symbol,
+      tradePlan,
+      nowIso: eventTimestamp,
+      cooldown: deps.aiApproveCooldown
+    });
+    if (!pendingGate.accepted) {
+      continue;
+    }
+    const command = deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp));
+    firstCommand ??= command;
+    if (command.status === 'queued') {
+      deps.aiApproveCooldown.mark(symbol, eventTimestamp);
+    }
+  }
+  return firstCommand;
+}
+
+function dualTradePlans(dualTradePlan: DualTradePlan): EaRecord[] {
+  return [dualTradePlan.buy, dualTradePlan.sell].filter((tradePlan): tradePlan is EaRecord => tradePlan != null);
 }
 
 function recordAIDecisionTimeline(store: EaStore, accountId: string, symbol: string, tradePlan: EaRecord, riskGate: EaRecord, createdAt: string): void {
@@ -1008,6 +1049,28 @@ function parseTradePlanPayload(payload: EaRecord, expectedAccountId: string, exp
       valid: true
     }
   };
+}
+
+function parseDualTradePlanPayload(payload: EaRecord, expectedAccountId: string, expectedSymbol: string): DualTradePlan | undefined {
+  const outer = recordField(payload, 'dual_trade_plan');
+  if (outer == null) {
+    return undefined;
+  }
+  const dual = recordField(outer, 'dual_trade_plan') ?? outer;
+  if (booleanField(dual, 'is_dual_direction') !== true) {
+    return undefined;
+  }
+  const buy = parseDualTradePlanSide(dual, 'buy', expectedAccountId, expectedSymbol);
+  const sell = parseDualTradePlanSide(dual, 'sell', expectedAccountId, expectedSymbol);
+  return { valid: true, buy, sell };
+}
+
+function parseDualTradePlanSide(dualTradePlan: EaRecord, field: 'buy' | 'sell', expectedAccountId: string, expectedSymbol: string): EaRecord | undefined {
+  const tradePlan = recordField(dualTradePlan, field);
+  if (tradePlan == null) {
+    return undefined;
+  }
+  return validateTradePlan(tradePlan, expectedAccountId, expectedSymbol) == null ? tradePlan : undefined;
 }
 
 function validateTradePlan(tradePlan: EaRecord, expectedAccountId: string, expectedSymbol: string): string | undefined {

@@ -182,6 +182,25 @@ function atrExpansionBars(historyCount: number) {
   ];
 }
 
+function dualTradePlanSide(decisionId: string, side: 'buy' | 'sell', entryMin: number, entryMax: number): Record<string, unknown> {
+  return {
+    schema_version: 'trade_plan.v1',
+    decision_id: decisionId,
+    account_id: fixtureAccountId,
+    symbol: 'XAUUSD',
+    mode: 'approve',
+    side,
+    confidence: 80,
+    entry_zone: { min: entryMin, max: entryMax },
+    stop_loss: side === 'buy' ? 3330 : 3340,
+    take_profit: [side === 'buy' ? 3345 : 3325],
+    max_lots: 0.1,
+    expires_at: '2099-06-06T09:15:00Z',
+    reason_codes: ['mode.approve', `side.${side}`],
+    narrative: `dual ${side} approve`
+  };
+}
+
 describe('app-server scaffold', () => {
   describe('route auth helpers', () => {
     it('prefers X-API-Token over X-API-Key and query token', () => {
@@ -2451,6 +2470,69 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(response.body)).not.toHaveProperty('command_status');
     expect(store.listCommands('90011087')).toEqual([]);
     expect(store.pollCommands('90011087')).toEqual([]);
+  });
+
+  it('queues the first valid dual AI approve plan and keeps the Go symbol cooldown behavior', async () => {
+    const store = createInMemoryEaStore();
+    store.setRuntimeMode('90011087', 'cutover');
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3335.5,
+      ask: 3335.7,
+      spread: 0.2,
+      time: '2026-04-13T15:59:30+08:00'
+    });
+    for (const timeframe of ['D1', 'H4', 'H1', 'M30', 'M15']) {
+      store.saveBars({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        timeframe,
+        bars: [{ close: 3336, ema20: 3335, ema50: 3330, adx: 35, atr: 2, rsi: 60 }]
+      });
+    }
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
+      body: {
+        dual_trade_plan: {
+          is_dual_direction: true,
+          buy: dualTradePlanSide('tpv1_dual_buy', 'buy', 3335.5, 3335.7),
+          sell: dualTradePlanSide('tpv1_dual_sell', 'sell', 3335.5, 3335.7)
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ status: 'OK', received: true });
+    expect(store.listCommands('90011087')).toEqual([
+      expect.objectContaining({
+        action: 'SIGNAL',
+        source: 'ai_approve',
+        status: 'queued',
+        decision_id: 'tpv1_dual_buy',
+        type: 'BUY'
+      })
+    ]);
+
+    const pollBody = JSON.parse((await server.inject({
+      method: 'POST',
+      url: '/poll',
+      headers: apiUserHeaders,
+      body: { account_id: '90011087' }
+    })).body) as { count: number; commands: Array<Record<string, unknown>> };
+    expect(pollBody.count).toBe(1);
+    expect(pollBody.commands[0]).toMatchObject({
+      action: 'SIGNAL',
+      source: 'ai_approve',
+      strategy: 'ai_signal',
+      decision_id: 'tpv1_dual_buy',
+      type: 'BUY'
+    });
   });
 
   it('returns audit-only trade plan risk gate rejects without queueing poll commands', async () => {
