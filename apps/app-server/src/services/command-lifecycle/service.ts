@@ -44,7 +44,7 @@ export class CommandLifecycleService {
 }
 
 function shadowSourceForCommand(source: StoredCommand['source']): ShadowRuntimeSnapshot['source'] {
-  return source === 'ai_risk_alert' ? 'ai_result' : source;
+  return source === 'ai_risk_alert' || source === 'ai_approve' ? 'ai_result' : source;
 }
 
 function resolveRuntimeMode(storedMode: RuntimeMode, defaultRuntimeMode: RuntimeMode): RuntimeMode {

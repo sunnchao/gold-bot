@@ -540,6 +540,38 @@ describe('persistence scaffold', () => {
         cleanup();
       }
     });
+
+    it(`preserves AI approve command source in ${testCase.name} decision events`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        const stored = store.saveCommandCandidate('90011087', {
+          command_id: 'ai_pending_90011087_XAUUSD_buy',
+          source: 'ai_approve',
+          symbol: 'XAUUSD',
+          action: 'SIGNAL',
+          strategy: 'ai_signal',
+          decision_id: 'tpv1_ai_approve'
+        });
+
+        store.promoteCommand(stored.command_id);
+
+        expect(store.getCommand(stored.command_id)).toMatchObject({
+          source: 'ai_approve'
+        });
+        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+          expect.objectContaining({
+            decision_id: 'tpv1_ai_approve',
+            stage: 'command_enqueued',
+            status: 'pending',
+            reason_codes: ['command.SIGNAL', 'source.ai_approve'],
+            related_command_id: stored.command_id
+          })
+        ]);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
   }
 
   it('stores and reloads the latest shadow runtime snapshot by account, symbol, and source', () => {

@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { createInMemoryEaStore } from '@gold-bot/persistence';
 import { CommandLifecycleService } from './service.js';
+import { ShadowService } from '../shadow/service.js';
 
 describe('CommandLifecycleService', () => {
   it('keeps candidates shadow_only when the account is not in cutover mode', () => {
     const store = createInMemoryEaStore();
     store.setRuntimeMode('90011087', 'shadow');
-    const service = new CommandLifecycleService(store);
+    const shadow = new ShadowService(store, () => '2026-04-13T08:00:00.000Z');
+    const service = new CommandLifecycleService(store, 'oracle', shadow);
 
     const stored = service.acceptCandidate('90011087', {
       command_id: 'shadow_cmd',
@@ -54,6 +56,38 @@ describe('CommandLifecycleService', () => {
       oracle_compared: false,
       source: 'ai_result'
     });
+  });
+
+  it('records AI approve commands under the AI result shadow source', () => {
+    const store = createInMemoryEaStore();
+    store.setRuntimeMode('90011087', 'shadow');
+    const shadow = new ShadowService(store, () => '2026-04-13T08:00:00.000Z');
+    const service = new CommandLifecycleService(store, 'oracle', shadow);
+
+    const stored = service.acceptCandidate('90011087', {
+      command_id: 'ai_pending_90011087_XAUUSD_buy',
+      action: 'SIGNAL',
+      source: 'ai_approve',
+      symbol: 'XAUUSD',
+      strategy: 'ai_signal'
+    });
+
+    expect(stored.source).toBe('ai_approve');
+    expect(store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ai_result')).toEqual(
+      expect.objectContaining({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        source: 'ai_result',
+        command: expect.objectContaining({ source: 'ai_approve' })
+      })
+    );
+    expect(store.listShadowComparisons()).toEqual([
+      expect.objectContaining({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        source: 'ai_result'
+      })
+    ]);
   });
 
   it('uses the configured shadow default when no explicit runtime mode is stored', () => {
