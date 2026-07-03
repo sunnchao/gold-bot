@@ -1221,8 +1221,12 @@ function numericBarField(bar: unknown, camelName: string, goName: string): numbe
     return null;
   }
   const record = bar as Record<string, unknown>;
-  const value = record[camelName] ?? record[goName];
+  const value = record[camelName] ?? record[goName] ?? record[toSnakeCase(camelName)];
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function toSnakeCase(value: string): string {
+  return value.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
 }
 
 function nearestKeyLevel(price: number, side: PositionSide, h1Bars: unknown[]): number {
@@ -1261,11 +1265,12 @@ function formatLevel(value: number): string {
 }
 
 function breakevenState(position: OpenPosition, existing: PositionManagerState | undefined): PositionManagerState {
+  const beTriggerAtr = normalizeBETriggerAtr(existing?.beTriggerAtr ?? existing?.be_trigger_atr);
   const state: PositionManagerState = {
     ...(existing ?? { ticket: position.ticket }),
     ticket: position.ticket,
     beMoved: existing?.beMoved ?? existing?.be_moved ?? false,
-    beTriggerAtr: existing?.beTriggerAtr ?? existing?.be_trigger_atr ?? 1.5,
+    beTriggerAtr,
     bestSl: existing?.bestSl ?? existing?.best_sl ?? 0
   };
 
@@ -1283,6 +1288,7 @@ function breakevenState(position: OpenPosition, existing: PositionManagerState |
 }
 
 function positionAnalyzeState(position: OpenPosition, existing: PositionManagerState | undefined, now: Date): PositionManagerState {
+  const beTriggerAtr = normalizeBETriggerAtr(existing?.beTriggerAtr ?? existing?.be_trigger_atr);
   return {
     ...(existing ?? { ticket: position.ticket }),
     ticket: position.ticket,
@@ -1292,9 +1298,13 @@ function positionAnalyzeState(position: OpenPosition, existing: PositionManagerS
     rsiTp75Triggered: existing?.rsiTp75Triggered ?? existing?.rsi_tp75_triggered ?? false,
     beMoved: existing?.beMoved ?? existing?.be_moved ?? false,
     maxProfitAtr: existing?.maxProfitAtr ?? existing?.max_profit_atr ?? 0,
-    beTriggerAtr: existing?.beTriggerAtr ?? existing?.be_trigger_atr ?? 1.5,
+    beTriggerAtr,
     bestSl: existing?.bestSl ?? existing?.best_sl ?? position.sl
   };
+}
+
+function normalizeBETriggerAtr(value: number | undefined): number {
+  return value == null || value === 0 ? 1.5 : value;
 }
 
 function updateBestSLFromPosition(position: OpenPosition, state: PositionManagerState): void {

@@ -203,6 +203,26 @@ describe('position manager breakeven advisory parity slice', () => {
     ]);
     expect(result.canProduceLiveCommands).toBe(false);
   });
+
+  it('treats a zero breakeven trigger as the Go default instead of moving immediately', () => {
+    const result = evaluatePositionBreakeven({
+      currentPrice: 3341,
+      currentAtr: 2,
+      positions: [{ ticket: 704, type: 'BUY', lots: 0.5, openPrice: 3340, sl: 0 }],
+      states: [{ ticket: 704, beTriggerAtr: 0, bestSl: 0 }]
+    });
+
+    expect(result.advisories).toEqual([]);
+    expect(result.nextStates).toEqual([
+      expect.objectContaining({
+        ticket: 704,
+        beTriggerAtr: 1.5,
+        beMoved: false,
+        bestSl: 0
+      })
+    ]);
+    expect(result.canProduceLiveCommands).toBe(false);
+  });
 });
 
 describe('position manager TP1 advisory parity slice', () => {
@@ -432,6 +452,32 @@ describe('position manager TP2 advisory parity slice', () => {
     expect(result.nextStates).toEqual([
       expect.objectContaining({
         ticket: 906,
+        tp1Hit: true,
+        tp2Hit: true
+      })
+    ]);
+    expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('accepts Go JSON macd_hist bars for early BUY TP2 weakness', () => {
+    const result = evaluatePositionTP2({
+      currentPrice: 3344.4,
+      currentAtr: 2,
+      h1Bars: [
+        {},
+        {},
+        {},
+        { macd_hist: 0.9, rsi: 64, adx: 34 },
+        { macd_hist: 0.4, rsi: 62, adx: 30 }
+      ],
+      positions: [{ ticket: 909, type: 'BUY', lots: 0.3, openPrice: 3340 }],
+      states: [{ ticket: 909, tp1Hit: true, tp2Hit: false }]
+    });
+
+    expect(result.advisories).toEqual([{ action: 'CLOSE', ticket: 909, lots: 0.12, reason: 'TP2_2.2ATR' }]);
+    expect(result.nextStates).toEqual([
+      expect.objectContaining({
+        ticket: 909,
         tp1Hit: true,
         tp2Hit: true
       })
