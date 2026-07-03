@@ -57,7 +57,7 @@ export function handleVisualRoute(request: VisualRouteRequest, deps: VisualRoute
       symbol,
       timeframe,
       server_time: deps.nowIso(),
-      tick: visualTick(deps.store.getLatestTick(accountId, symbol)),
+      tick: visualTick(deps.store.getLatestTick(accountId, symbol), symbol),
       ai: visualAI(deps.store.getAIResults(accountId), symbol),
       alerts,
       count: alerts.length
@@ -65,12 +65,18 @@ export function handleVisualRoute(request: VisualRouteRequest, deps: VisualRoute
   };
 }
 
-function visualTick(tick: EaRecord | undefined): EaRecord {
+function visualTick(tick: EaRecord | undefined, symbol: string): EaRecord {
   if (tick == null) {
-    return {};
+    return {
+      symbol,
+      bid: 0,
+      ask: 0,
+      spread: 0,
+      time: ''
+    };
   }
   return {
-    symbol: stringField(tick, 'symbol'),
+    symbol: stringField(tick, 'symbol') || symbol,
     bid: numberField(tick, 'bid'),
     ask: numberField(tick, 'ask'),
     spread: numberField(tick, 'spread'),

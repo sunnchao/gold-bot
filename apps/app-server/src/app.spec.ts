@@ -593,6 +593,29 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(forbidden.body)).toEqual({ status: 'ERROR', message: 'forbidden' });
   });
 
+  it('serves visual poll with request symbol when no tick snapshot exists', async () => {
+    const server = createApiServer({ nowIso: () => '2026-04-13T08:05:00.000Z' });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/visual/poll',
+      headers: apiUserHeaders,
+      body: { account_id: '90011087', symbol: 'XAUUSD', timeframe: 'H1' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      status: 'ok',
+      tick: {
+        symbol: 'XAUUSD',
+        bid: 0,
+        ask: 0,
+        spread: 0,
+        time: ''
+      }
+    });
+  });
+
   it('accepts safe EA lifecycle routes with Go-shaped responses and stores payloads', async () => {
     const store = createInMemoryEaStore();
     const server = createAppServer({ store, nowUnix: () => 1772342400 });
