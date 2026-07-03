@@ -574,6 +574,12 @@ describe('app-server scaffold', () => {
   it('rejects invalid visual poll requests', async () => {
     const server = createApiServer();
 
+    const invalidJson = await server.inject({
+      method: 'POST',
+      url: '/visual/poll',
+      headers: apiUserHeaders,
+      body: '{'
+    });
     const missing = await server.inject({
       method: 'POST',
       url: '/visual/poll',
@@ -587,6 +593,8 @@ describe('app-server scaffold', () => {
       body: { account_id: '90022098', symbol: 'XAUUSD' }
     });
 
+    expect(invalidJson.statusCode).toBe(400);
+    expect(JSON.parse(invalidJson.body)).toEqual({ status: 'ERROR', message: 'invalid json' });
     expect(missing.statusCode).toBe(400);
     expect(JSON.parse(missing.body)).toEqual({ status: 'ERROR', message: 'account_id and symbol are required' });
     expect(forbidden.statusCode).toBe(403);

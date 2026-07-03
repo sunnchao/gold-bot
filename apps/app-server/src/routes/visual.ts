@@ -36,7 +36,7 @@ export function handleVisualRoute(request: VisualRouteRequest, deps: VisualRoute
 
   const parsed = parseJsonObject(request.rawBody);
   if (!parsed.ok) {
-    return error(400, 'invalid JSON');
+    return error(400, 'invalid json');
   }
   const accountId = stringField(parsed.body, 'account_id').trim();
   const symbol = stringField(parsed.body, 'symbol').trim();
