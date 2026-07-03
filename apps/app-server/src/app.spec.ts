@@ -1424,6 +1424,20 @@ describe('app-server scaffold', () => {
     ]);
   });
 
+  it('returns an error for missing account detail', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/accounts/missing',
+      headers: apiAdminHeaders
+    });
+
+    expect(response.statusCode).not.toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({ status: 'ERROR' });
+  });
+
   it('serves Go-compatible account decisions behind admin auth', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store });

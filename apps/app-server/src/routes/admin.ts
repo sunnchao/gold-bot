@@ -284,6 +284,9 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
     };
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'accounts' && parts[3] != null && parts.length === 4) {
+    if (!hasAccountSnapshot(deps.store, parts[3])) {
+      return error(500, `account ${parts[3]} not found`);
+    }
     return {
       statusCode: 200,
       body: helpers.accountDetail(deps.store, parts[3], deps.nowIso())
@@ -317,6 +320,10 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
   }
 
   return error(404, 'not found');
+}
+
+function hasAccountSnapshot(store: EaStore, accountId: string): boolean {
+  return store.listAccountIds().includes(accountId);
 }
 
 function parseDecisionLimit(raw: string): number | undefined | null {
