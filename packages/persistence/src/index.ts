@@ -187,7 +187,9 @@ export function createInMemoryEaStore(): EaStore {
       return cloneArray(state.orderResults.get(accountId) ?? []);
     },
     enqueueCommand(accountId, command) {
-      state.commands.set(command.command_id, createStoredCommand(accountId, cloneCommand(command), 'queued'));
+      const stored = createStoredCommand(accountId, cloneCommand(command), 'queued');
+      state.commands.set(stored.command_id, stored);
+      recordCommandDecisionInMemory(state, stored, 'command_enqueued', 'pending', stored.created_at);
     },
     saveCommandCandidate(accountId, candidate) {
       const commandId = typeof candidate.command_id === 'string' && candidate.command_id.length > 0
@@ -205,7 +207,11 @@ export function createInMemoryEaStore(): EaStore {
     promoteCommand(commandId) {
       const command = state.commands.get(commandId);
       if (command != null) {
+        const wasQueued = command.status === 'queued';
         command.status = 'queued';
+        if (!wasQueued) {
+          recordCommandDecisionInMemory(state, command, 'command_enqueued', 'pending', command.created_at);
+        }
       }
     },
     demoteCommandToShadowOnly(commandId) {
@@ -266,6 +272,7 @@ export function createInMemoryEaStore(): EaStore {
       for (const command of pending) {
         command.status = 'delivered';
         command.delivered_at = deliveredAt;
+        recordCommandDecisionInMemory(state, command, 'command_delivered', 'delivered', deliveredAt);
       }
       return pending.map(toEaCommand);
     },
@@ -293,8 +300,13 @@ export function createInMemoryEaStore(): EaStore {
     },
     savePendingSignal(payload) {
       const key = symbolKey(accountId(payload), symbolOrDefault(payload));
+      const signal = normalizePendingSignal(payload);
       const current = state.pendingSignals.get(key) ?? [];
-      state.pendingSignals.set(key, [...current, normalizePendingSignal(payload)]);
+      state.pendingSignals.set(key, [...current, signal]);
+      const event = candidateSignalDecisionEvent(signal);
+      if (event != null) {
+        state.decisionEvents.push(normalizeDecisionEvent(event, state.nextDecisionEventId++));
+      }
     },
     getPendingSignals(accountId, symbol) {
       return pendingSignalsNewestFirst(state.pendingSignals.get(symbolKey(accountId, symbol)) ?? []);
@@ -581,7 +593,7 @@ export function createSqliteEaStore(path: string): EaStore {
   const insertRuntimeCommand = db.prepare(`
     INSERT INTO runtime_commands (
       command_id, account_id, status, source, symbol, payload_json, result, ticket, created_at, delivered_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, '', CURRENT_TIMESTAMP)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', CURRENT_TIMESTAMP)
   `);
   const updateRuntimeCommandStatus = db.prepare(`
     UPDATE runtime_commands
@@ -742,16 +754,19 @@ export function createSqliteEaStore(path: string): EaStore {
       return eventPayloads(selectEventsAnyDelivery, 'order_result', accountId);
     },
     enqueueCommand(accountId, command) {
+      const stored = createStoredCommand(accountId, cloneCommand(command), 'queued');
       insertRuntimeCommand.run(
-        command.command_id,
+        stored.command_id,
         accountId,
         'queued',
-        'ea_analysis',
-        symbolOrDefault(command),
-        toJson(command),
+        stored.source,
+        symbolOrDefault(stored),
+        toJson(toEaCommand(stored)),
         '',
-        null
+        null,
+        stored.created_at
       );
+      recordCommandDecisionInSqlite(insertDecisionEvent, stored, 'command_enqueued', 'pending', stored.created_at);
     },
     saveCommandCandidate(accountId, candidate) {
       const commandId = typeof candidate.command_id === 'string' && candidate.command_id.length > 0 ? candidate.command_id : `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -769,12 +784,18 @@ export function createSqliteEaStore(path: string): EaStore {
         symbolOrDefault(stored),
         toJson(toEaCommand(stored)),
         '',
-        null
+        null,
+        stored.created_at
       );
       return stored;
     },
     promoteCommand(commandId) {
+      const row = selectRuntimeCommand.get(commandId) as RuntimeCommandRow | undefined;
+      const command = row == null ? undefined : runtimeCommandFromRow(commandId, row);
       updateRuntimeCommandStatus.run('queued', '', '', commandId);
+      if (command != null && command.status !== 'queued') {
+        recordCommandDecisionInSqlite(insertDecisionEvent, command, 'command_enqueued', 'pending', command.created_at);
+      }
     },
     demoteCommandToShadowOnly(commandId) {
       updateRuntimeCommandStatus.run('shadow_only', '', '', commandId);
@@ -830,10 +851,15 @@ export function createSqliteEaStore(path: string): EaStore {
     },
     pollCommands(accountId) {
       const rows = selectQueuedRuntimeCommands.all(accountId) as RuntimeCommandListRow[];
+      const delivered: StoredCommand[] = [];
       for (const row of rows) {
-        updateRuntimeCommandStatus.run('delivered', currentTimestamp(), currentTimestamp(), row.command_id);
+        const deliveredAt = currentTimestamp();
+        updateRuntimeCommandStatus.run('delivered', deliveredAt, deliveredAt, row.command_id);
+        const command = runtimeCommandFromListRow({ ...row, status: 'delivered', delivered_at: deliveredAt });
+        recordCommandDecisionInSqlite(insertDecisionEvent, command, 'command_delivered', 'delivered', deliveredAt);
+        delivered.push(command);
       }
-      return rows.map((row) => toEaCommand(runtimeCommandFromListRow(row)));
+      return delivered.map(toEaCommand);
     },
     recordShadowComparison(payload) {
       insertShadowComparison.run(
@@ -897,7 +923,12 @@ export function createSqliteEaStore(path: string): EaStore {
       return selectDecisionEvents(db, filter);
     },
     savePendingSignal(payload) {
-      insertEvent.run('pending_signal', accountId(payload), symbolOrDefault(payload), toJson(normalizePendingSignal(payload)), 1);
+      const signal = normalizePendingSignal(payload);
+      insertEvent.run('pending_signal', accountId(payload), symbolOrDefault(payload), toJson(signal), 1);
+      const event = candidateSignalDecisionEvent(signal);
+      if (event != null) {
+        insertDecisionEventRecord(insertDecisionEvent, event);
+      }
     },
     getPendingSignals(accountId, symbol) {
       return pendingSignalsNewestFirst(eventPayloads(selectEventsBySymbol, 'pending_signal', accountId, symbol));
@@ -1057,6 +1088,26 @@ function commandResultDecisionEvent(
   errorText: string,
   createdAt: string
 ): DecisionEventInput | null {
+  return commandDecisionEvent(
+    command,
+    'order_result',
+    command.status === 'acked' ? 'acked' : 'failed',
+    createdAt,
+    {
+      result,
+      ticket,
+      error_text: errorText
+    }
+  );
+}
+
+function commandDecisionEvent(
+  command: StoredCommand,
+  stage: DecisionEventInput['stage'],
+  status: DecisionEventInput['status'],
+  createdAt: string,
+  summary: Record<string, unknown> = {}
+): DecisionEventInput | null {
   const decisionId = stringField(command as EaRecord, 'decision_id');
   if (decisionId.length === 0) {
     return null;
@@ -1066,19 +1117,57 @@ function commandResultDecisionEvent(
     decision_id: decisionId,
     account_id: command.account_id,
     symbol,
-    stage: 'order_result',
-    status: command.status === 'acked' ? 'acked' : 'failed',
+    stage,
+    status,
     reason_codes: commandDecisionReasonCodes(command),
     summary: {
       command_id: command.command_id,
       action: command.action,
-      result,
-      ticket,
-      error_text: errorText
+      ...summary
     },
     related_command_id: command.command_id,
     created_at: createdAt
   };
+}
+
+function recordCommandDecisionInMemory(
+  state: StoreState,
+  command: StoredCommand,
+  stage: DecisionEventInput['stage'],
+  status: DecisionEventInput['status'],
+  createdAt: string
+): void {
+  const event = commandDecisionEvent(command, stage, status, createdAt);
+  if (event != null) {
+    state.decisionEvents.push(normalizeDecisionEvent(event, state.nextDecisionEventId++));
+  }
+}
+
+function recordCommandDecisionInSqlite(
+  statement: { run(...params: SQLInputValue[]): unknown },
+  command: StoredCommand,
+  stage: DecisionEventInput['stage'],
+  status: DecisionEventInput['status'],
+  createdAt: string
+): void {
+  const event = commandDecisionEvent(command, stage, status, createdAt);
+  if (event != null) {
+    insertDecisionEventRecord(statement, event);
+  }
+}
+
+function insertDecisionEventRecord(statement: { run(...params: SQLInputValue[]): unknown }, event: DecisionEventInput): void {
+  statement.run(
+    event.decision_id,
+    event.account_id,
+    event.symbol,
+    event.stage,
+    event.status,
+    toJson(event.reason_codes),
+    toJson(event.summary),
+    event.related_command_id,
+    event.created_at
+  );
 }
 
 function commandDecisionReasonCodes(command: StoredCommand): string[] {
@@ -1087,6 +1176,35 @@ function commandDecisionReasonCodes(command: StoredCommand): string[] {
     codes.push(`source.${command.source}`);
   }
   return codes;
+}
+
+function candidateSignalDecisionEvent(signal: EaRecord): DecisionEventInput | null {
+  const signalId = numericField(signal, 'id');
+  if (signalId <= 0) {
+    return null;
+  }
+  const account = accountId(signal);
+  const symbol = symbolOrDefault(signal);
+  const strategy = stringField(signal, 'strategy');
+  const createdAt = stringField(signal, 'created_at') || currentTimestamp();
+  const expiresAt = stringField(signal, 'expires_at');
+  return {
+    decision_id: `candidate_${account}_${symbol}_${signalId}`,
+    account_id: account,
+    symbol,
+    stage: 'candidate_signal',
+    status: 'pending',
+    reason_codes: strategy.length > 0 ? [`candidate.${strategy}`] : ['candidate.'],
+    summary: {
+      signal_id: signalId,
+      side: stringField(signal, 'side'),
+      score: numericField(signal, 'score'),
+      strategy,
+      expires_at: expiresAt
+    },
+    related_command_id: '',
+    created_at: createdAt
+  };
 }
 
 function filterDecisionEvents(events: DecisionEvent[], filter: DecisionEventFilter): DecisionEvent[] {

@@ -2033,6 +2033,13 @@ describe('app-server scaffold', () => {
     expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
       expect.objectContaining({
         decision_id: 'tpv1_close_all',
+        stage: 'command_enqueued',
+        status: 'pending',
+        reason_codes: ['command.CLOSE_ALL', 'source.ai_result'],
+        summary: expect.objectContaining({ action: 'CLOSE_ALL' })
+      }),
+      expect.objectContaining({
+        decision_id: 'tpv1_close_all',
         stage: 'risk_gate',
         status: 'accepted',
         reason_codes: ['action.audit_safe'],

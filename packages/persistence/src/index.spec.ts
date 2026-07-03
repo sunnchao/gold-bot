@@ -443,6 +443,88 @@ describe('persistence scaffold', () => {
     });
   }
 
+  for (const testCase of [
+    {
+      name: 'in-memory',
+      create() {
+        return {
+          store: createInMemoryEaStore(),
+          cleanup() {}
+        };
+      }
+    },
+    {
+      name: 'sqlite',
+      create() {
+        const dir = mkdtempSync(join(tmpdir(), 'gold-bot-command-timeline-'));
+        return {
+          store: createSqliteEaStore(join(dir, 'ea.sqlite')),
+          cleanup() {
+            rmSync(dir, { recursive: true, force: true });
+          }
+        };
+      }
+    }
+  ]) {
+    it(`records command enqueue and delivery decision events in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        const stored = store.saveCommandCandidate('90011087', {
+          command_id: 'sig_timeline',
+          source: 'ai_result',
+          symbol: 'XAUUSD',
+          action: 'SIGNAL',
+          strategy: 'ai_signal',
+          decision_id: 'tpv1_timeline'
+        });
+
+        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([]);
+        store.promoteCommand(stored.command_id);
+
+        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+          expect.objectContaining({
+            decision_id: 'tpv1_timeline',
+            stage: 'command_enqueued',
+            status: 'pending',
+            reason_codes: ['command.SIGNAL', 'source.ai_result'],
+            related_command_id: stored.command_id,
+            created_at: stored.created_at,
+            summary: {
+              command_id: stored.command_id,
+              action: 'SIGNAL'
+            }
+          })
+        ]);
+
+        expect(store.pollCommands('90011087')).toHaveLength(1);
+        const deliveredAt = store.getCommand(stored.command_id)?.delivered_at;
+        expect(deliveredAt).toBeDefined();
+        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+          expect.objectContaining({
+            decision_id: 'tpv1_timeline',
+            stage: 'command_delivered',
+            status: 'delivered',
+            reason_codes: ['command.SIGNAL', 'source.ai_result'],
+            related_command_id: stored.command_id,
+            created_at: deliveredAt,
+            summary: {
+              command_id: stored.command_id,
+              action: 'SIGNAL'
+            }
+          }),
+          expect.objectContaining({
+            decision_id: 'tpv1_timeline',
+            stage: 'command_enqueued',
+            status: 'pending'
+          })
+        ]);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
+  }
+
   it('stores and reloads the latest shadow runtime snapshot by account, symbol, and source', () => {
     const store = createInMemoryEaStore();
 
@@ -623,6 +705,68 @@ describe('persistence scaffold', () => {
     expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([pendingSignal]);
     expect(store.getPendingSignals('90011087', 'GBPJPY')).toEqual([]);
   });
+
+  for (const testCase of [
+    {
+      name: 'in-memory',
+      create() {
+        return {
+          store: createInMemoryEaStore(),
+          cleanup() {}
+        };
+      }
+    },
+    {
+      name: 'sqlite',
+      create() {
+        const dir = mkdtempSync(join(tmpdir(), 'gold-bot-pending-signal-decision-'));
+        return {
+          store: createSqliteEaStore(join(dir, 'ea.sqlite')),
+          cleanup() {
+            rmSync(dir, { recursive: true, force: true });
+          }
+        };
+      }
+    }
+  ]) {
+    it(`records candidate_signal decision events for pending signals in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        store.savePendingSignal({
+          id: 42,
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          side: 'buy',
+          score: 87,
+          strategy: 'momentum_scalp',
+          status: 'pending',
+          created_at: '2026-04-13T08:00:00.000Z',
+          expires_at: '2026-04-13T08:01:00.000Z'
+        });
+
+        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+          expect.objectContaining({
+            decision_id: 'candidate_90011087_XAUUSD_42',
+            stage: 'candidate_signal',
+            status: 'pending',
+            reason_codes: ['candidate.momentum_scalp'],
+            related_command_id: '',
+            created_at: '2026-04-13T08:00:00.000Z',
+            summary: {
+              signal_id: 42,
+              side: 'buy',
+              score: 87,
+              strategy: 'momentum_scalp',
+              expires_at: '2026-04-13T08:01:00.000Z'
+            }
+          })
+        ]);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
+  }
 
   it('updates and expires pending signal arbitration state', () => {
     const store = createInMemoryEaStore();
@@ -819,8 +963,7 @@ describe('persistence scaffold', () => {
         last_created_at: '2026-07-03T00:05:00.000Z'
       });
       expect(reopened.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'rejected' })).toEqual([
-        {
-          id: 1,
+        expect.objectContaining({
           decision_id: 'tpv1_persisted',
           account_id: '90011087',
           symbol: 'XAUUSD',
@@ -830,7 +973,7 @@ describe('persistence scaffold', () => {
           summary: { max_lots: 0 },
           related_command_id: 'sig_persisted',
           created_at: '2026-07-03T00:06:00.000Z'
-        }
+        })
       ]);
       expect(reopened.listApiTokens()).toEqual([
         {
