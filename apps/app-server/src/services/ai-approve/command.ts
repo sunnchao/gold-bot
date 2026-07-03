@@ -1,4 +1,11 @@
 import type { CommandCandidate, EaRecord } from '@gold-bot/persistence';
+import {
+  calcAIApproveLots,
+  firstPositiveAIApproveTakeProfit,
+  orderTypeForAIApproveSignal,
+  pickAIApproveEntryPrice,
+  round2
+} from './rules.js';
 
 export type AIApproveCommandInput = {
   accountId: string;
@@ -15,7 +22,7 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
   const entryZone = recordField(input.tradePlan, 'entry_zone');
   const entryMin = entryZone == null ? 0 : numberField(entryZone, 'min');
   const entryMax = entryZone == null ? 0 : numberField(entryZone, 'max');
-  const entry = pickEntryPrice(entryMin, entryMax);
+  const entry = pickAIApproveEntryPrice(entryZone);
   const confidence = numberField(input.tradePlan, 'confidence');
   return {
     command_id: `ai_pending_${input.accountId}_${input.symbol}_${unixNanos(input.nowIso)}`,
@@ -26,9 +33,9 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
     entry_min: round2(entryMin),
     entry_max: round2(entryMax),
     sl: round2(numberField(input.tradePlan, 'stop_loss')),
-    tp: round2(firstPositiveNumber(arrayNumberField(input.tradePlan, 'take_profit'))),
-    lots: round2(calcAILots(numberField(input.tradePlan, 'max_lots'))),
-    order_type: orderTypeForSignal(input.currentPrice, entry, input.atr, side),
+    tp: round2(firstPositiveAIApproveTakeProfit(arrayNumberField(input.tradePlan, 'take_profit'))),
+    lots: round2(calcAIApproveLots(numberField(input.tradePlan, 'max_lots'))),
+    order_type: orderTypeForAIApproveSignal(input.currentPrice, entry, input.atr, side),
     expiration: unixSeconds(input.nowIso) + 4 * 60 * 60,
     score: confidence,
     strategy: 'ai_signal',
@@ -39,44 +46,6 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
     trade_plan_mode: stringField(input.tradePlan, 'mode'),
     risk_gate: input.riskGate
   } satisfies CommandCandidate;
-}
-
-function orderTypeForSignal(price: number, entry: number, atr: number, side: string): string {
-  if (atr <= 0) {
-    return 'market';
-  }
-  if (Math.abs(price - entry) <= atr * 0.3) {
-    return 'market';
-  }
-  if (side === 'BUY') {
-    return entry <= price ? 'BUY_LIMIT' : 'BUY_STOP';
-  }
-  return entry >= price ? 'SELL_LIMIT' : 'SELL_STOP';
-}
-
-function pickEntryPrice(min: number, max: number): number {
-  if (min <= 0 || max <= 0) {
-    return 0;
-  }
-  return min === max ? min : (min + max) / 2;
-}
-
-function calcAILots(maxLots: number): number {
-  if (maxLots <= 0) {
-    return 0;
-  }
-  const lots = Math.ceil((maxLots * 0.5) / 0.01) * 0.01;
-  if (lots < 0.01) {
-    return 0;
-  }
-  if (lots > 0.01) {
-    return 0.01;
-  }
-  return lots;
-}
-
-function firstPositiveNumber(values: number[]): number {
-  return values.find((value) => value > 0) ?? 0;
 }
 
 function unixNanos(value: string): string {
@@ -90,10 +59,6 @@ function unixSeconds(value: string): number {
 function unixMillis(value: string): number {
   const millis = Date.parse(value);
   return Number.isFinite(millis) ? millis : Date.now();
-}
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
 }
 
 function recordField(record: EaRecord, field: string): EaRecord | undefined {

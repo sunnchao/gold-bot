@@ -572,6 +572,56 @@ describe('persistence scaffold', () => {
         cleanup();
       }
     });
+
+    it(`detects active AI approve pending commands in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        const nowIso = '2026-04-13T08:00:00.000Z';
+        const active = store.saveCommandCandidate('90011087', {
+          command_id: 'ai_pending_90011087_XAUUSD_active',
+          source: 'ai_approve',
+          symbol: 'XAUUSD',
+          type: 'BUY',
+          action: 'SIGNAL',
+          expiration: 1776081600
+        });
+
+        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(false);
+        store.promoteCommand(active.command_id);
+        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(true);
+        expect(store.hasActiveAIApprovePending('other-account', 'XAUUSD', 'buy', nowIso)).toBe(false);
+        expect(store.hasActiveAIApprovePending('90011087', 'GBPJPY', 'buy', nowIso)).toBe(false);
+        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'sell', nowIso)).toBe(false);
+
+        store.pollCommands('90011087');
+        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(false);
+
+        const expired = store.saveCommandCandidate('90011087', {
+          command_id: 'ai_pending_90011087_XAUUSD_expired',
+          source: 'ai_approve',
+          symbol: 'XAUUSD',
+          type: 'SELL',
+          action: 'SIGNAL',
+          expiration: 1776067199
+        });
+        store.promoteCommand(expired.command_id);
+        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'sell', nowIso)).toBe(false);
+
+        const otherSource = store.saveCommandCandidate('90011087', {
+          command_id: 'ai_result_90011087_XAUUSD_buy',
+          source: 'ai_result',
+          symbol: 'XAUUSD',
+          type: 'BUY',
+          action: 'SIGNAL',
+          expiration: 1776081600
+        });
+        store.promoteCommand(otherSource.command_id);
+        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(false);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
   }
 
   it('stores and reloads the latest shadow runtime snapshot by account, symbol, and source', () => {

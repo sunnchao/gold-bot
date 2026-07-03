@@ -32,6 +32,7 @@ import { createIndicatorAlertCache, handleIndicatorAlertRoute as routeIndicatorA
 import { handleVisualRoute as routeVisual } from './routes/visual.js';
 import { AnalysisService } from './services/analysis/service.js';
 import { buildAIApproveCommandCandidate } from './services/ai-approve/command.js';
+import { createAIApproveCooldown, evaluateAIApprovePendingGate, type AIApproveCooldown } from './services/ai-approve/gate.js';
 import { CommandLifecycleService } from './services/command-lifecycle/service.js';
 import { SchedulerService } from './services/scheduler/service.js';
 import { ShadowService } from './services/shadow/service.js';
@@ -73,6 +74,7 @@ type AppServerDeps = {
   releaseRoot: string;
   alerts: IndicatorAlertCache;
   events: SseHub<SseEvent>;
+  aiApproveCooldown: AIApproveCooldown;
   commandLifecycle: CommandLifecycleService;
   scheduler: SchedulerService;
   shadow: ShadowService;
@@ -138,7 +140,8 @@ export function createAppServer(options: AppServerOptions = {}) {
     tokenRecords,
     releaseRoot: options.releaseRoot ?? DEFAULT_RELEASE_ROOT,
     alerts: createIndicatorAlertCache(() => nowUnix() * 1000),
-    events: options.events ?? createSseHub<SseEvent>()
+    events: options.events ?? createSseHub<SseEvent>(),
+    aiApproveCooldown: createAIApproveCooldown()
   };
   const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso);
   const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
@@ -647,7 +650,7 @@ function handleAIResultRoute(
   accountId: string,
   symbol: string,
   rawBody: string,
-  deps: Pick<AppServerDeps, 'store' | 'nowIso' | 'commandLifecycle' | 'shadow' | 'events'>
+  deps: Pick<AppServerDeps, 'store' | 'nowIso' | 'commandLifecycle' | 'shadow' | 'events' | 'aiApproveCooldown'>
 ): JsonResponse {
   if (method !== 'POST') {
     return { statusCode: 405, body: { status: 'ERROR', message: 'method not allowed' } };
@@ -679,9 +682,23 @@ function handleAIResultRoute(
   publishAIResultEvents(deps.events, accountId, symbol, parsed.body, tradePlan, riskGate, eventTimestamp);
   const riskCommandRequested = shouldQueueAIRiskCommand(parsed.body);
   const riskCommands = queueAIRiskCommands(deps, accountId, symbol, parsed.body, tradePlan, riskGate);
-  const command = !riskCommandRequested && shouldQueueAIPending(tradePlan, riskGate)
-    ? deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp))
-    : undefined;
+  let command: StoredCommand | undefined;
+  if (!riskCommandRequested && shouldQueueAIPending(tradePlan, riskGate)) {
+    const pendingGate = evaluateAIApprovePendingGate({
+      store: deps.store,
+      accountId,
+      symbol,
+      tradePlan,
+      nowIso: eventTimestamp,
+      cooldown: deps.aiApproveCooldown
+    });
+    if (pendingGate.accepted) {
+      command = deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp));
+      if (command.status === 'queued') {
+        deps.aiApproveCooldown.mark(symbol, eventTimestamp);
+      }
+    }
+  }
   deps.shadow.recordRuntimeSnapshot({
     account_id: accountId,
     symbol,

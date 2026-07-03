@@ -1,4 +1,5 @@
 import type { EaRecord, EaStore } from '@gold-bot/persistence';
+import type { AIApproveCooldown } from '../services/ai-approve/gate.js';
 import type { CommandLifecycleService } from '../services/command-lifecycle/service.js';
 import type { ShadowService } from '../services/shadow/service.js';
 import type { HeaderMap } from '@gold-bot/shared-contracts';
@@ -20,6 +21,7 @@ export type AIRouteDeps = {
   commandLifecycle: CommandLifecycleService;
   shadow: ShadowService;
   events: SseHub<SseEvent>;
+  aiApproveCooldown: AIApproveCooldown;
   validTokens: Set<string> | null;
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;

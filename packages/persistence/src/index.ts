@@ -55,6 +55,7 @@ export type EaStore = {
   demoteCommandToShadowOnly(commandId: string): void;
   getCommand(commandId: string): StoredCommand | undefined;
   listCommands(accountId: string): StoredCommand[];
+  hasActiveAIApprovePending(accountId: string, symbol: string, side: string, nowIso: string): boolean;
   getRuntimeMode(accountId: string): RuntimeMode;
   setRuntimeMode(accountId: string, mode: RuntimeMode): void;
   reconcileCommandResult(accountId: string, commandId: string, result: string, ticket?: number, errorText?: string, createdAt?: string): boolean;
@@ -229,6 +230,9 @@ export function createInMemoryEaStore(): EaStore {
         .sort((left, right) => left.created_at.localeCompare(right.created_at))
         .map(cloneStoredCommand)
         .filter((command): command is StoredCommand => command != null);
+    },
+    hasActiveAIApprovePending(accountId, symbol, side, nowIso) {
+      return Array.from(state.commands.values()).some((command) => isActiveAIApprovePendingCommand(command, accountId, symbol, side, nowIso));
     },
     getRuntimeMode(accountId) {
       return state.runtimeModes.get(accountId) ?? 'oracle';
@@ -809,6 +813,11 @@ export function createSqliteEaStore(path: string): EaStore {
     },
     listCommands(accountId) {
       return (selectRuntimeCommandsByAccount.all(accountId) as RuntimeCommandListRow[]).map((row) => runtimeCommandFromListRow(row));
+    },
+    hasActiveAIApprovePending(accountId, symbol, side, nowIso) {
+      return (selectQueuedRuntimeCommands.all(accountId) as RuntimeCommandListRow[])
+        .map((row) => runtimeCommandFromListRow(row))
+        .some((command) => isActiveAIApprovePendingCommand(command, accountId, symbol, side, nowIso));
     },
     getRuntimeMode(accountId) {
       const row = selectRuntimeState.get(accountId) as { mode?: string } | undefined;
@@ -1657,4 +1666,30 @@ function buildRuntimeCommand(commandId: string, row: RuntimeCommandRow): StoredC
   };
   setPollSourceVisible(command, Object.prototype.hasOwnProperty.call(payload, 'source'));
   return command;
+}
+
+function isActiveAIApprovePendingCommand(command: StoredCommand, accountId: string, symbol: string, side: string, nowIso: string): boolean {
+  if (command.account_id !== accountId || command.status !== 'queued' || command.source !== 'ai_approve') {
+    return false;
+  }
+  if (!equalsFold(stringField(command as EaRecord, 'symbol'), symbol)) {
+    return false;
+  }
+  if (!equalsFold(stringField(command as EaRecord, 'type'), side)) {
+    return false;
+  }
+  const expiration = (command as EaRecord).expiration;
+  if (typeof expiration === 'number' && Number.isFinite(expiration) && Math.trunc(expiration) <= unixSeconds(nowIso)) {
+    return false;
+  }
+  return true;
+}
+
+function equalsFold(left: string, right: string): boolean {
+  return left.trim().toUpperCase() === right.trim().toUpperCase();
+}
+
+function unixSeconds(value: string): number {
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) ? Math.floor(millis / 1000) : Math.floor(Date.now() / 1000);
 }
