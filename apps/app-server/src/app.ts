@@ -456,6 +456,10 @@ function validateEaPayload(path: string, body: EaRecord, store: EaStore): string
   switch (path) {
     case '/register':
       return normalizeRegisterPayload(body);
+    case '/heartbeat':
+      return normalizeHeartbeatPayload(body);
+    case '/tick':
+      return normalizeTickPayload(body);
     case '/bars':
       return normalizeBarsPayload(body);
     case '/positions':
@@ -477,6 +481,12 @@ function validateEaPayload(path: string, body: EaRecord, store: EaStore): string
 }
 
 function normalizeRegisterPayload(body: EaRecord): string | null {
+  if (hasInvalidOptionalString(body, ['broker', 'server_name', 'account_name', 'account_type', 'currency'])) {
+    return 'invalid JSON';
+  }
+  if (body.leverage != null && (typeof body.leverage !== 'number' || !Number.isInteger(body.leverage))) {
+    return 'invalid JSON';
+  }
   const mapping = body.strategy_mapping;
   if (mapping == null) {
     return null;
@@ -488,6 +498,35 @@ function normalizeRegisterPayload(body: EaRecord): string | null {
     if (typeof value !== 'string') {
       return 'invalid JSON';
     }
+  }
+  return null;
+}
+
+function normalizeHeartbeatPayload(body: EaRecord): string | null {
+  if (hasInvalidOptionalNumber(body, ['balance', 'equity', 'margin', 'free_margin'])) {
+    return 'invalid JSON';
+  }
+  if (hasInvalidOptionalString(body, ['server_time'])) {
+    return 'invalid JSON';
+  }
+  if (hasInvalidOptionalBoolean(body, ['market_open', 'is_trade_allowed'])) {
+    return 'invalid JSON';
+  }
+  body.connected = true;
+  body.market_open = body.market_open === true;
+  body.is_trade_allowed = body.is_trade_allowed === true;
+  return null;
+}
+
+function normalizeTickPayload(body: EaRecord): string | null {
+  if (hasInvalidOptionalString(body, ['symbol', 'time'])) {
+    return 'invalid JSON';
+  }
+  if (hasInvalidOptionalNumber(body, ['bid', 'ask', 'spread'])) {
+    return 'invalid JSON';
+  }
+  if (stringFieldOrEmpty(body, 'symbol').trim().length === 0) {
+    body.symbol = 'XAUUSD';
   }
   return null;
 }
@@ -2228,6 +2267,13 @@ function hasInvalidOptionalString(record: EaRecord, fields: readonly string[]): 
   return fields.some((field) => {
     const value = record[field];
     return value != null && typeof value !== 'string';
+  });
+}
+
+function hasInvalidOptionalBoolean(record: EaRecord, fields: readonly string[]): boolean {
+  return fields.some((field) => {
+    const value = record[field];
+    return value != null && typeof value !== 'boolean';
   });
 }
 
