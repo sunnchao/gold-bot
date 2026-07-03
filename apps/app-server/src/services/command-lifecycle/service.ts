@@ -47,6 +47,9 @@ function shadowSourceForCommand(source: StoredCommand['source']): ShadowRuntimeS
   if (source === 'live_strategy') {
     return 'ea_analysis';
   }
+  if (source === 'ai_stop_loss') {
+    return 'position_review';
+  }
   return source === 'ai_risk_alert' || source === 'ai_approve' ? 'ai_result' : source;
 }
 

@@ -9,7 +9,7 @@ export class SchedulerService {
     private readonly analysis: AnalysisService,
     private readonly commandLifecycle: CommandLifecycleService,
     private readonly shadow?: ShadowService,
-    private readonly store?: Pick<EaStore, 'getHeartbeat' | 'getLatestTick' | 'getBars' | 'getCommand'>,
+    private readonly store?: Pick<EaStore, 'getHeartbeat' | 'getLatestTick' | 'getBars' | 'getCommand' | 'getPositions' | 'getAIResults'>,
     private readonly nowIso: () => string = () => new Date().toISOString()
   ) {}
 
@@ -30,20 +30,18 @@ export class SchedulerService {
       account_id: accountId,
       symbol,
       source: 'position_review',
-      signal: null,
+      signal: result.replay.signal,
       command: result.replay.position_commands,
     });
-    for (const [index, command] of (result.replay.position_commands ?? []).entries()) {
-      const candidate: CommandCandidate = {
-        command_id: `pos_${accountId}_${command.ticket}_${command.action}_${index}_${Date.now()}`,
-        action: command.action,
-        source: 'position_review',
-        symbol,
-        ticket: command.ticket,
-        ...(command.lots == null ? {} : { lots: command.lots }),
-        ...(command.new_sl == null ? {} : { new_sl: command.new_sl }),
-        reason: command.reason
-      };
+    this.queueReplaySignal(accountId, symbol, result.replay.signal, 'positions');
+    if (result.replay.signal == null) {
+      this.queueAIStopLossAdjust(accountId, symbol);
+    }
+    for (const command of (result.replay.position_commands ?? [])) {
+      const candidate = this.positionCommandCandidate(accountId, symbol, command as unknown as EaRecord);
+      if (this.store?.getCommand(candidate.command_id ?? '') != null) {
+        continue;
+      }
       this.commandLifecycle.acceptCandidate(accountId, candidate);
     }
   }
@@ -65,11 +63,14 @@ export class SchedulerService {
       signal: result.replay.signal,
       command: null,
     });
-    const signal = result.replay.signal;
+    this.queueReplaySignal(accountId, symbol, result.replay.signal, 'bars');
+  }
+
+  private queueReplaySignal(accountId: string, symbol: string, signal: unknown, analysisMode: 'bars' | 'positions'): void {
     if (signal == null) {
       return;
     }
-    const signalRecord = signal as unknown as EaRecord;
+    const signalRecord = signal as EaRecord;
     const bars = this.barsByTimeframe(accountId, symbol);
     const triggerKey = liveDecisionKey(stringField(signalRecord, 'strategy'), bars);
     const commandId = liveCommandId(accountId, symbol, signalRecord, triggerKey);
@@ -84,21 +85,21 @@ export class SchedulerService {
       decision_id: commandId,
       action: 'SIGNAL',
       source: 'live_strategy',
-      strategy: signal.strategy,
+      strategy: stringField(signalRecord, 'strategy') as CommandCandidate['strategy'],
       symbol,
-      type: signal.side,
-      entry: signal.entry,
-      sl: signal.stop_loss,
-      tp1: signal.tp1,
-      tp2: signal.tp2,
-      score: signal.score,
+      type: stringField(signalRecord, 'side'),
+      entry: numberField(signalRecord, 'entry'),
+      sl: numberField(signalRecord, 'stop_loss'),
+      tp1: numberField(signalRecord, 'tp1'),
+      tp2: numberField(signalRecord, 'tp2'),
+      score: numberField(signalRecord, 'score'),
       atr: numberField(signalRecord, 'atr'),
       scale_in_parent_ticket: numberField(signalRecord, 'scale_in_parent_ticket'),
       weighted_avg_entry: numberField(signalRecord, 'weighted_avg_entry'),
       unified_sl: numberField(signalRecord, 'unified_sl'),
       scale_in_count: numberField(signalRecord, 'scale_in_count'),
       trigger_key: triggerKey,
-      analysis_mode: 'bars',
+      analysis_mode: analysisMode,
       order_type: orderType
     };
     if (booleanField(signalRecord, 'fib_enhanced')) {
@@ -108,6 +109,133 @@ export class SchedulerService {
       candidate.expiration = unixSeconds(this.nowIso()) + 24 * 60 * 60;
     }
     this.commandLifecycle.acceptCandidate(accountId, candidate);
+  }
+
+  private queueAIStopLossAdjust(accountId: string, symbol: string): void {
+    const aiResult = this.latestAIResult(accountId, symbol);
+    const aiSL = numberField(aiResult ?? {}, 'suggested_sl') || numberField(aiResult ?? {}, 'suggestedSL');
+    if (aiResult == null || aiSL <= 0) {
+      return;
+    }
+    const bars = this.barsByTimeframe(accountId, symbol);
+    const atr = latestAtr(bars.H1);
+    if (atr <= 0) {
+      return;
+    }
+    const currentPrice = liveCurrentPrice(this.store?.getLatestTick(accountId, symbol) ?? {}, bars);
+    if (currentPrice <= 0) {
+      return;
+    }
+    const decisionId = aiDecisionId(aiResult);
+    for (const position of this.store?.getPositions?.(accountId, symbol) ?? []) {
+      const candidate = this.aiStopLossCommandCandidate(accountId, symbol, position, aiSL, atr, currentPrice, decisionId);
+      if (candidate == null || this.store?.getCommand(candidate.command_id ?? '') != null) {
+        continue;
+      }
+      this.commandLifecycle.acceptCandidate(accountId, candidate);
+    }
+  }
+
+  private latestAIResult(accountId: string, symbol: string): EaRecord | undefined {
+    return this.store?.getAIResults?.(accountId).find((result) => stringField(result, 'symbol') === symbol);
+  }
+
+  private aiStopLossCommandCandidate(
+    accountId: string,
+    symbol: string,
+    position: EaRecord,
+    newSL: number,
+    atr: number,
+    currentPrice: number,
+    decisionId: string
+  ): CommandCandidate | undefined {
+    const ticket = numberField(position, 'ticket');
+    const oldSL = numberField(position, 'sl');
+    const tp = numberField(position, 'tp');
+    const openPrice = numberField(position, 'open_price') || numberField(position, 'openPrice');
+    const side = stringField(position, 'type').toUpperCase();
+    if (ticket <= 0 || oldSL === 0 || tp === 0 || openPrice <= 0) {
+      return undefined;
+    }
+    if (side === 'BUY') {
+      if (currentPrice > openPrice && newSL < oldSL) {
+        return undefined;
+      }
+      if (newSL >= openPrice) {
+        return undefined;
+      }
+    } else if (side === 'SELL') {
+      if (currentPrice < openPrice && newSL > oldSL) {
+        return undefined;
+      }
+      if (newSL <= openPrice) {
+        return undefined;
+      }
+    } else {
+      return undefined;
+    }
+    const distance = Math.abs(newSL - oldSL);
+    if (distance < atr * 0.3) {
+      return undefined;
+    }
+    const triggerTime = this.nowIso();
+    const candidate: CommandCandidate = {
+      command_id: aiStopLossCommandId(accountId, symbol, ticket, triggerTime),
+      action: 'MODIFY',
+      source: 'ai_stop_loss',
+      symbol,
+      ticket,
+      new_sl: newSL,
+      sl: newSL,
+      tp,
+      old_sl: oldSL,
+      distance,
+      atr,
+      trigger_time: triggerTime,
+      analysis_mode: 'positions'
+    };
+    if (decisionId.length > 0) {
+      candidate.decision_id = decisionId;
+    }
+    return candidate;
+  }
+
+  private positionCommandCandidate(accountId: string, symbol: string, command: EaRecord): CommandCandidate {
+    const action = stringField(command, 'action');
+    const ticket = numberField(command, 'ticket');
+    const reason = stringField(command, 'reason');
+    const aiStopLoss = isAIStopLossModify(command);
+    const commandId = positionCommandId(accountId, symbol, command, this.nowIso());
+    const candidate: CommandCandidate = {
+      command_id: commandId,
+      action,
+      source: aiStopLoss ? 'ai_stop_loss' : 'position_review',
+      symbol,
+      ticket,
+      reason,
+      analysis_mode: 'positions'
+    };
+    const lots = numberField(command, 'lots');
+    if (lots > 0) {
+      candidate.lots = lots;
+    }
+    const newSl = numberField(command, 'new_sl');
+    if (newSl > 0) {
+      candidate.new_sl = newSl;
+    }
+    if (aiStopLoss) {
+      candidate.sl = numberField(command, 'sl') || newSl;
+      candidate.tp = numberField(command, 'tp');
+      candidate.old_sl = numberField(command, 'old_sl');
+      candidate.distance = numberField(command, 'distance');
+      candidate.atr = numberField(command, 'atr');
+      candidate.trigger_time = stringField(command, 'trigger_time') || this.nowIso();
+      const decisionId = stringField(command, 'decision_id');
+      if (decisionId.length > 0) {
+        candidate.decision_id = decisionId;
+      }
+    }
+    return candidate;
   }
 
   private barsByTimeframe(accountId: string, symbol: string): Record<string, EaRecord[]> {
@@ -158,6 +286,62 @@ function liveCommandId(accountId: string, symbol: string, signal: EaRecord, deci
   return `live_${createHash('sha1').update(seed).digest('hex').slice(0, 16)}`;
 }
 
+function positionCommandId(accountId: string, symbol: string, command: EaRecord, nowIso: string): string {
+  const ticket = numberField(command, 'ticket');
+  if (isAIStopLossModify(command)) {
+    return aiStopLossCommandId(accountId, symbol, ticket, nowIso);
+  }
+  const seed = [
+    accountId,
+    symbol.toUpperCase(),
+    ticket,
+    stringField(command, 'action'),
+    stringField(command, 'reason'),
+    numberField(command, 'lots'),
+    numberField(command, 'new_sl'),
+    utcMinuteKey(nowIso)
+  ].join('|');
+  return `pos_${createHash('sha1').update(seed).digest('hex').slice(0, 16)}`;
+}
+
+function aiStopLossCommandId(accountId: string, symbol: string, ticket: number, nowIso: string): string {
+  const seed = [accountId, symbol.toUpperCase(), ticket, utcMinuteKey(nowIso)].join('|');
+  return `mod_${createHash('sha1').update(seed).digest('hex').slice(0, 16)}`;
+}
+
+function aiDecisionId(aiResult: EaRecord): string {
+  const tradePlan = recordField(aiResult, 'trade_plan') ?? recordField(aiResult, 'tradePlan') ?? {};
+  return stringField(tradePlan, 'decision_id') || stringField(aiResult, 'decision_id');
+}
+
+function recordField(record: EaRecord, field: string): EaRecord | undefined {
+  const value = record[field];
+  return value != null && typeof value === 'object' && !Array.isArray(value) ? value as EaRecord : undefined;
+}
+
+function isAIStopLossModify(command: EaRecord): boolean {
+  return stringField(command, 'action') === 'MODIFY' && (
+    hasFiniteNumber(command, 'sl') ||
+    hasFiniteNumber(command, 'tp') ||
+    hasFiniteNumber(command, 'old_sl') ||
+    hasFiniteNumber(command, 'distance') ||
+    hasFiniteNumber(command, 'atr') ||
+    stringField(command, 'decision_id').length > 0
+  );
+}
+
+function utcMinuteKey(value: string): string {
+  const millis = Date.parse(value);
+  const date = new Date(Number.isFinite(millis) ? millis : Date.now());
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0'),
+    String(date.getUTCHours()).padStart(2, '0'),
+    String(date.getUTCMinutes()).padStart(2, '0')
+  ].join('');
+}
+
 function liveCurrentPrice(tick: EaRecord, bars: Record<string, EaRecord[]>): number {
   const bid = numberField(tick, 'bid');
   const ask = numberField(tick, 'ask');
@@ -205,6 +389,11 @@ function unixSeconds(value: string): number {
 function numberField(record: EaRecord, field: string): number {
   const value = record[field];
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function hasFiniteNumber(record: EaRecord, field: string): boolean {
+  const value = record[field];
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function stringField(record: EaRecord, field: string): string {

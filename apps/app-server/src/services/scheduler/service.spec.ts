@@ -146,28 +146,44 @@ describe('SchedulerService', () => {
             replay: {
               signal: null,
               position_commands: [
-                { action: 'MODIFY', ticket: 777, new_sl: 3330, reason: 'breakeven_2.2ATR' },
+                { action: 'MODIFY', ticket: 777, new_sl: 3330, sl: 3330, tp: 3345, old_sl: 3325, distance: 5, atr: 10, decision_id: 'tpv1_modify', reason: 'breakeven_2.2ATR' },
                 { action: 'CLOSE', ticket: 777, lots: 0.04, reason: 'TP1_2.2ATR' }
               ]
             }
           };
         }
       } as never,
-      commandLifecycle
+      commandLifecycle,
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
     );
 
     scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
 
-    expect(store.listCommands('90011087')).toEqual(
+    const commands = store.listCommands('90011087');
+    expect(commands).toHaveLength(2);
+    expect(commands).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          command_id: expect.stringMatching(/^mod_[0-9a-f]{16}$/),
           action: 'MODIFY',
-          source: 'position_review',
+          source: 'ai_stop_loss',
           status: 'queued',
           ticket: 777,
-          new_sl: 3330
+          new_sl: 3330,
+          sl: 3330,
+          tp: 3345,
+          old_sl: 3325,
+          distance: 5,
+          atr: 10,
+          decision_id: 'tpv1_modify',
+          trigger_time: '2026-04-13T08:00:00.000Z',
+          analysis_mode: 'positions'
         }),
         expect.objectContaining({
+          command_id: expect.stringMatching(/^pos_[0-9a-f]{16}$/),
           action: 'CLOSE',
           source: 'position_review',
           status: 'queued',
@@ -176,6 +192,115 @@ describe('SchedulerService', () => {
         })
       ])
     );
+  });
+
+  it('publishes position-triggered replay signals with positions analysis mode', () => {
+    const store = createInMemoryEaStore();
+    store.setRuntimeMode('90011087', 'cutover');
+    store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
+    store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3335, high: 3337, low: 3333, close: 3336, atr: 2 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: {
+                strategy: 'pullback',
+                side: 'BUY',
+                entry: 3335,
+                stop_loss: 3330,
+                tp1: 3345,
+                tp2: 3355,
+                score: 8,
+                atr: 2
+              },
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+
+    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+
+    const commands = store.listCommands('90011087');
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      source: 'live_strategy',
+      action: 'SIGNAL',
+      analysis_mode: 'positions',
+      trigger_key: 'H1:2026-04-13T07:00:00.000Z'
+    });
+  });
+
+  it('queues AI stop-loss modify commands during position review when no replay signal is produced', () => {
+    const store = createInMemoryEaStore();
+    store.setRuntimeMode('90011087', 'cutover');
+    store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3333.9, ask: 3334.1 });
+    store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3333, high: 3335, low: 3330, close: 3334, atr: 1.5 }]
+    });
+    store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY', open_price: 3333, lots: 0.2, sl: 3331, tp: 3344 }]
+    });
+    store.saveAIResult('90011087', 'XAUUSD', {
+      suggested_sl: 3332.8,
+      trade_plan: { decision_id: 'tpv1_modify_sl' }
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: null,
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:02:00.000Z'
+    );
+
+    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+
+    const commands = store.listCommands('90011087');
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      command_id: expect.stringMatching(/^mod_[0-9a-f]{16}$/),
+      action: 'MODIFY',
+      source: 'ai_stop_loss',
+      status: 'queued',
+      symbol: 'XAUUSD',
+      ticket: 123456,
+      new_sl: 3332.8,
+      sl: 3332.8,
+      tp: 3344,
+      old_sl: 3331,
+      distance: expect.closeTo(1.8, 10),
+      atr: 1.5,
+      decision_id: 'tpv1_modify_sl',
+      trigger_time: '2026-04-13T08:02:00.000Z',
+      analysis_mode: 'positions'
+    });
   });
 
   it('hydrates and persists position manager state during position review', () => {
