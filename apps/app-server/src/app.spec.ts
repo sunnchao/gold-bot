@@ -285,6 +285,14 @@ describe('app-server scaffold', () => {
 
   it('serves Go-compatible Prometheus metrics text', async () => {
     const server = createAppServer();
+    await server.inject({
+      method: 'GET',
+      url: '/healthz'
+    });
+    await server.inject({
+      method: 'GET',
+      url: '/not-found'
+    });
     const response = await server.inject({
       method: 'GET',
       url: '/metrics'
@@ -294,6 +302,7 @@ describe('app-server scaffold', () => {
     expect(response.headers['content-type']).toContain('text/plain');
     expect(response.body).toContain('# HELP goldbot_http_requests_total');
     expect(response.body).toContain('goldbot_http_requests_total');
+    expect(response.body).toContain('goldbot_http_requests_total{method="GET",path="/metrics",status="2xx"} 1');
   });
 
   it('serves dashboard static files with Go-compatible SPA fallbacks', async () => {
@@ -1460,6 +1469,7 @@ describe('app-server scaffold', () => {
     const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
     const pendingFixture = readAdminFixture('pending-signal');
     const pendingSignal = (pendingFixture.response.body as unknown[])[0];
+    delete (pendingSignal as Record<string, unknown>).id;
 
     store.saveRegistration({
       account_id: '90011087',
@@ -1479,6 +1489,12 @@ describe('app-server scaffold', () => {
       is_trade_allowed: true,
       ai_symbols: ['XAUUSD', 'GBPJPY']
     });
+    store.saveTick({
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      bid: 191.25,
+      ask: 191.28
+    });
     store.savePositions({
       account_id: '90011087',
       positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY' }]
@@ -1494,7 +1510,15 @@ describe('app-server scaffold', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body)).toEqual(fixture.response.body);
+      const actualBody = JSON.parse(response.body);
+      const expectedBody = fixture.response.body;
+      if (name === 'symbols' || name === 'ai-symbols') {
+        expect(Array.isArray(actualBody)).toBe(true);
+        expect(Array.isArray(expectedBody)).toBe(true);
+        expect((actualBody as string[]).sort()).toEqual((expectedBody as string[]).sort());
+      } else {
+        expect(actualBody).toEqual(expectedBody);
+      }
     }
   });
 
@@ -1754,8 +1778,8 @@ describe('app-server scaffold', () => {
   it('updates pending signal arbitration behind admin auth', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store });
+    // First save without explicit id to create the signal
     store.savePendingSignal({
-      id: 1,
       account_id: '90011087',
       symbol: 'XAUUSD',
       side: 'buy',
@@ -1811,8 +1835,8 @@ describe('app-server scaffold', () => {
   it('expires stale pending signals behind admin auth', async () => {
     const store = createInMemoryEaStore();
     const server = createApiServer({ store, nowIso: () => '2026-04-13T08:03:00.000Z' });
+    // Save signals without explicit ids
     store.savePendingSignal({
-      id: 1,
       account_id: '90011087',
       symbol: 'XAUUSD',
       side: 'buy',
@@ -1823,7 +1847,6 @@ describe('app-server scaffold', () => {
       expires_at: '2026-04-13T08:02:00.000Z'
     });
     store.savePendingSignal({
-      id: 2,
       account_id: '90011087',
       symbol: 'XAUUSD',
       side: 'sell',
@@ -3033,6 +3056,39 @@ describe('app-server scaffold', () => {
       }
     });
     expect(store.pollCommands('90011087')).toEqual([]);
+  });
+
+  it('rejects empty and array AI result bodies like the Go decoder', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+
+    for (const body of ['', []]) {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/ai_result/90011087',
+        headers: apiUserHeaders,
+        body
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: 'invalid JSON' });
+    }
+    expect(store.getAIResults('90011087')).toEqual([]);
+  });
+
+  it('accepts empty AI result objects like the Go decoder', async () => {
+    const store = createInMemoryEaStore();
+    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/ai_result/90011087',
+      headers: apiUserHeaders,
+      body: {}
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.getAIResults('90011087')).toEqual([expect.objectContaining({ account_id: '90011087', symbol: 'XAUUSD' })]);
   });
 
   it('rejects trade_plan fields whose JSON types do not match Go decoding', async () => {

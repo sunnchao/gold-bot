@@ -5,11 +5,13 @@ import type { DecisionEvent, DecisionEventFilter, DecisionEventInput } from './d
 import type { RuntimeStateRecord } from './runtime-state.js';
 import type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary, ShadowRuntimeSnapshot } from './shadow.js';
 import type { StoredApiToken, StoredApiTokenInput } from './tokens.js';
+import { runMigrations } from './migrate.js';
 export type { CommandCandidate, StoredCommand } from './commands.js';
 export type { DecisionEvent, DecisionEventFilter, DecisionEventInput, DecisionStage, DecisionStatus } from './decisions.js';
 export type { RuntimeStateRecord } from './runtime-state.js';
 export type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary, ShadowRuntimeSnapshot } from './shadow.js';
 export type { StoredApiToken, StoredApiTokenInput } from './tokens.js';
+export { runMigrations, loadMigrations, type Migration } from './migrate.js';
 
 export const persistenceStatus = {
   writesLiveCommands: false
@@ -69,6 +71,7 @@ export type EaStore = {
   listDecisionEvents(filter: DecisionEventFilter): DecisionEvent[];
   savePendingSignal(payload: EaRecord): void;
   getPendingSignals(accountId: string, symbol: string): EaRecord[];
+  getPendingSignalById(accountId: string, symbol: string, id: number): EaRecord | undefined;
   updatePendingSignalArbitration(id: number, result: string, reason: string): boolean;
   expirePendingSignals(nowIso: string): number;
   saveAIResult(accountId: string, symbol: string, payload: EaRecord): void;
@@ -309,10 +312,12 @@ export function createInMemoryEaStore(): EaStore {
       const signal = normalizePendingSignal(payload);
       const explicitId = numericField(signal, 'id');
       if (explicitId > 0) {
-        state.nextPendingSignalId = Math.max(state.nextPendingSignalId, explicitId + 1);
-      } else {
-        signal.id = state.nextPendingSignalId++;
+        if (replacePendingSignalInMemory(state.pendingSignals, signal)) {
+          state.nextPendingSignalId = Math.max(state.nextPendingSignalId, explicitId + 1);
+        }
+        return;
       }
+      signal.id = state.nextPendingSignalId++;
       const current = state.pendingSignals.get(key) ?? [];
       state.pendingSignals.set(key, [...current, signal]);
       const event = candidateSignalDecisionEvent(signal);
@@ -322,6 +327,11 @@ export function createInMemoryEaStore(): EaStore {
     },
     getPendingSignals(accountId, symbol) {
       return pendingSignalsNewestFirst(state.pendingSignals.get(symbolKey(accountId, symbol)) ?? []);
+    },
+    getPendingSignalById(accountId, symbol, id) {
+      const entries = state.pendingSignals.get(symbolKey(accountId, symbol)) ?? [];
+      const found = entries.find((entry) => numericField(entry, 'id') === id);
+      return found == null ? undefined : structuredClone(found);
     },
     updatePendingSignalArbitration(id, result, reason) {
       return updatePendingSignalInMemory(state.pendingSignals, id, result, reason);
@@ -358,7 +368,7 @@ export function createInMemoryEaStore(): EaStore {
         ...state.orderResults.keys(),
         ...state.decisionEvents.map((event) => event.account_id),
         ...Array.from(state.pendingSignals.keys(), accountFromCompoundKey),
-        ...state.aiResults.keys()
+        ...Array.from(state.aiResults.keys(), accountFromCompoundKey)
       ]) {
         appendUnique(out, key);
       }
@@ -366,8 +376,6 @@ export function createInMemoryEaStore(): EaStore {
     },
     listSymbols(accountId) {
       const out: string[] = [];
-      appendMany(out, stringArrayField(state.registrations.get(accountId), 'ai_symbols'));
-      appendMany(out, stringArrayField(state.heartbeats.get(accountId), 'ai_symbols'));
       for (const key of state.ticks.keys()) {
         appendSymbolFromKey(out, key, accountId);
       }
@@ -375,17 +383,6 @@ export function createInMemoryEaStore(): EaStore {
         appendSymbolFromKey(out, key, accountId);
       }
       for (const key of state.positions.keys()) {
-        appendSymbolFromKey(out, key, accountId);
-      }
-      for (const event of state.decisionEvents) {
-        if (event.account_id === accountId) {
-          appendUnique(out, event.symbol);
-        }
-      }
-      for (const key of state.pendingSignals.keys()) {
-        appendSymbolFromKey(out, key, accountId);
-      }
-      for (const key of state.aiResults.keys()) {
         appendSymbolFromKey(out, key, accountId);
       }
       return out;
@@ -399,13 +396,18 @@ export function createInMemoryEaStore(): EaStore {
       if (heartbeatSymbols.length > 0) {
         return heartbeatSymbols;
       }
-      return this.listSymbols(accountId);
+      const fallback = this.listSymbols(accountId).sort();
+      return fallback;
     }
   };
 }
 
 export function createSqliteEaStore(path: string): EaStore {
   const db = new DatabaseSync(path);
+
+  // Run migrations first
+  runMigrations(db);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS ea_snapshots (
       kind TEXT NOT NULL,
@@ -587,12 +589,7 @@ export function createSqliteEaStore(path: string): EaStore {
   const selectEventAccounts = db.prepare(`SELECT DISTINCT account_id FROM ea_events ORDER BY account_id ASC`);
   const selectSnapshotSymbols = db.prepare(`
     SELECT DISTINCT symbol FROM ea_snapshots
-    WHERE account_id = ? AND symbol <> ''
-    ORDER BY rowid ASC
-  `);
-  const selectEventSymbols = db.prepare(`
-    SELECT DISTINCT symbol FROM ea_events
-    WHERE account_id = ? AND symbol <> ''
+    WHERE account_id = ? AND symbol <> '' AND kind IN ('tick', 'bars', 'positions')
     ORDER BY rowid ASC
   `);
   const upsertRuntimeState = db.prepare(`
@@ -944,9 +941,11 @@ export function createSqliteEaStore(path: string): EaStore {
     },
     savePendingSignal(payload) {
       const signal = normalizePendingSignal(payload);
-      if (numericField(signal, 'id') <= 0) {
-        signal.id = nextPendingSignalIdInSqlite(db);
+      if (numericField(signal, 'id') > 0) {
+        replacePendingSignalInSqlite(db, signal);
+        return;
       }
+      signal.id = nextPendingSignalIdInSqlite(db);
       insertEvent.run('pending_signal', accountId(payload), symbolOrDefault(payload), toJson(signal), 1);
       const event = candidateSignalDecisionEvent(signal);
       if (event != null) {
@@ -955,6 +954,11 @@ export function createSqliteEaStore(path: string): EaStore {
     },
     getPendingSignals(accountId, symbol) {
       return pendingSignalsNewestFirst(eventPayloads(selectEventsBySymbol, 'pending_signal', accountId, symbol));
+    },
+    getPendingSignalById(accountId, symbol, id) {
+      const payloads = eventPayloads(selectEventsBySymbol, 'pending_signal', accountId, symbol);
+      const found = payloads.find((entry) => numericField(entry, 'id') === id);
+      return found == null ? undefined : structuredClone(found);
     },
     updatePendingSignalArbitration(id, result, reason) {
       return updatePendingSignalInSqlite(db, id, result, reason);
@@ -1002,12 +1006,7 @@ export function createSqliteEaStore(path: string): EaStore {
     },
     listSymbols(accountId) {
       const out: string[] = [];
-      appendMany(out, stringArrayField(this.getRegistration(accountId), 'ai_symbols'));
-      appendMany(out, stringArrayField(this.getHeartbeat(accountId), 'ai_symbols'));
       for (const row of selectSnapshotSymbols.all(accountId) as Array<{ symbol: string }>) {
-        appendUnique(out, row.symbol);
-      }
-      for (const row of selectEventSymbols.all(accountId) as Array<{ symbol: string }>) {
         appendUnique(out, row.symbol);
       }
       return out;
@@ -1018,7 +1017,7 @@ export function createSqliteEaStore(path: string): EaStore {
         return registrationSymbols;
       }
       const heartbeatSymbols = stringArrayField(this.getHeartbeat(accountId), 'ai_symbols');
-      return heartbeatSymbols.length > 0 ? heartbeatSymbols : this.listSymbols(accountId);
+      return heartbeatSymbols.length > 0 ? heartbeatSymbols : this.listSymbols(accountId).sort();
     },
     close() {
       db.close();
@@ -1321,6 +1320,30 @@ function normalizeApiToken(payload: StoredApiTokenInput): StoredApiToken {
   };
 }
 
+function replacePendingSignalInMemory(signals: Map<string, EaRecord[]>, signal: EaRecord): boolean {
+  const id = numericField(signal, 'id');
+  const nextKey = symbolKey(accountId(signal), symbolOrDefault(signal));
+  for (const [currentKey, entries] of signals.entries()) {
+    const index = entries.findIndex((entry) => numericField(entry, 'id') === id);
+    if (index < 0) {
+      continue;
+    }
+    if (currentKey === nextKey) {
+      entries[index] = signal;
+      return true;
+    }
+    const remaining = [...entries.slice(0, index), ...entries.slice(index + 1)];
+    if (remaining.length > 0) {
+      signals.set(currentKey, remaining);
+    } else {
+      signals.delete(currentKey);
+    }
+    signals.set(nextKey, [...(signals.get(nextKey) ?? []), signal]);
+    return true;
+  }
+  return false;
+}
+
 function updatePendingSignalInMemory(signals: Map<string, EaRecord[]>, id: number, result: string, reason: string): boolean {
   for (const entries of signals.values()) {
     const signal = entries.find((entry) => numericField(entry, 'id') === id);
@@ -1390,12 +1413,6 @@ function appendSymbolFromKey(out: string[], key: string, accountId: string): voi
   }
 }
 
-function appendMany(out: string[], values: readonly string[]): void {
-  for (const value of values) {
-    appendUnique(out, value);
-  }
-}
-
 function appendUnique(out: string[], value: string): void {
   if (value.length > 0 && !out.includes(value)) {
     out.push(value);
@@ -1449,6 +1466,28 @@ function nextPendingSignalIdInSqlite(db: DatabaseSync): number {
     return Math.max(max, numericField(payload, 'id'));
   }, 0);
   return maxId + 1;
+}
+
+function replacePendingSignalInSqlite(db: DatabaseSync, signal: EaRecord): boolean {
+  const id = numericField(signal, 'id');
+  const select = db.prepare(`
+    SELECT rowid AS row_id, payload_json FROM ea_events
+    WHERE kind = 'pending_signal'
+    ORDER BY rowid ASC
+  `);
+  const update = db.prepare(`
+    UPDATE ea_events
+    SET account_id = ?, symbol = ?, payload_json = ?
+    WHERE rowid = ?
+  `);
+  for (const row of select.all() as Array<{ row_id: number; payload_json: string }>) {
+    const payload = fromJson(row.payload_json) as EaRecord;
+    if (numericField(payload, 'id') === id) {
+      update.run(accountId(signal), symbolOrDefault(signal), toJson(signal), row.row_id);
+      return true;
+    }
+  }
+  return false;
 }
 
 function updatePendingSignalInSqlite(db: DatabaseSync, id: number, result: string, reason: string): boolean {

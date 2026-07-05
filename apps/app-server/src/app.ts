@@ -8,7 +8,11 @@ import {
   adx,
   atr,
   bollinger,
+  buildContext as buildHarmonicContext,
+  buildSMCContext,
   calculateFibExtension,
+  detectAllCandlestickPatterns,
+  type HarmonicBar,
   ema,
   evaluateMarketFilters,
   evaluateRiskGate,
@@ -21,7 +25,19 @@ import {
   summarizePositions,
   type PositionManagerPosition
 } from '@gold-bot/trading-core';
-import { buildShadowReport, createSseHub, eventStreamHeaders, formatSseFrame, type SseEvent, type SseHub } from '@gold-bot/observability';
+import {
+  buildShadowReport,
+  createHttpMetricsMiddleware,
+  createMetricsRegistry,
+  createStoreMetricsCollector,
+  createSseHub,
+  eventStreamHeaders,
+  formatSseFrame,
+  normalizeHttpPath,
+  type MetricsRegistry,
+  type SseEvent,
+  type SseHub
+} from '@gold-bot/observability';
 import { type JsonResponse } from './http/response.js';
 import { parseJsonObject } from './http/json.js';
 import { requireAdminRoute, requireRouteToken } from './middleware/auth.js';
@@ -33,6 +49,7 @@ import { handleVisualRoute as routeVisual } from './routes/visual.js';
 import { AnalysisService } from './services/analysis/service.js';
 import { buildAIApproveCommandCandidate } from './services/ai-approve/command.js';
 import { createAIApproveCooldown, evaluateAIApprovePendingGate, type AIApproveCooldown } from './services/ai-approve/gate.js';
+import { ArbitrationManager, defaultArbitrationConfig } from './services/arbitration/service.js';
 import { CommandLifecycleService } from './services/command-lifecycle/service.js';
 import { SchedulerService } from './services/scheduler/service.js';
 import { ShadowService } from './services/shadow/service.js';
@@ -61,6 +78,7 @@ export type AppServerOptions = {
   defaultRuntimeMode?: RuntimeMode;
   releaseRoot?: string;
   events?: SseHub<SseEvent>;
+  metrics?: MetricsRegistry;
 };
 
 type AppServerDeps = {
@@ -77,7 +95,12 @@ type AppServerDeps = {
   aiApproveCooldown: AIApproveCooldown;
   commandLifecycle: CommandLifecycleService;
   scheduler: SchedulerService;
+  arbitration: ArbitrationManager;
   shadow: ShadowService;
+  metrics: MetricsRegistry;
+  recordHttp: (context: { method: string; url: string; statusCode: number; durationMs: number }) => void;
+  collectStoreMetrics: () => void;
+  metricsText: () => Promise<string>;
 };
 
 type EaReleaseInfo = {
@@ -148,11 +171,24 @@ export function createAppServer(options: AppServerOptions = {}) {
   const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
   const commandLifecycle = new CommandLifecycleService(baseDeps.store, options.defaultRuntimeMode ?? 'oracle', shadow);
   const scheduler = new SchedulerService(analysis, commandLifecycle, shadow, baseDeps.store, baseDeps.nowIso);
+  const arbitration = new ArbitrationManager({
+    store: baseDeps.store,
+    config: defaultArbitrationConfig(),
+    now: () => new Date(baseDeps.nowIso())
+  });
+  const metrics = options.metrics ?? createMetricsRegistry(false);
+  const metricsMiddleware = createHttpMetricsMiddleware({ metrics });
+  const storeCollector = createStoreMetricsCollector({ metrics, store, now: () => nowUnix() * 1000 });
   const deps: AppServerDeps = {
     ...baseDeps,
     commandLifecycle,
     scheduler,
-    shadow
+    arbitration,
+    shadow,
+    metrics,
+    recordHttp: metricsMiddleware.record,
+    collectStoreMetrics: storeCollector.collect,
+    metricsText: () => metrics.registry.metrics()
   };
   const appHandler = (req: IncomingMessage, res: ServerResponse): void => {
     void handleHttpRequest(req, res, deps);
@@ -180,6 +216,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse, deps
     streamEvents(req, res, deps);
     return;
   }
+  const start = Date.now();
   const response = await routeRequest(
     {
       method,
@@ -189,6 +226,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse, deps
     },
     deps
   );
+  deps.recordHttp({ method, url, statusCode: response.statusCode, durationMs: Date.now() - start });
   writeResponse(res, response);
 }
 
@@ -239,9 +277,8 @@ async function routeRequest(
   }
 
   if (method === 'GET' && path === '/metrics') {
-    return prometheusMetricsResponse();
+    return prometheusMetricsResponse(deps);
   }
-
   if (path === '/api/ea/version') {
     return eaVersionResponse(deps.releaseRoot);
   }
@@ -713,7 +750,7 @@ function handleAIResultRoute(
   rawBody: string,
   deps: Pick<AppServerDeps, 'store' | 'nowIso' | 'commandLifecycle' | 'shadow' | 'events' | 'aiApproveCooldown'>
 ): JsonResponse {
-  const parsed = parseJsonObject(rawBody);
+  const parsed = parseStrictJsonObject(rawBody);
   if (!parsed.ok) {
     return { statusCode: 400, body: { status: 'ERROR', message: 'invalid JSON' } };
   }
@@ -1382,6 +1419,9 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
     ...enrichedBarsByTimeframe,
     D1: enrichAnalysisBars(store.getBars(accountId, symbol, 'D1'))
   };
+  const harmonicContext = buildHarmonicContextPayload(enrichedBarsByTimeframe);
+  const smcContext = buildSMCContextPayload(enrichedBarsByTimeframe);
+  const candlestickPatterns = buildCandlestickPatternsPayload(enrichedBarsByTimeframe);
   return {
     account: {
       account_id: accountId,
@@ -1396,7 +1436,9 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
       server_name: stringFieldOrEmpty(registration, 'server_name')
     },
     bars: payloadBarsByTimeframe,
-    harmonic_context: null,
+    harmonic_context: harmonicContext,
+    smc_context: smcContext,
+    candlestick_patterns: candlestickPatterns,
     indicators: indicatorPacks(enrichedBarsByTimeframe),
     market: {
       ask: numberField(latestTick, 'ask'),
@@ -1654,6 +1696,227 @@ function trendConfidence(adxValue: number): number {
     return 0.6;
   }
   return 0.9;
+}
+
+function buildHarmonicContextPayload(barsByTimeframe: Record<string, EaRecord[]>): EaRecord | null {
+  const h4Bars = toHarmonicBars(barsByTimeframe.H4 ?? []);
+  const h1Bars = toHarmonicBars(barsByTimeframe.H1 ?? []);
+  const m30Bars = toHarmonicBars(barsByTimeframe.M30 ?? []);
+
+  if (h4Bars.length === 0 && h1Bars.length === 0 && m30Bars.length === 0) {
+    return null;
+  }
+
+  const context = buildHarmonicContext(h4Bars, h1Bars, m30Bars);
+
+  return {
+    h4_patterns: context.h4Patterns.map(normalizeHarmonicPattern),
+    h1_patterns: context.h1Patterns.map(normalizeHarmonicPattern),
+    m30_patterns: context.m30Patterns.map(normalizeHarmonicPattern),
+    active_pattern: context.activePattern ? normalizeHarmonicPattern(context.activePattern) : null,
+    direction_bias: context.directionBias,
+    score: context.score,
+    summary: context.summary
+  };
+}
+
+function toHarmonicBars(eaRecords: EaRecord[]): Array<{ high: number; low: number; close: number; open: number }> {
+  return eaRecords.map((record) => ({
+    high: numberField(record, 'high'),
+    low: numberField(record, 'low'),
+    close: numberField(record, 'close'),
+    open: numberField(record, 'open')
+  }));
+}
+
+function normalizeHarmonicPattern(pattern: {
+  type: string;
+  direction: string;
+  timeframe: string;
+  status: string;
+  xIndex: number;
+  aIndex: number;
+  bIndex: number;
+  cIndex: number;
+  dIndex: number;
+  xPrice: number;
+  aPrice: number;
+  bPrice: number;
+  cPrice: number;
+  dPrice: number;
+  abRatio: number;
+  bcRatio: number;
+  cdRatio: number;
+  xdRatio: number;
+  przLow: number;
+  przHigh: number;
+  stopLoss: number;
+  target1: number;
+  target2: number;
+  invalidated: boolean;
+  score: number;
+  confidence: number;
+  reason: string;
+}): EaRecord {
+  return {
+    type: pattern.type,
+    direction: pattern.direction,
+    timeframe: pattern.timeframe,
+    status: pattern.status,
+    x_index: pattern.xIndex,
+    a_index: pattern.aIndex,
+    b_index: pattern.bIndex,
+    c_index: pattern.cIndex,
+    d_index: pattern.dIndex,
+    x_price: pattern.xPrice,
+    a_price: pattern.aPrice,
+    b_price: pattern.bPrice,
+    c_price: pattern.cPrice,
+    d_price: pattern.dPrice,
+    ab_ratio: pattern.abRatio,
+    bc_ratio: pattern.bcRatio,
+    cd_ratio: pattern.cdRatio,
+    xd_ratio: pattern.xdRatio,
+    prz_low: pattern.przLow,
+    prz_high: pattern.przHigh,
+    stop_loss: pattern.stopLoss,
+    target_1: pattern.target1,
+    target_2: pattern.target2,
+    invalidated: pattern.invalidated,
+    score: pattern.score,
+    confidence: pattern.confidence,
+    reason: pattern.reason
+  };
+}
+
+function buildSMCContextPayload(barsByTimeframe: Record<string, EaRecord[]>): EaRecord | null {
+  const h4Bars = toSMCBars(barsByTimeframe.H4 ?? []);
+  const h1Bars = toSMCBars(barsByTimeframe.H1 ?? []);
+  const m30Bars = toSMCBars(barsByTimeframe.M30 ?? []);
+
+  if (h4Bars.length === 0 && h1Bars.length === 0 && m30Bars.length === 0) {
+    return null;
+  }
+
+  const context = buildSMCContext(h4Bars, h1Bars, m30Bars);
+
+  return {
+    h4_obs: context.h4OBs.map(normalizeOrderBlock),
+    h1_obs: context.h1OBs.map(normalizeOrderBlock),
+    h1_short_obs: context.h1ShortOBs.map(normalizeOrderBlock),
+    h4_fvgs: context.h4FVGs.map(normalizeFVG),
+    h1_fvgs: context.h1FVGs.map(normalizeFVG),
+    h4_breaks: context.h4Breaks.map(normalizeStructureBreak),
+    h1_breaks: context.h1Breaks.map(normalizeStructureBreak),
+    h4_sweeps: context.h4Sweeps.map(normalizeLiquiditySweep),
+    h1_sweeps: context.h1Sweeps.map(normalizeLiquiditySweep),
+    h4_trend_direction: context.h4TrendDirection,
+    h1_trend_direction: context.h1TrendDirection
+  };
+}
+
+function buildCandlestickPatternsPayload(barsByTimeframe: Record<string, EaRecord[]>): EaRecord {
+  const h4Bars = toCandleBars(barsByTimeframe.H4 ?? []);
+  const h1Bars = toCandleBars(barsByTimeframe.H1 ?? []);
+  const m30Bars = toCandleBars(barsByTimeframe.M30 ?? []);
+
+  const h4Patterns = h4Bars.length > 0 ? detectAllCandlestickPatterns(h4Bars, h4Bars.length - 1) : [];
+  const h1Patterns = h1Bars.length > 0 ? detectAllCandlestickPatterns(h1Bars, h1Bars.length - 1) : [];
+  const m30Patterns = m30Bars.length > 0 ? detectAllCandlestickPatterns(m30Bars, m30Bars.length - 1) : [];
+
+  return {
+    h4: h4Patterns,
+    h1: h1Patterns,
+    m30: m30Patterns
+  };
+}
+
+function toSMCBars(eaRecords: EaRecord[]): Array<{ high: number; low: number; close: number; open: number }> {
+  return eaRecords.map((record) => ({
+    high: numberField(record, 'high'),
+    low: numberField(record, 'low'),
+    close: numberField(record, 'close'),
+    open: numberField(record, 'open')
+  }));
+}
+
+function toCandleBars(eaRecords: EaRecord[]): Array<{ high: number; low: number; close: number; open: number; ema50?: number; atr?: number }> {
+  return eaRecords.map((record) => ({
+    high: numberField(record, 'high'),
+    low: numberField(record, 'low'),
+    close: numberField(record, 'close'),
+    open: numberField(record, 'open'),
+    ema50: record.ema50 as number | undefined,
+    atr: record.atr as number | undefined
+  }));
+}
+
+function normalizeOrderBlock(ob: {
+  index: number;
+  side: string;
+  high: number;
+  low: number;
+  valid: boolean;
+  mitigated: boolean;
+  ageBars: number;
+}): EaRecord {
+  return {
+    index: ob.index,
+    side: ob.side,
+    high: ob.high,
+    low: ob.low,
+    valid: ob.valid,
+    mitigated: ob.mitigated,
+    age_bars: ob.ageBars
+  };
+}
+
+function normalizeFVG(fvg: {
+  startIndex: number;
+  endIndex: number;
+  side: string;
+  upperBound: number;
+  lowerBound: number;
+  filled: boolean;
+  fillIndex: number;
+}): EaRecord {
+  return {
+    start_index: fvg.startIndex,
+    end_index: fvg.endIndex,
+    side: fvg.side,
+    upper_bound: fvg.upperBound,
+    lower_bound: fvg.lowerBound,
+    filled: fvg.filled,
+    fill_index: fvg.fillIndex
+  };
+}
+
+function normalizeStructureBreak(sb: {
+  index: number;
+  direction: string;
+  level: number;
+  type: string;
+}): EaRecord {
+  return {
+    index: sb.index,
+    direction: sb.direction,
+    level: sb.level,
+    type: sb.type
+  };
+}
+
+function normalizeLiquiditySweep(sweep: {
+  index: number;
+  level: number;
+  side: string;
+  reversed: boolean;
+}): EaRecord {
+  return {
+    index: sweep.index,
+    level: sweep.level,
+    side: sweep.side,
+    reversed: sweep.reversed
+  };
 }
 
 function rollingMean(values: readonly number[], period: number): number[] {
@@ -2004,25 +2267,16 @@ function eaDownloadResponse(releaseRoot: string): JsonResponse {
   }
 }
 
-function prometheusMetricsResponse(): JsonResponse {
+async function prometheusMetricsResponse(deps: AppServerDeps): Promise<JsonResponse> {
+  deps.collectStoreMetrics();
+  deps.recordHttp({ method: 'GET', url: '/metrics', statusCode: 200, durationMs: 0 });
   return {
     statusCode: 200,
     headers: {
       'Content-Type': 'text/plain; version=0.0.4; charset=utf-8'
     },
     body: null,
-    rawBody: [
-      '# HELP goldbot_http_requests_total Total number of HTTP requests',
-      '# TYPE goldbot_http_requests_total counter',
-      'goldbot_http_requests_total{method="GET",path="/metrics",status="200"} 1',
-      '# HELP goldbot_db_connections_open Number of open database connections',
-      '# TYPE goldbot_db_connections_open gauge',
-      'goldbot_db_connections_open 0',
-      '# HELP goldbot_db_connections_in_use Number of database connections in use',
-      '# TYPE goldbot_db_connections_in_use gauge',
-      'goldbot_db_connections_in_use 0',
-      ''
-    ].join('\n')
+    rawBody: await deps.metricsText()
   };
 }
 
@@ -2398,6 +2652,21 @@ function hasInvalidOptionalBoolean(record: EaRecord, fields: readonly string[]):
   });
 }
 
+function parseStrictJsonObject(rawBody: string): { ok: true; body: EaRecord } | { ok: false } {
+  if (rawBody.trim().length === 0) {
+    return { ok: false };
+  }
+  try {
+    const parsed = JSON.parse(rawBody) as unknown;
+    if (!isRecord(parsed)) {
+      return { ok: false };
+    }
+    return { ok: true, body: parsed };
+  } catch {
+    return { ok: false };
+  }
+}
+
 async function readRawBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -2440,6 +2709,7 @@ async function injectHandler(request: InjectRequest, deps: AppServerDeps): Promi
     }
   } as ServerResponse;
 
+  const start = Date.now();
   const response = await routeRequest(
     {
       method: request.method,
@@ -2449,6 +2719,7 @@ async function injectHandler(request: InjectRequest, deps: AppServerDeps): Promi
     },
     deps
   );
+  deps.recordHttp({ method: request.method, url: request.url, statusCode: response.statusCode, durationMs: Date.now() - start });
   writeResponse(res, response);
 
   return {

@@ -846,7 +846,6 @@ describe('persistence scaffold', () => {
   it('lists account symbols and explicitly stored pending signals', () => {
     const store = createInMemoryEaStore();
     const pendingSignal = {
-      id: 1,
       account_id: '90011087',
       symbol: 'XAUUSD',
       strategy: 'pullback',
@@ -868,10 +867,18 @@ describe('persistence scaffold', () => {
     store.savePendingSignal(pendingSignal);
 
     expect(store.listAccountIds()).toEqual(['90011087']);
-    expect(store.listSymbols('90011087')).toEqual(['XAUUSD', 'GBPJPY', 'US100Cash']);
+    expect(store.listSymbols('90011087')).toEqual(['US100Cash']);
     expect(store.listAISymbols('90011087')).toEqual(['XAUUSD', 'GBPJPY']);
-    expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([pendingSignal]);
+    expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([expect.objectContaining({ ...pendingSignal, id: 1 })]);
     expect(store.getPendingSignals('90011087', 'GBPJPY')).toEqual([]);
+  });
+
+  it('does not create account ids from symbol-scoped AI results', () => {
+    const store = createInMemoryEaStore();
+
+    store.saveAIResult('90011087', 'XAUUSD', { confidence: 80 });
+
+    expect(store.listAccountIds()).toEqual(['90011087']);
   });
 
   for (const testCase of [
@@ -901,7 +908,6 @@ describe('persistence scaffold', () => {
       const { store, cleanup } = testCase.create();
       try {
         store.savePendingSignal({
-          id: 42,
           account_id: '90011087',
           symbol: 'XAUUSD',
           side: 'buy',
@@ -914,14 +920,14 @@ describe('persistence scaffold', () => {
 
         expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
           expect.objectContaining({
-            decision_id: 'candidate_90011087_XAUUSD_42',
+            decision_id: 'candidate_90011087_XAUUSD_1',
             stage: 'candidate_signal',
             status: 'pending',
             reason_codes: ['candidate.momentum_scalp'],
             related_command_id: '',
             created_at: '2026-04-13T08:00:00.000Z',
             summary: {
-              signal_id: 42,
+              signal_id: 1,
               side: 'buy',
               score: 87,
               strategy: 'momentum_scalp',
@@ -929,6 +935,53 @@ describe('persistence scaffold', () => {
             }
           })
         ]);
+      } finally {
+        store.close?.();
+        cleanup();
+      }
+    });
+
+    it(`updates explicit pending signal ids without inserting or duplicating decisions in ${testCase.name} storage`, () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        store.savePendingSignal({
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          side: 'buy',
+          score: 87,
+          strategy: 'momentum_scalp',
+          status: 'pending',
+          created_at: '2026-04-13T08:00:00.000Z',
+          expires_at: '2026-04-13T08:01:00.000Z'
+        });
+        store.savePendingSignal({
+          id: 1,
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          side: 'buy',
+          score: 91,
+          strategy: 'momentum_scalp',
+          status: 'pending',
+          created_at: '2026-04-13T08:00:15.000Z',
+          expires_at: '2026-04-13T08:02:00.000Z'
+        });
+        store.savePendingSignal({
+          id: 99,
+          account_id: '90011087',
+          symbol: 'GBPJPY',
+          side: 'sell',
+          score: 70,
+          strategy: 'range',
+          status: 'pending',
+          created_at: '2026-04-13T08:00:30.000Z',
+          expires_at: '2026-04-13T08:02:00.000Z'
+        });
+
+        expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([
+          expect.objectContaining({ id: 1, score: 91, expires_at: '2026-04-13T08:02:00.000Z' })
+        ]);
+        expect(store.getPendingSignals('90011087', 'GBPJPY')).toEqual([]);
+        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toHaveLength(1);
       } finally {
         store.close?.();
         cleanup();
@@ -969,7 +1022,6 @@ describe('persistence scaffold', () => {
       const { store, cleanup } = testCase.create();
       try {
         store.savePendingSignal({
-          id: 7,
           account_id: '90011087',
           symbol: 'XAUUSD',
           side: 'buy',
@@ -980,7 +1032,6 @@ describe('persistence scaffold', () => {
           expires_at: '2026-04-13T16:00:00+08:00'
         });
         store.savePendingSignal({
-          id: 8,
           account_id: '90011087',
           symbol: 'XAUUSD',
           side: 'sell',
@@ -993,7 +1044,7 @@ describe('persistence scaffold', () => {
 
         expect(store.expirePendingSignals('2026-04-13T08:00:01.000Z')).toBe(1);
         expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([
-          expect.objectContaining({ id: 8, status: 'pending' })
+          expect.objectContaining({ id: 2, status: 'pending' })
         ]);
       } finally {
         store.close?.();
@@ -1005,7 +1056,6 @@ describe('persistence scaffold', () => {
   it('updates and expires pending signal arbitration state', () => {
     const store = createInMemoryEaStore();
     store.savePendingSignal({
-      id: 1,
       account_id: '90011087',
       symbol: 'XAUUSD',
       side: 'buy',
@@ -1018,7 +1068,6 @@ describe('persistence scaffold', () => {
       arbitration_reason: ''
     });
     store.savePendingSignal({
-      id: 2,
       account_id: '90011087',
       symbol: 'XAUUSD',
       side: 'sell',
@@ -1089,7 +1138,7 @@ describe('persistence scaffold', () => {
         bars: [{ time: '2026.04.13 07:00', open: 3331.25, high: 3337.1, low: 3330.9, close: 3335.75 }]
       });
       store.savePositions({ account_id: '90011087', positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY' }] });
-      store.savePendingSignal({ id: 1, account_id: '90011087', symbol: 'XAUUSD', strategy: 'pullback', side: 'buy' });
+      store.savePendingSignal({ account_id: '90011087', symbol: 'XAUUSD', strategy: 'pullback', side: 'buy' });
       store.saveAIResult('90011087', 'XAUUSD', { confidence: 82 });
       store.saveShadowSnapshot({
         account_id: '90011087',
@@ -1165,7 +1214,7 @@ describe('persistence scaffold', () => {
       expect(reopened.updatePendingSignalArbitration(1, 'rejected', 'manual reject')).toBe(true);
       expect(reopened.getPendingSignals('90011087', 'XAUUSD')).toEqual([]);
       expect(reopened.getAIResults('90011087')).toHaveLength(1);
-      expect(reopened.listSymbols('90011087')).toEqual(['XAUUSD', 'GBPJPY']);
+      expect(reopened.listSymbols('90011087')).toEqual(['XAUUSD']);
       expect(reopened.getRuntimeMode('90011087')).toBe('cutover');
       expect(reopened.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ea_analysis')).toEqual({
         account_id: '90011087',
