@@ -9,8 +9,11 @@
 
 ```
 apps/app-mt/
-└── mt4_ea/
-    ├── GoldBolt_Client.mq4    # MT4 EA source code (85 KB)
+├── mt4_ea/
+│   ├── GoldBolt_Client.mq4    # MT4 EA source code (85 KB)
+│   └── version.json           # EA version metadata
+└── mt5_ea/
+    ├── GoldBolt_Client.mq5    # MT5 EA source code (1,913 lines)
     └── version.json           # EA version metadata
 ```
 
@@ -20,15 +23,26 @@ apps/app-mt/
 
 These files are served by the Node.js app-server via:
 
-- **GET /api/ea/download** - Download EA source file
-- **GET /api/ea/version** - Get EA version info
+**MT4:**
+- **GET /api/ea/download** - Download MT4 EA source file
+- **GET /api/ea/version** - Get MT4 EA version info
+
+**MT5:**
+- **GET /api/ea/download?platform=mt5** - Download MT5 EA source file
+- **GET /api/ea/version?platform=mt5** - Get MT5 EA version info
 
 ```bash
-# Example: Download EA
+# Example: Download MT4 EA
 curl http://localhost:8880/api/ea/download -o GoldBolt_Client.mq4
 
-# Example: Check version
+# Example: Download MT5 EA
+curl http://localhost:8880/api/ea/download?platform=mt5 -o GoldBolt_Client.mq5
+
+# Example: Check MT4 version
 curl http://localhost:8880/api/ea/version
+
+# Example: Check MT5 version
+curl http://localhost:8880/api/ea/version?platform=mt5
 ```
 
 ---

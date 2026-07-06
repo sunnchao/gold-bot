@@ -302,7 +302,9 @@ async function routeRequest(
     return prometheusMetricsResponse(deps);
   }
   if (path === '/api/ea/version') {
-    return eaVersionResponse(deps.releaseRoot);
+    const url = new URL(request.url, 'http://localhost');
+    const platform = url.searchParams.get('platform') || 'mt4';
+    return eaVersionResponse(deps.releaseRoot, platform);
   }
 
   if (path === '/version_check') {
@@ -310,7 +312,9 @@ async function routeRequest(
     if (tokenResult.response != null) {
       return tokenResult.response;
     }
-    return eaVersionCheckResponse(deps.releaseRoot);
+    const url = new URL(request.url, 'http://localhost');
+    const platform = url.searchParams.get('platform') || 'mt4';
+    return eaVersionCheckResponse(deps.releaseRoot, platform);
   }
 
   if (path === '/api/ea/download') {
@@ -318,7 +322,9 @@ async function routeRequest(
     if (tokenResult.response != null) {
       return tokenResult.response;
     }
-    return eaDownloadResponse(deps.releaseRoot);
+    const url = new URL(request.url, 'http://localhost');
+    const platform = url.searchParams.get('platform') || 'mt4';
+    return eaDownloadResponse(deps.releaseRoot, platform);
   }
 
   if (isEaCompatEndpoint(path)) {
@@ -2324,8 +2330,8 @@ function eventStreamSnapshot(_store: EaStore, _timestamp: string): string {
   return '';
 }
 
-function eaVersionResponse(releaseRoot: string): JsonResponse {
-  const release = currentEaRelease(releaseRoot);
+function eaVersionResponse(releaseRoot: string, platform: string = 'mt4'): JsonResponse {
+  const release = currentEaRelease(releaseRoot, platform);
   if (!release.ok) {
     return { statusCode: 500, body: { status: 'ERROR', message: release.message } };
   }
@@ -2340,8 +2346,8 @@ function eaVersionResponse(releaseRoot: string): JsonResponse {
   };
 }
 
-function eaVersionCheckResponse(releaseRoot: string): JsonResponse {
-  const release = currentEaRelease(releaseRoot);
+function eaVersionCheckResponse(releaseRoot: string, platform: string = 'mt4'): JsonResponse {
+  const release = currentEaRelease(releaseRoot, platform);
   if (!release.ok) {
     return { statusCode: 500, body: { status: 'ERROR', message: release.message } };
   }
@@ -2355,15 +2361,19 @@ function eaVersionCheckResponse(releaseRoot: string): JsonResponse {
   };
 }
 
-function eaDownloadResponse(releaseRoot: string): JsonResponse {
+function eaDownloadResponse(releaseRoot: string, platform: string = 'mt4'): JsonResponse {
   try {
+    const isMT5 = platform.toLowerCase() === 'mt5';
+    const filename = isMT5 ? 'GoldBolt_Client.mq5' : 'GoldBolt_Client.mq4';
+    const eaDir = isMT5 ? 'mt5_ea' : 'mt4_ea';
+
     return {
       statusCode: 200,
       headers: {
-        'Content-Disposition': 'attachment; filename="GoldBolt_Client.mq4"'
+        'Content-Disposition': `attachment; filename="${filename}"`
       },
       body: null,
-      rawBody: readFileSync(join(releaseRoot, 'apps', 'app-mt', 'mt4_ea', 'GoldBolt_Client.mq4'))
+      rawBody: readFileSync(join(releaseRoot, 'apps', 'app-mt', eaDir, filename))
     };
   } catch {
     return { statusCode: 404, body: { status: 'ERROR', message: 'file not found' } };
@@ -2488,11 +2498,14 @@ function isFile(path: string): boolean {
   }
 }
 
-function currentEaRelease(releaseRoot: string): { ok: true; info: EaReleaseInfo } | { ok: false; message: string } {
+function currentEaRelease(releaseRoot: string, platform: string = 'mt4'): { ok: true; info: EaReleaseInfo } | { ok: false; message: string } {
   const fallback: EaReleaseInfo = { version: '0.0.0', build: 0, changelog: '' };
+  const isMT5 = platform.toLowerCase() === 'mt5';
+  const eaDir = isMT5 ? 'mt5_ea' : 'mt4_ea';
+
   let raw: string;
   try {
-    raw = readFileSync(join(releaseRoot, 'apps', 'app-mt', 'mt4_ea', 'version.json'), 'utf8');
+    raw = readFileSync(join(releaseRoot, 'apps', 'app-mt', eaDir, 'version.json'), 'utf8');
   } catch (error) {
     if (isNotFoundError(error)) {
       return { ok: true, info: fallback };
