@@ -34,7 +34,8 @@ const app = await createAppServer({
   adminTokens,
   defaultRuntimeMode: env.GB_NODE_SHADOW_MODE ? 'shadow' : 'cutover',
   discord,
-  feishu
+  feishu,
+  log: (message) => console.log(message)
 });
 
 await app.listen(env.GB_APP_SERVER_PORT, env.GB_APP_SERVER_HOST);

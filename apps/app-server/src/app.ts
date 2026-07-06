@@ -87,6 +87,7 @@ export type AppServerOptions = {
   metrics?: MetricsRegistry;
   discord?: DiscordNotifier;
   feishu?: FeishuNotifier;
+  log?: (message: string) => void;
 };
 
 type AppServerDeps = {
@@ -111,6 +112,7 @@ type AppServerDeps = {
   metricsText: () => Promise<string>;
   discord: DiscordNotifier | null;
   feishu: FeishuNotifier | null;
+  log: (message: string) => void;
 };
 
 type EaReleaseInfo = {
@@ -175,7 +177,8 @@ export async function createAppServer(options: AppServerOptions = {}) {
     releaseRoot: options.releaseRoot ?? DEFAULT_RELEASE_ROOT,
     alerts: createIndicatorAlertCache(() => nowUnix() * 1000),
     events: options.events ?? createSseHub<SseEvent>(),
-    aiApproveCooldown: createAIApproveCooldown()
+    aiApproveCooldown: createAIApproveCooldown(),
+    log: options.log ?? (() => {})
   };
   const replayCoverageProvider = () => {
     try {
@@ -343,6 +346,7 @@ async function routeRequest(
         validTokens: deps.validTokens,
         tokenAccounts: deps.tokenAccounts,
         adminTokens: deps.adminTokens,
+        log: deps.log,
         onBarsSaved: async (accountId, symbol, timeframe) => { void deps.scheduler.enqueueAnalysis(accountId, symbol, timeframe); },
         onPositionsSaved: async (accountId, symbol) => { void deps.scheduler.enqueuePositionReview(accountId, symbol); },
         onOrderResult: async (accountId, commandId, result, ticket, errorText, createdAt) => { void deps.commandLifecycle.reconcile(accountId, commandId, result, ticket, errorText, createdAt); },

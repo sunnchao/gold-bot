@@ -751,6 +751,63 @@ describe('app-server scaffold', () => {
     expect(await store.getOrderResults('90011087')).toHaveLength(1);
   });
 
+  it('logs accepted EA lifecycle details without token data', async () => {
+    const store = createInMemoryEaStore();
+    const logs: string[] = [];
+    const server = await createAppServer({
+      store,
+      validTokens: [fixtureUserToken],
+      tokenAccounts: { [fixtureUserToken]: [fixtureAccountId] },
+      log: (message) => logs.push(message),
+      nowUnix: () => 1772342400,
+      nowIso: () => '2026-03-01T00:00:00.000Z'
+    });
+
+    for (const name of ['register', 'heartbeat', 'tick']) {
+      const fixture = readFixture(name);
+      const response = await server.inject({
+        method: fixture.request?.method ?? 'POST',
+        url: fixture.request?.path ?? `/${name}`,
+        headers: fixture.request?.headers,
+        body: fixture.request?.body
+      });
+
+      expect(response.statusCode).toBe(200);
+    }
+
+    expect(logs).toEqual([
+      expect.stringContaining('[EA-REGISTER] account_id=90011087'),
+      expect.stringContaining('[EA-HEARTBEAT] account_id=90011087'),
+      expect.stringContaining('[EA-TICK] account_id=90011087')
+    ]);
+    expect(logs[0]).toContain('broker=Demo Broker');
+    expect(logs[0]).toContain('strategies=');
+    expect(logs[1]).toContain('equity=1100.25');
+    expect(logs[1]).toContain('market_open=true');
+    expect(logs[2]).toContain('symbol=XAUUSD');
+    expect(logs[2]).toContain('ask=3335.75');
+    expect(logs.join('\n')).not.toContain('X-API-Token');
+    expect(logs.join('\n')).not.toContain(fixtureUserToken);
+  });
+
+  it('does not emit EA lifecycle success logs for rejected payloads', async () => {
+    const store = createInMemoryEaStore();
+    const logs: string[] = [];
+    const server = await createAppServer({
+      store,
+      log: (message) => logs.push(message)
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/tick',
+      body: { account_id: '90011087', bid: '3335.55' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(logs).toEqual([]);
+  });
+
   it('polls only explicitly queued commands and marks them delivered', async () => {
     const store = createInMemoryEaStore();
     const command: EaCommand = {
