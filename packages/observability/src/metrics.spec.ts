@@ -62,7 +62,7 @@ describe('createMetricsRegistry', () => {
 
     const metrics = createMetricsRegistry(false);
     const collector = createStoreMetricsCollector({ metrics, store, now: () => 1751760000000 });
-    const snapshot = collector.collect();
+    const snapshot = await collector.collect();
 
     expect(snapshot.accounts).toBe(1);
     expect(snapshot.heartbeats).toBe(1);
@@ -87,7 +87,7 @@ describe('createMetricsRegistry', () => {
 
     const metrics = createMetricsRegistry(false);
     const collector = createStoreMetricsCollector({ metrics, store });
-    const snapshot = collector.collect();
+    const snapshot = await collector.collect();
 
     expect(snapshot.positions).toBe(2);
     const text = await metrics.registry.metrics();

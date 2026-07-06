@@ -9,6 +9,7 @@ describe('EA strategy names', () => {
       'divergence',
       'breakout_pyramid',
       'counter_pullback',
+      'scale_in',
       'range',
       'momentum_scalp',
       'ai_signal'
@@ -17,7 +18,7 @@ describe('EA strategy names', () => {
 
   it('rejects internal or invented strategy names', () => {
     expect(isEaStrategyName('pullback')).toBe(true);
-    expect(isEaStrategyName('scale_in')).toBe(false);
+    expect(isEaStrategyName('scale_in')).toBe(true);
     expect(isEaStrategyName('smc')).toBe(false);
     expect(isEaStrategyName('')).toBe(false);
   });

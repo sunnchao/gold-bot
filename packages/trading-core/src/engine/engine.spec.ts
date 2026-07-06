@@ -37,7 +37,6 @@ describe('strategy engine replay-backed slice', () => {
     for (const strategy of EA_STRATEGY_NAMES) {
       expect(() => engine.validateStrategyName(strategy)).not.toThrow();
     }
-    expect(() => engine.validateStrategyName('scale_in')).toThrow(/not an EA strategy name/);
     expect(() => engine.validateStrategyName('smc')).toThrow(/not an EA strategy name/);
   });
 
