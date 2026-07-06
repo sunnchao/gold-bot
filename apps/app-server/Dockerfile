@@ -22,7 +22,7 @@ COPY packages/observability/src ./packages/observability/src
 COPY packages/trading-core/package.json packages/trading-core/tsconfig.json ./packages/trading-core/
 COPY packages/trading-core/src ./packages/trading-core/src
 
-COPY mt4_ea ./mt4_ea
+COPY apps/app-mt/mt4_ea ./apps/app-mt/mt4_ea
 
 RUN corepack enable && pnpm install --frozen-lockfile && pnpm --filter app-server build
 

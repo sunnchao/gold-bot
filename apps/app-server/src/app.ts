@@ -2363,7 +2363,7 @@ function eaDownloadResponse(releaseRoot: string): JsonResponse {
         'Content-Disposition': 'attachment; filename="GoldBolt_Client.mq4"'
       },
       body: null,
-      rawBody: readFileSync(join(releaseRoot, 'mt4_ea', 'GoldBolt_Client.mq4'))
+      rawBody: readFileSync(join(releaseRoot, 'apps', 'app-mt', 'mt4_ea', 'GoldBolt_Client.mq4'))
     };
   } catch {
     return { statusCode: 404, body: { status: 'ERROR', message: 'file not found' } };
@@ -2384,7 +2384,7 @@ async function prometheusMetricsResponse(deps: AppServerDeps): Promise<JsonRespo
 }
 
 function staticDashboardResponse(method: string, path: string, releaseRoot: string): JsonResponse | null {
-  const distDir = join(releaseRoot, 'web', 'dashboard', 'dist');
+  const distDir = join(releaseRoot, 'apps', 'app-web', 'dist');
   if (!isDirectory(distDir)) {
     return null;
   }
@@ -2492,7 +2492,7 @@ function currentEaRelease(releaseRoot: string): { ok: true; info: EaReleaseInfo 
   const fallback: EaReleaseInfo = { version: '0.0.0', build: 0, changelog: '' };
   let raw: string;
   try {
-    raw = readFileSync(join(releaseRoot, 'mt4_ea', 'version.json'), 'utf8');
+    raw = readFileSync(join(releaseRoot, 'apps', 'app-mt', 'mt4_ea', 'version.json'), 'utf8');
   } catch (error) {
     if (isNotFoundError(error)) {
       return { ok: true, info: fallback };
