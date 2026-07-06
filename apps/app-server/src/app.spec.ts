@@ -273,7 +273,7 @@ describe('app-server scaffold', () => {
   });
 
   it('returns Go-compatible health payload', async () => {
-    const server = createAppServer();
+    const server = await createAppServer();
     const response = await server.inject({
       method: 'GET',
       url: '/healthz'
@@ -284,7 +284,7 @@ describe('app-server scaffold', () => {
   });
 
   it('serves Go-compatible Prometheus metrics text', async () => {
-    const server = createAppServer();
+    const server = await createAppServer();
     await server.inject({
       method: 'GET',
       url: '/healthz'
@@ -312,7 +312,7 @@ describe('app-server scaffold', () => {
       mkdirSync(join(dist, 'accounts', '__dynamic__'), { recursive: true });
       writeFileSync(join(dist, 'index.html'), '<main>dashboard shell</main>');
       writeFileSync(join(dist, 'accounts', '__dynamic__', 'index.html'), '<main>account detail</main>');
-      const server = createAppServer({ releaseRoot: dir });
+      const server = await createAppServer({ releaseRoot: dir });
 
       const root = await server.inject({ method: 'GET', url: '/' });
       const spa = await server.inject({ method: 'GET', url: '/audit' });
@@ -331,7 +331,7 @@ describe('app-server scaffold', () => {
   });
 
   it('serves public EA release version metadata', async () => {
-    const server = createApiServer();
+    const server = await createApiServer();
 
     const response = await server.inject({
       method: 'GET',
@@ -349,7 +349,7 @@ describe('app-server scaffold', () => {
   });
 
   it('rejects EA version_check without a route token', async () => {
-    const server = createApiServer();
+    const server = await createApiServer();
 
     const response = await server.inject({
       method: 'POST',
@@ -361,7 +361,7 @@ describe('app-server scaffold', () => {
   });
 
   it('serves token-protected EA version_check payload', async () => {
-    const server = createApiServer();
+    const server = await createApiServer();
 
     const response = await server.inject({
       method: 'POST',
@@ -378,7 +378,7 @@ describe('app-server scaffold', () => {
   });
 
   it('rejects EA download without a route token', async () => {
-    const server = createApiServer();
+    const server = await createApiServer();
 
     const response = await server.inject({
       method: 'GET',
@@ -390,7 +390,7 @@ describe('app-server scaffold', () => {
   });
 
   it('serves token-protected EA download as an attachment', async () => {
-    const server = createApiServer();
+    const server = await createApiServer();
 
     const response = await server.inject({
       method: 'GET',
@@ -407,7 +407,7 @@ describe('app-server scaffold', () => {
   it('returns Go-shaped 404 when the EA download file is missing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gold-bot-ea-download-'));
     try {
-      const server = createApiServer({ releaseRoot: dir });
+      const server = await createApiServer({ releaseRoot: dir });
 
       const response = await server.inject({
         method: 'GET',
@@ -423,7 +423,7 @@ describe('app-server scaffold', () => {
   });
 
   it('stores and polls indicator alerts with duplicate suppression', async () => {
-    const server = createApiServer({ nowUnix: () => 1772342400 });
+    const server = await createApiServer({ nowUnix: () => 1772342400 });
     const alert = {
       id: 'alert_1',
       type: 'divergence',
@@ -467,7 +467,7 @@ describe('app-server scaffold', () => {
   });
 
   it('rejects invalid indicator alert requests', async () => {
-    const server = createApiServer();
+    const server = await createApiServer();
 
     const method = await server.inject({
       method: 'GET',
@@ -509,8 +509,8 @@ describe('app-server scaffold', () => {
 
   it('serves visual poll with tick, AI trade plan, and matching alerts', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:05:00.000Z', nowUnix: () => 1772342400 });
-    store.saveTick({
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:05:00.000Z', nowUnix: () => 1772342400 });
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.55,
@@ -518,7 +518,7 @@ describe('app-server scaffold', () => {
       spread: 20,
       time: '08:00:00'
     });
-    store.saveAIResult('90011087', 'XAUUSD', {
+    await store.saveAIResult('90011087', 'XAUUSD', {
       bias: 'bullish',
       confidence: 82,
       exit_suggestion: 'hold',
@@ -632,7 +632,7 @@ describe('app-server scaffold', () => {
   });
 
   it('rejects invalid visual poll requests', async () => {
-    const server = createApiServer();
+    const server = await createApiServer();
 
     const invalidJson = await server.inject({
       method: 'POST',
@@ -662,7 +662,7 @@ describe('app-server scaffold', () => {
   });
 
   it('serves visual poll with request symbol when no tick snapshot exists', async () => {
-    const server = createApiServer({ nowIso: () => '2026-04-13T08:05:00.000Z' });
+    const server = await createApiServer({ nowIso: () => '2026-04-13T08:05:00.000Z' });
 
     const response = await server.inject({
       method: 'POST',
@@ -686,8 +686,8 @@ describe('app-server scaffold', () => {
 
   it('keeps visual AI summary empty for Go-compatible blank AI results', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:05:00.000Z' });
-    store.saveAIResult('90011087', 'XAUUSD', {});
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:05:00.000Z' });
+    await store.saveAIResult('90011087', 'XAUUSD', {});
 
     const response = await server.inject({
       method: 'POST',
@@ -720,15 +720,15 @@ describe('app-server scaffold', () => {
 
   it('accepts safe EA lifecycle routes with Go-shaped responses and stores payloads', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowUnix: () => 1772342400 });
-    store.enqueueCommand('90011087', {
+    const server = await createAppServer({ store, nowUnix: () => 1772342400 });
+    await store.enqueueCommand('90011087', {
       command_id: 'sig_2',
       action: 'SIGNAL',
       strategy: 'pullback',
       symbol: 'XAUUSD',
       type: 'BUY'
     });
-    expect(store.pollCommands('90011087')).toHaveLength(1);
+    expect(await store.pollCommands('90011087')).toHaveLength(1);
 
     for (const name of ['register', 'heartbeat', 'tick', 'bars', 'positions', 'order_result']) {
       const fixture = readFixture(name);
@@ -743,12 +743,12 @@ describe('app-server scaffold', () => {
       expect(JSON.parse(response.body)).toEqual(fixture.response?.body);
     }
 
-    expect(store.getRegistration('90011087')).toMatchObject({ broker: 'Demo Broker' });
-    expect(store.getHeartbeat('90011087')).toMatchObject({ equity: 1100.25 });
-    expect(store.getLatestTick('90011087', 'XAUUSD')).toMatchObject({ ask: 3335.75 });
-    expect(store.getBars('90011087', 'XAUUSD', 'H1')).toHaveLength(1);
-    expect(store.getPositions('90011087')).toHaveLength(1);
-    expect(store.getOrderResults('90011087')).toHaveLength(1);
+    expect(await store.getRegistration('90011087')).toMatchObject({ broker: 'Demo Broker' });
+    expect(await store.getHeartbeat('90011087')).toMatchObject({ equity: 1100.25 });
+    expect(await store.getLatestTick('90011087', 'XAUUSD')).toMatchObject({ ask: 3335.75 });
+    expect(await store.getBars('90011087', 'XAUUSD', 'H1')).toHaveLength(1);
+    expect(await store.getPositions('90011087')).toHaveLength(1);
+    expect(await store.getOrderResults('90011087')).toHaveLength(1);
   });
 
   it('polls only explicitly queued commands and marks them delivered', async () => {
@@ -764,7 +764,7 @@ describe('app-server scaffold', () => {
       tp1: 3358,
       score: 7
     };
-    const server = createAppServer({ store });
+    const server = await createAppServer({ store });
     const pollFixture = JSON.parse(readFileSync(join(fixtureRoot, 'poll.json'), 'utf8')) as {
       cases: Array<{ request: { method: string; path: string; body: unknown }; response: { body: unknown } }>;
     };
@@ -780,7 +780,7 @@ describe('app-server scaffold', () => {
     expect(empty.statusCode).toBe(200);
     expect(JSON.parse(empty.body)).toEqual(emptyCase.response.body);
 
-    store.enqueueCommand('90011087', command);
+    await store.enqueueCommand('90011087', command);
 
     const queued = await server.inject({
       method: queuedCase.request.method,
@@ -799,7 +799,7 @@ describe('app-server scaffold', () => {
   });
 
   it('rejects malformed EA requests with Go-compatible error envelopes', async () => {
-    const server = createAppServer();
+    const server = await createAppServer();
 
     const invalidJson = await server.inject({
       method: 'POST',
@@ -828,7 +828,7 @@ describe('app-server scaffold', () => {
 
   it('accepts Go-compatible sparse bars and positions payloads', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store });
+    const server = await createAppServer({ store });
 
     const noBars = await server.inject({
       method: 'POST',
@@ -845,7 +845,7 @@ describe('app-server scaffold', () => {
     });
     expect(noBarsWithTimeframe.statusCode).toBe(200);
     expect(JSON.parse(noBarsWithTimeframe.body)).toEqual({ status: 'OK', received: 0 });
-    expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([]);
+    expect(await store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([]);
 
     const noPositions = await server.inject({
       method: 'POST',
@@ -854,12 +854,12 @@ describe('app-server scaffold', () => {
     });
     expect(noPositions.statusCode).toBe(200);
     expect(JSON.parse(noPositions.body)).toEqual({ status: 'OK', count: 0 });
-    expect(store.getPositions('90011087')).toEqual([]);
+    expect(await store.getPositions('90011087')).toEqual([]);
   });
 
   it('normalizes Go-compatible nested EA payloads before persistence', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store });
+    const server = await createAppServer({ store });
 
     const bars = await server.inject({
       method: 'POST',
@@ -872,9 +872,9 @@ describe('app-server scaffold', () => {
       }
     });
     expect(bars.statusCode).toBe(200);
-    expect(store.getBars('90011087', 'XAUUSD', 'H1')[0]).toMatchObject({ time: '1712971200' });
+    expect((await store.getBars('90011087', 'XAUUSD', 'H1'))[0]).toMatchObject({ time: '1712971200' });
 
-    store.saveRegistration({
+    await store.saveRegistration({
       account_id: '90011087',
       strategy_mapping: {
         '20250238': 'ai_signal'
@@ -890,103 +890,103 @@ describe('app-server scaffold', () => {
       }
     });
     expect(positions.statusCode).toBe(200);
-    expect(store.getPositions('90011087')[0]).toMatchObject({ strategy: 'ai_signal' });
+    expect((await store.getPositions('90011087'))[0]).toMatchObject({ strategy: 'ai_signal' });
   });
 
   it('rejects nested EA payload type mismatches like the Go decoder', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store });
+    const server = await createAppServer({ store });
 
     const cases = [
       {
         path: '/bars',
         body: { account_id: '90011087', timeframe: 'H1', bars: [{ open: '3300' }] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
       },
       {
         path: '/bars',
         body: { account_id: '90011087', symbol: 123, timeframe: 'H1', bars: [] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
       },
       {
         path: '/bars',
         body: { account_id: '90011087', symbol: 'XAUUSD', timeframe: 60, bars: [] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', '')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getBars('90011087', 'XAUUSD', '')).toEqual([])
       },
       {
         path: '/bars',
         body: { account_id: '90011087', timeframe: 'H1', bars: [{ volume: 10.5 }] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
       },
       {
         path: '/bars',
         body: { account_id: '90011087', timeframe: 'H1', bars: [{ macd_divergence: 123 }] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
       },
       {
         path: '/bars',
         body: { account_id: '90011087', timeframe: 'H1', bars: [{ candlestick_patterns: ['hammer', 123] }] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getBars('90011087', 'XAUUSD', 'H1')).toEqual([])
       },
       {
         path: '/positions',
         body: { account_id: '90011087', symbol: 123, positions: [] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getPositions('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getPositions('90011087')).toEqual([])
       },
       {
         path: '/positions',
         body: { account_id: '90011087', positions: [{ ticket: '123' }] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getPositions('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getPositions('90011087')).toEqual([])
       },
       {
         path: '/positions',
         body: { account_id: '90011087', positions: [{ ticket: 123.45 }] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getPositions('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getPositions('90011087')).toEqual([])
       },
       {
         path: '/positions',
         body: { account_id: '90011087', positions: [{ open_time: 1712971200.5 }] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getPositions('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getPositions('90011087')).toEqual([])
       },
       {
         path: '/positions',
         body: { account_id: '90011087', positions: [{ magic: 20250238.5 }] },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getPositions('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getPositions('90011087')).toEqual([])
       },
       {
         path: '/register',
         body: { account_id: '90011087', strategy_mapping: { '20250231': 123 } },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getRegistration('90011087')).toBeUndefined()
+        assertNotPersisted: async () => expect(await store.getRegistration('90011087')).toBeUndefined()
       },
       {
         path: '/order_result',
         body: { account_id: '90011087', command_id: 'cmd_1', result: 'filled', ticket: '321' },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getOrderResults('90011087')).toEqual([])
       },
       {
         path: '/order_result',
         body: { account_id: '90011087', command_id: 'cmd_1', result: 'filled', ticket: 321.5 },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getOrderResults('90011087')).toEqual([])
       },
       {
         path: '/order_result',
         body: { account_id: '90011087', command_id: 'cmd_1', result: 'filled', error: 500 },
         message: 'invalid JSON',
-        assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getOrderResults('90011087')).toEqual([])
       }
     ];
 
@@ -999,17 +999,17 @@ describe('app-server scaffold', () => {
 
       expect(response.statusCode).toBe(400);
       expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: testCase.message });
-      testCase.assertNotPersisted();
+      await testCase.assertNotPersisted();
     }
   });
 
   it('applies order_result only to delivered commands and preserves broker error text', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({
+    const server = await createAppServer({
       store,
       nowIso: () => '2026-04-13T08:01:00.000Z'
     });
-    const delivered = store.saveCommandCandidate('90011087', {
+    const delivered = await store.saveCommandCandidate('90011087', {
       command_id: 'sig_route_failed',
       source: 'ai_result',
       symbol: 'XAUUSD',
@@ -1017,7 +1017,7 @@ describe('app-server scaffold', () => {
       strategy: 'ai_signal',
       decision_id: 'tpv1_route_failed'
     });
-    const queued = store.saveCommandCandidate('90011087', {
+    const queued = await store.saveCommandCandidate('90011087', {
       command_id: 'sig_route_pending',
       source: 'ai_result',
       symbol: 'XAUUSD',
@@ -1025,9 +1025,9 @@ describe('app-server scaffold', () => {
       strategy: 'ai_signal',
       decision_id: 'tpv1_route_pending'
     });
-    store.promoteCommand(delivered.command_id);
-    store.promoteCommand(queued.command_id);
-    expect(store.pollCommands('90011087')).toEqual([
+    await store.promoteCommand(delivered.command_id);
+    await store.promoteCommand(queued.command_id);
+    expect(await store.pollCommands('90011087')).toEqual([
       expect.objectContaining({ command_id: delivered.command_id }),
       expect.objectContaining({ command_id: queued.command_id })
     ]);
@@ -1045,14 +1045,14 @@ describe('app-server scaffold', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ status: 'OK' });
-    expect(store.getCommand(delivered.command_id)).toMatchObject({
+    expect(await store.getCommand(delivered.command_id)).toMatchObject({
       status: 'failed',
       result: 'ERROR',
       ticket: 0,
       failed_at: '2026-04-13T08:01:00.000Z',
       error_text: 'invalid stops'
     });
-    expect(store.getOrderResults('90011087')).toEqual([
+    expect(await store.getOrderResults('90011087')).toEqual([
       {
         account_id: '90011087',
         command_id: delivered.command_id,
@@ -1062,7 +1062,7 @@ describe('app-server scaffold', () => {
         created_at: '2026-04-13T08:01:00.000Z'
       }
     ]);
-    expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'failed' })).toEqual([
+    expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'failed' })).toEqual([
       expect.objectContaining({
         decision_id: 'tpv1_route_failed',
         stage: 'order_result',
@@ -1094,38 +1094,38 @@ describe('app-server scaffold', () => {
     });
     expect(duplicate.statusCode).toBe(200);
     expect(missing.statusCode).toBe(200);
-    expect(store.getOrderResults('90011087')).toHaveLength(1);
-    expect(store.getCommand(queued.command_id)).toMatchObject({ status: 'delivered' });
+    expect(await store.getOrderResults('90011087')).toHaveLength(1);
+    expect(await store.getCommand(queued.command_id)).toMatchObject({ status: 'delivered' });
   });
 
   it('rejects order_result payloads missing required fields before persistence', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store });
+    const server = await createAppServer({ store });
 
     const cases = [
       {
         path: '/order_result',
         body: { account_id: '90011087', result: 'filled' },
         message: 'missing command_id',
-        assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getOrderResults('90011087')).toEqual([])
       },
       {
         path: '/order_result',
         body: { account_id: '90011087', command_id: 'cmd_1' },
         message: 'missing result',
-        assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getOrderResults('90011087')).toEqual([])
       },
       {
         path: '/order_result',
         body: { account_id: '90011087', command_id: '   ', result: 'filled' },
         message: 'missing command_id',
-        assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getOrderResults('90011087')).toEqual([])
       },
       {
         path: '/order_result',
         body: { account_id: '90011087', command_id: 'cmd_1', result: '   ' },
         message: 'missing result',
-        assertNotPersisted: () => expect(store.getOrderResults('90011087')).toEqual([])
+        assertNotPersisted: async () => expect(await store.getOrderResults('90011087')).toEqual([])
       }
     ];
 
@@ -1138,12 +1138,12 @@ describe('app-server scaffold', () => {
 
       expect(response.statusCode).toBe(400);
       expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: testCase.message });
-      testCase.assertNotPersisted();
+      await testCase.assertNotPersisted();
     }
   });
 
   it('accepts Go-compatible non-POST EA route methods when the JSON body is valid', async () => {
-    const server = createAppServer();
+    const server = await createAppServer();
     const response = await server.inject({
       method: 'GET',
       url: '/poll',
@@ -1159,7 +1159,7 @@ describe('app-server scaffold', () => {
   });
 
   it('can enforce auth tokens using the Go-compatible extraction priority', async () => {
-    const server = createAppServer({ validTokens: ['primary'] });
+    const server = await createAppServer({ validTokens: ['primary'] });
 
     const accepted = await server.inject({
       method: 'POST',
@@ -1186,7 +1186,7 @@ describe('app-server scaffold', () => {
 
   it('enforces Go-compatible account authorization for EA write routes', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({
+    const server = await createAppServer({
       store,
       validTokens: ['user-token', 'admin-token'],
       tokenAccounts: {
@@ -1211,7 +1211,7 @@ describe('app-server scaffold', () => {
     });
     expect(rejected.statusCode).toBe(403);
     expect(JSON.parse(rejected.body)).toEqual({ status: 'ERROR', message: 'token not authorized for account' });
-    expect(store.getHeartbeat('90022000')).toBeUndefined();
+    expect(await store.getHeartbeat('90022000')).toBeUndefined();
 
     const adminAllowed = await server.inject({
       method: 'POST',
@@ -1220,12 +1220,12 @@ describe('app-server scaffold', () => {
       body: { account_id: '90022000', balance: 2000 }
     });
     expect(adminAllowed.statusCode).toBe(200);
-    expect(store.getHeartbeat('90022000')).toMatchObject({ balance: 2000 });
+    expect(await store.getHeartbeat('90022000')).toMatchObject({ balance: 2000 });
   });
 
   it('manages API tokens behind admin auth', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store });
+    const server = await createApiServer({ store });
 
     const created = await server.inject({
       method: 'POST',
@@ -1266,7 +1266,7 @@ describe('app-server scaffold', () => {
       body: { account_id: '90022000', equity: 2000 }
     });
     expect(allowed.statusCode).toBe(200);
-    expect(store.getHeartbeat('90022000')).toMatchObject({ equity: 2000 });
+    expect(await store.getHeartbeat('90022000')).toMatchObject({ equity: 2000 });
 
     const deleted = await server.inject({
       method: 'DELETE',
@@ -1289,7 +1289,7 @@ describe('app-server scaffold', () => {
   });
 
   it('deletes the lexicographically first API token matching a prefix like Go', async () => {
-    const server = createApiServer({
+    const server = await createApiServer({
       validTokens: [fixtureAdminToken, 'shared-bbb-token', 'shared-aaa-token'],
       adminTokens: [fixtureAdminToken],
       tokenAccounts: {
@@ -1321,7 +1321,7 @@ describe('app-server scaffold', () => {
     const dbPath = join(dir, 'ea.sqlite');
     try {
       const firstStore = createSqliteEaStore(dbPath);
-      const firstServer = createApiServer({ store: firstStore });
+      const firstServer = await createApiServer({ store: firstStore });
       const created = await firstServer.inject({
         method: 'POST',
         url: '/api/tokens',
@@ -1332,7 +1332,7 @@ describe('app-server scaffold', () => {
       firstStore.close();
 
       const secondStore = createSqliteEaStore(dbPath);
-      const secondServer = createApiServer({ store: secondStore });
+      const secondServer = await createApiServer({ store: secondStore });
       const allowed = await secondServer.inject({
         method: 'POST',
         url: '/heartbeat',
@@ -1346,7 +1346,7 @@ describe('app-server scaffold', () => {
       });
 
       expect(allowed.statusCode).toBe(200);
-      expect(secondStore.getHeartbeat('90011087')).toMatchObject({ equity: 2100 });
+      expect(await secondStore.getHeartbeat('90011087')).toMatchObject({ equity: 2100 });
       expect(Object.values((JSON.parse(listed.body) as { tokens: Record<string, { full_token: string }> }).tokens)).toContainEqual(
         expect.objectContaining({ full_token: token })
       );
@@ -1358,7 +1358,7 @@ describe('app-server scaffold', () => {
 
   it('binds a valid EA token to its first account before rejecting later accounts', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({
+    const server = await createAppServer({
       store,
       validTokens: ['new-token'],
       tokenAccounts: {}
@@ -1371,7 +1371,7 @@ describe('app-server scaffold', () => {
       body: { account_id: '90011087', broker: 'Demo Broker' }
     });
     expect(first.statusCode).toBe(200);
-    expect(store.getRegistration('90011087')).toMatchObject({ broker: 'Demo Broker' });
+    expect(await store.getRegistration('90011087')).toMatchObject({ broker: 'Demo Broker' });
 
     const second = await server.inject({
       method: 'POST',
@@ -1381,11 +1381,11 @@ describe('app-server scaffold', () => {
     });
     expect(second.statusCode).toBe(403);
     expect(JSON.parse(second.body)).toEqual({ status: 'ERROR', message: 'token not authorized for account' });
-    expect(store.getRegistration('90022000')).toBeUndefined();
+    expect(await store.getRegistration('90022000')).toBeUndefined();
   });
 
   it('rejects API routes when no Node token store is configured', async () => {
-    const server = createAppServer();
+    const server = await createAppServer();
 
     const response = await server.inject({
       method: 'GET',
@@ -1405,7 +1405,7 @@ describe('app-server scaffold', () => {
     ];
 
     for (const request of requests) {
-      const server = createAppServer({
+      const server = await createAppServer({
         validTokens: ['unbound-token'],
         tokenAccounts: { 'unbound-token': [] }
       });
@@ -1420,7 +1420,7 @@ describe('app-server scaffold', () => {
   });
 
   it('enforces Go-compatible API admin gates', async () => {
-    const server = createApiServer();
+    const server = await createApiServer();
 
     const missingToken = await server.inject({
       method: 'GET',
@@ -1439,7 +1439,7 @@ describe('app-server scaffold', () => {
   });
 
   it('serves the deprecated trigger_ai endpoint behind token auth', async () => {
-    const server = createApiServer();
+    const server = await createApiServer();
     const expected = {
       status: 'OK',
       message: 'AI analysis is now handled by Gateway Cron tasks. This endpoint is deprecated.',
@@ -1466,12 +1466,12 @@ describe('app-server scaffold', () => {
 
   it('serves read-only admin symbol and dashboard routes from Node snapshots', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
     const pendingFixture = readAdminFixture('pending-signal');
     const pendingSignal = (pendingFixture.response.body as unknown[])[0];
     delete (pendingSignal as Record<string, unknown>).id;
 
-    store.saveRegistration({
+    await store.saveRegistration({
       account_id: '90011087',
       broker: 'Demo Broker',
       server_name: 'Demo-1',
@@ -1479,7 +1479,7 @@ describe('app-server scaffold', () => {
       leverage: 500,
       ai_symbols: ['XAUUSD', 'GBPJPY']
     });
-    store.saveHeartbeat({
+    await store.saveHeartbeat({
       account_id: '90011087',
       balance: 1000.5,
       equity: 1100.25,
@@ -1489,17 +1489,17 @@ describe('app-server scaffold', () => {
       is_trade_allowed: true,
       ai_symbols: ['XAUUSD', 'GBPJPY']
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'GBPJPY',
       bid: 191.25,
       ask: 191.28
     });
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY' }]
     });
-    store.savePendingSignal(pendingSignal);
+    await store.savePendingSignal(pendingSignal);
 
     for (const name of ['symbols', 'ai-symbols', 'pending-signal', 'accounts', 'overview', 'audit']) {
       const fixture = readAdminFixture(name);
@@ -1524,18 +1524,18 @@ describe('app-server scaffold', () => {
 
   it('uses heartbeat presence for admin connected state and overview count', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
-    store.saveRegistration({
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    await store.saveRegistration({
       account_id: '90011087',
       broker: 'Demo Broker',
       server_name: 'Demo-1'
     });
-    store.saveRegistration({
+    await store.saveRegistration({
       account_id: '90022000',
       broker: 'Demo Broker',
       server_name: 'Demo-2'
     });
-    store.saveHeartbeat({
+    await store.saveHeartbeat({
       account_id: '90011087',
       balance: 1000.5,
       equity: 1100.25,
@@ -1567,13 +1567,13 @@ describe('app-server scaffold', () => {
 
   it('accepts Go-compatible non-GET methods for admin read handlers', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
-    store.saveRegistration({
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    await store.saveRegistration({
       account_id: '90011087',
       broker: 'Demo Broker',
       server_name: 'Demo-1'
     });
-    store.saveHeartbeat({
+    await store.saveHeartbeat({
       account_id: '90011087',
       balance: 1000.5,
       equity: 1100.25,
@@ -1595,15 +1595,15 @@ describe('app-server scaffold', () => {
 
   it('serves Go-compatible account detail behind admin auth', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
-    store.saveRegistration({
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    await store.saveRegistration({
       account_id: '90011087',
       broker: 'Demo Broker',
       server_name: 'Demo-1',
       currency: 'USD',
       leverage: 500
     });
-    store.saveHeartbeat({
+    await store.saveHeartbeat({
       account_id: '90011087',
       balance: 1000.5,
       equity: 1100.25,
@@ -1612,7 +1612,7 @@ describe('app-server scaffold', () => {
       market_open: true,
       is_trade_allowed: true
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.55,
@@ -1620,13 +1620,13 @@ describe('app-server scaffold', () => {
       spread: 0.2,
       time: '2026-04-13T07:59:30Z'
     });
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY', lots: 0.1, open_price: 3330, profit: 5.25 }]
     });
-    store.saveAIResult('90011087', 'XAUUSD', { bias: 'bullish', confidence: 82 });
-    store.saveAIResult('90011087', 'GBPJPY', { bias: 'bearish', confidence: 64 });
-    store.recordDecisionEvent({
+    await store.saveAIResult('90011087', 'XAUUSD', { bias: 'bullish', confidence: 82 });
+    await store.saveAIResult('90011087', 'GBPJPY', { bias: 'bearish', confidence: 64 });
+    await store.recordDecisionEvent({
       decision_id: 'tpv1_old',
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -1637,7 +1637,7 @@ describe('app-server scaffold', () => {
       related_command_id: '',
       created_at: '2026-04-13T07:59:00.000Z'
     });
-    store.recordDecisionEvent({
+    await store.recordDecisionEvent({
       decision_id: 'tpv1_new',
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -1690,7 +1690,7 @@ describe('app-server scaffold', () => {
 
   it('returns an error for missing account detail', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
 
     const response = await server.inject({
       method: 'GET',
@@ -1704,8 +1704,8 @@ describe('app-server scaffold', () => {
 
   it('serves Go-compatible account decisions behind admin auth', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store });
-    store.recordDecisionEvent({
+    const server = await createApiServer({ store });
+    await store.recordDecisionEvent({
       decision_id: 'tpv1_old',
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -1716,7 +1716,7 @@ describe('app-server scaffold', () => {
       related_command_id: '',
       created_at: '2026-04-13T07:59:00.000Z'
     });
-    store.recordDecisionEvent({
+    await store.recordDecisionEvent({
       decision_id: 'tpv1_rejected',
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -1727,7 +1727,7 @@ describe('app-server scaffold', () => {
       related_command_id: 'sig_rejected',
       created_at: '2026-04-13T08:01:00.000Z'
     });
-    store.recordDecisionEvent({
+    await store.recordDecisionEvent({
       decision_id: 'tpv1_other_symbol',
       account_id: '90011087',
       symbol: 'GBPJPY',
@@ -1777,9 +1777,9 @@ describe('app-server scaffold', () => {
 
   it('updates pending signal arbitration behind admin auth', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store });
+    const server = await createApiServer({ store });
     // First save without explicit id to create the signal
-    store.savePendingSignal({
+    await store.savePendingSignal({
       account_id: '90011087',
       symbol: 'XAUUSD',
       side: 'buy',
@@ -1801,7 +1801,7 @@ describe('app-server scaffold', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ status: 'OK', signal_id: 1, result: 'approved' });
-    expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([]);
+    expect(await store.getPendingSignals('90011087', 'XAUUSD')).toEqual([]);
 
     const invalid = await server.inject({
       method: 'POST',
@@ -1817,7 +1817,7 @@ describe('app-server scaffold', () => {
   });
 
   it('rejects non-integer arbitration signal id text like Go ParseInt', async () => {
-    const server = createApiServer();
+    const server = await createApiServer();
 
     for (const signalId of ['1.0', '1.5']) {
       const response = await server.inject({
@@ -1834,9 +1834,9 @@ describe('app-server scaffold', () => {
 
   it('expires stale pending signals behind admin auth', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:03:00.000Z' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:03:00.000Z' });
     // Save signals without explicit ids
-    store.savePendingSignal({
+    await store.savePendingSignal({
       account_id: '90011087',
       symbol: 'XAUUSD',
       side: 'buy',
@@ -1846,7 +1846,7 @@ describe('app-server scaffold', () => {
       created_at: '2026-04-13T08:00:00.000Z',
       expires_at: '2026-04-13T08:02:00.000Z'
     });
-    store.savePendingSignal({
+    await store.savePendingSignal({
       account_id: '90011087',
       symbol: 'XAUUSD',
       side: 'sell',
@@ -1865,14 +1865,14 @@ describe('app-server scaffold', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ status: 'OK', expired: 1 });
-    expect(store.getPendingSignals('90011087', 'XAUUSD').map((signal) => signal.id)).toEqual([2]);
+    expect((await store.getPendingSignals('90011087', 'XAUUSD')).map((signal) => signal.id)).toEqual([2]);
   });
 
   it('renders /api/v1/audit from persisted shadow state instead of placeholders', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-07-02T12:05:00.000Z' });
+    const server = await createApiServer({ store, nowIso: () => '2026-07-02T12:05:00.000Z' });
 
-    store.recordShadowComparison({
+    await store.recordShadowComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       protocol_ok: true,
@@ -1953,9 +1953,9 @@ describe('app-server scaffold', () => {
 
   it('serves /shadow/metrics from persisted shadow comparison state', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
+    const server = await createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
 
-    store.recordShadowComparison({
+    await store.recordShadowComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       protocol_ok: true,
@@ -1965,7 +1965,7 @@ describe('app-server scaffold', () => {
       source: 'ai_result',
       created_at: '2026-07-03T00:00:00.000Z'
     });
-    store.recordShadowComparison({
+    await store.recordShadowComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       protocol_ok: false,
@@ -2024,9 +2024,9 @@ describe('app-server scaffold', () => {
 
   it('serves /shadow/qualification with cutover-style checks', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
+    const server = await createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
 
-    store.recordShadowComparison({
+    await store.recordShadowComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       protocol_ok: true,
@@ -2105,7 +2105,7 @@ describe('app-server scaffold', () => {
 
   it('records oracle-backed shadow comparisons through POST /shadow/comparisons', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
+    const server = await createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
 
     const response = await server.inject({
       method: 'POST',
@@ -2140,7 +2140,7 @@ describe('app-server scaffold', () => {
         created_at: '2026-07-03T00:10:00.000Z'
       }
     });
-    expect(store.listShadowComparisons()).toEqual([
+    expect(await store.listShadowComparisons()).toEqual([
       {
         account_id: '90011087',
         symbol: 'XAUUSD',
@@ -2156,7 +2156,7 @@ describe('app-server scaffold', () => {
 
   it('records oracle comparisons against the latest stored runtime snapshot when node payload is omitted', async () => {
     const store = createInMemoryEaStore();
-    store.saveShadowSnapshot({
+    await store.saveShadowSnapshot({
       account_id: '90011087',
       symbol: 'XAUUSD',
       source: 'ea_analysis',
@@ -2164,7 +2164,7 @@ describe('app-server scaffold', () => {
       command: { action: 'SIGNAL', strategy: 'pullback', tp1: 3345 },
       created_at: '2026-07-03T00:00:00.000Z'
     });
-    const server = createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
+    const server = await createAppServer({ store, nowIso: () => '2026-07-03T00:10:00.000Z' });
 
     const response = await server.inject({
       method: 'POST',
@@ -2197,7 +2197,7 @@ describe('app-server scaffold', () => {
   });
 
   it('rejects invalid shadow comparison payloads', async () => {
-    const server = createAppServer();
+    const server = await createAppServer();
 
     const response = await server.inject({
       method: 'POST',
@@ -2219,10 +2219,10 @@ describe('app-server scaffold', () => {
 
   it('exposes an injectable SSE route without a synthetic snapshot frame', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
 
-    store.saveRegistration({ account_id: '90011087' });
-    store.saveHeartbeat({ account_id: '90011087' });
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({ account_id: '90011087' });
 
     const response = await server.inject({
       method: 'GET',
@@ -2239,7 +2239,7 @@ describe('app-server scaffold', () => {
 
   it('streams live AI result SSE events over HTTP', async () => {
     const store = createInMemoryEaStore();
-    const app = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const app = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
     const httpServer = await app.listen(0, '127.0.0.1');
     const port = (httpServer.address() as AddressInfo).port;
     const stream = await openSseStream(port, `/api/v1/events/stream?token=${fixtureAdminToken}`);
@@ -2308,7 +2308,7 @@ describe('app-server scaffold', () => {
 
   it('serves analysis payloads and stores AI results in audit-only mode', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     for (const name of ['register', 'heartbeat', 'tick', 'bars', 'positions']) {
       const fixture = readFixture(name);
@@ -2387,8 +2387,8 @@ describe('app-server scaffold', () => {
       }
     }
 
-    expect(store.getAIResults('90011087')).toHaveLength(1);
-    expect(store.pollCommands('90011087')).toEqual([
+    expect(await store.getAIResults('90011087')).toHaveLength(1);
+    expect(await store.pollCommands('90011087')).toEqual([
       expect.objectContaining({
         action: 'CLOSE_ALL',
         reason: 'AI风险警报(全平): volatility spike'
@@ -2398,13 +2398,13 @@ describe('app-server scaffold', () => {
 
   it('filters analysis payload positions to the requested symbol', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
-    store.savePositions({
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    await store.savePositions({
       account_id: '90011087',
       symbol: 'XAUUSD',
       positions: [{ ticket: 1001, symbol: 'XAUUSD', type: 'BUY', lots: 0.1 }]
     });
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       symbol: 'GBPJPY',
       positions: [{ ticket: 2002, symbol: 'GBPJPY', type: 'SELL', lots: 0.2 }]
@@ -2424,15 +2424,15 @@ describe('app-server scaffold', () => {
 
   it('matches Go-compatible analysis payload position fields and timestamp formatting', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00.000Z' });
-    store.saveTick({
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00.000Z' });
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 109.8,
       ask: 110,
       time: '2026-04-13T08:00:00.000Z'
     });
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       symbol: 'XAUUSD',
       positions: [
@@ -2484,8 +2484,8 @@ describe('app-server scaffold', () => {
 
   it('caps Go-compatible analysis payload bars without changing indicator history count', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00.000Z' });
-    store.saveBars({
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00.000Z' });
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
@@ -2514,7 +2514,7 @@ describe('app-server scaffold', () => {
 
   it('queues legacy AI close_all risk alerts for EA poll', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
@@ -2551,8 +2551,8 @@ describe('app-server scaffold', () => {
 
   it('queues legacy AI close_short risk alerts only for matching SELL positions', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
-    store.savePositions({
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    await store.savePositions({
       account_id: '90011087',
       positions: [
         { ticket: 111001, symbol: 'XAUUSD', type: 'BUY', lots: 0.1 },
@@ -2601,16 +2601,16 @@ describe('app-server scaffold', () => {
     const events = createSseHub<SseEvent>();
     const publishedEvents: SseEvent[] = [];
     events.subscribe((event) => publishedEvents.push(event));
-    const server = createApiServer({ store, events, nowIso: () => '2026-04-13T16:00:00+08:00' });
-    store.saveRegistration({ account_id: '90011087', leverage: 500 });
-    store.saveHeartbeat({
+    const server = await createApiServer({ store, events, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveHeartbeat({
       account_id: '90011087',
       equity: 10000,
       free_margin: 9000,
       market_open: true,
       is_trade_allowed: true
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.55,
@@ -2670,7 +2670,7 @@ describe('app-server scaffold', () => {
         })
       })
     );
-    expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+    expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
       expect.objectContaining({
         decision_id: 'tpv1_close_all',
         stage: 'command_enqueued',
@@ -2714,16 +2714,16 @@ describe('app-server scaffold', () => {
 
   it('does not queue V2 AI risk commands when the trade-plan risk gate rejects', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
-    store.saveRegistration({ account_id: '90011087', leverage: 500 });
-    store.saveHeartbeat({
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveHeartbeat({
       account_id: '90011087',
       equity: 10000,
       free_margin: 9000,
       market_open: false,
       is_trade_allowed: true
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.55,
@@ -2777,18 +2777,18 @@ describe('app-server scaffold', () => {
 
   it('does not create poll commands for audit-only AI approve plans in shadow mode', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'shadow');
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    await store.setRuntimeMode('90011087', 'shadow');
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
-    store.saveRegistration({ account_id: '90011087', leverage: 500 });
-    store.saveHeartbeat({
+    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveHeartbeat({
       account_id: '90011087',
       equity: 10000,
       free_margin: 9000,
       market_open: true,
       is_trade_allowed: true
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.5,
@@ -2826,10 +2826,10 @@ describe('app-server scaffold', () => {
       risk_gate: { status: 'accepted', audit_only: true, canProduceLiveCommands: false }
     });
     expect(JSON.parse(response.body)).not.toHaveProperty('command_status');
-    expect(store.listCommands('90011087')).toEqual([]);
-    expect(store.pollCommands('90011087')).toEqual([]);
-    expect(store.listShadowComparisons()).toEqual([]);
-    expect(store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ai_result')).toEqual(
+    expect(await store.listCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
+    expect(await store.listShadowComparisons()).toEqual([]);
+    expect(await store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ai_result')).toEqual(
       expect.objectContaining({
         account_id: '90011087',
         symbol: 'XAUUSD',
@@ -2845,18 +2845,18 @@ describe('app-server scaffold', () => {
 
   it('does not queue audit-only AI approve plans for cutover accounts', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    await store.setRuntimeMode('90011087', 'cutover');
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
-    store.saveRegistration({ account_id: '90011087', leverage: 500 });
-    store.saveHeartbeat({
+    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveHeartbeat({
       account_id: '90011087',
       equity: 10000,
       free_margin: 9000,
       market_open: true,
       is_trade_allowed: true
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.5,
@@ -2894,16 +2894,16 @@ describe('app-server scaffold', () => {
       risk_gate: { status: 'accepted', audit_only: true, canProduceLiveCommands: false }
     });
     expect(JSON.parse(response.body)).not.toHaveProperty('command_status');
-    expect(store.listCommands('90011087')).toEqual([]);
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.listCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('queues the first valid dual AI approve plan and keeps the Go symbol cooldown behavior', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    await store.setRuntimeMode('90011087', 'cutover');
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.5,
@@ -2912,7 +2912,7 @@ describe('app-server scaffold', () => {
       time: '2026-04-13T15:59:30+08:00'
     });
     for (const timeframe of ['D1', 'H4', 'H1', 'M30', 'M15']) {
-      store.saveBars({
+      await store.saveBars({
         account_id: '90011087',
         symbol: 'XAUUSD',
         timeframe,
@@ -2935,7 +2935,7 @@ describe('app-server scaffold', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ status: 'OK', received: true });
-    expect(store.listCommands('90011087')).toEqual([
+    expect(await store.listCommands('90011087')).toEqual([
       expect.objectContaining({
         action: 'SIGNAL',
         source: 'ai_approve',
@@ -2963,17 +2963,17 @@ describe('app-server scaffold', () => {
 
   it('returns audit-only trade plan risk gate rejects without queueing poll commands', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
-    store.saveRegistration({ account_id: '90011087', leverage: 500 });
-    store.saveHeartbeat({
+    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveHeartbeat({
       account_id: '90011087',
       equity: 10000,
       free_margin: 9000,
       market_open: false,
       is_trade_allowed: true
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.5,
@@ -3016,12 +3016,12 @@ describe('app-server scaffold', () => {
       reason_codes: ['market.closed']
     });
     expect(body.risk_gate?.canProduceLiveCommands).toBe(false);
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('returns Go-style invalid trade_plan validation without decision or risk gate', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
@@ -3055,12 +3055,12 @@ describe('app-server scaffold', () => {
         error: 'trade_plan.schema_version = "", want "trade_plan.v1"'
       }
     });
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('rejects empty and array AI result bodies like the Go decoder', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     for (const body of ['', []]) {
       const response = await server.inject({
@@ -3073,12 +3073,12 @@ describe('app-server scaffold', () => {
       expect(response.statusCode).toBe(400);
       expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: 'invalid JSON' });
     }
-    expect(store.getAIResults('90011087')).toEqual([]);
+    expect(await store.getAIResults('90011087')).toEqual([]);
   });
 
   it('accepts empty AI result objects like the Go decoder', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
@@ -3088,12 +3088,12 @@ describe('app-server scaffold', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(store.getAIResults('90011087')).toEqual([expect.objectContaining({ account_id: '90011087', symbol: 'XAUUSD' })]);
+    expect(await store.getAIResults('90011087')).toEqual([expect.objectContaining({ account_id: '90011087', symbol: 'XAUUSD' })]);
   });
 
   it('rejects trade_plan fields whose JSON types do not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
@@ -3128,12 +3128,12 @@ describe('app-server scaffold', () => {
         error: 'decode trade_plan: json: cannot unmarshal string into Go struct field TradePlan.confidence of type int'
       }
     });
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('rejects top-level numeric trade_plan fields whose JSON types do not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
@@ -3168,12 +3168,12 @@ describe('app-server scaffold', () => {
         error: 'decode trade_plan: json: cannot unmarshal string into Go struct field TradePlan.stop_loss of type float64'
       }
     });
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('rejects take_profit arrays whose element types do not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
@@ -3208,12 +3208,12 @@ describe('app-server scaffold', () => {
         error: 'decode trade_plan: json: cannot unmarshal string into Go struct field TradePlan.take_profit of type float64'
       }
     });
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('rejects reason_codes arrays whose element types do not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
@@ -3248,12 +3248,12 @@ describe('app-server scaffold', () => {
         error: 'decode trade_plan: json: cannot unmarshal number into Go struct field TradePlan.reason_codes of type string'
       }
     });
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('rejects add_on values whose JSON type does not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
@@ -3289,12 +3289,12 @@ describe('app-server scaffold', () => {
         error: 'decode trade_plan: json: cannot unmarshal string into Go struct field TradePlan.add_on of type bool'
       }
     });
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('rejects entry_zone fields whose JSON types do not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
@@ -3329,12 +3329,12 @@ describe('app-server scaffold', () => {
         error: 'decode trade_plan: json: cannot unmarshal string into Go struct field TradePlan.entry_zone.min of type float64'
       }
     });
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('rejects expires_at values whose JSON type does not match Go decoding', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
     const response = await server.inject({
       method: 'POST',
@@ -3369,21 +3369,21 @@ describe('app-server scaffold', () => {
         error: 'decode trade_plan: Time.UnmarshalJSON: input is not a JSON string'
       }
     });
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('builds analysis payload indicators and trend context from Node snapshot bars', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
-    store.saveRegistration({
+    await store.saveRegistration({
       account_id: '90011087',
       broker: 'Demo Broker',
       server_name: 'Demo-1',
       currency: 'USD',
       leverage: 500
     });
-    store.saveHeartbeat({
+    await store.saveHeartbeat({
       account_id: '90011087',
       balance: 1000.5,
       equity: 1100.25,
@@ -3392,7 +3392,7 @@ describe('app-server scaffold', () => {
       market_open: true,
       is_trade_allowed: true
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 1999.8,
@@ -3400,13 +3400,13 @@ describe('app-server scaffold', () => {
       spread: 0.2,
       time: '16:00:00'
     });
-    store.saveBars({
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
       bars: flatBars(25, 2000)
     });
-    store.saveBars({
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'M30',
@@ -3459,7 +3459,7 @@ describe('app-server scaffold', () => {
 
   it('uses D1 bars for analysis trend context without exposing them in payload bars', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
     const trendingBars = Array.from({ length: 40 }, (_, index) => {
       const close = 1800 + index * 10;
       return {
@@ -3472,10 +3472,10 @@ describe('app-server scaffold', () => {
       };
     });
 
-    store.saveRegistration({ account_id: '90011087' });
-    store.saveHeartbeat({ account_id: '90011087', market_open: true, is_trade_allowed: true });
-    store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 2199.8, ask: 2200, spread: 0.2 });
-    store.saveBars({
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({ account_id: '90011087', market_open: true, is_trade_allowed: true });
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 2199.8, ask: 2200, spread: 0.2 });
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'D1',
@@ -3505,7 +3505,7 @@ describe('app-server scaffold', () => {
 
   it('preserves all approved EA strategy mappings in analysis payloads', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
     const strategyMapping = {
       '20250231': 'pullback',
       '20250232': 'breakout_retest',
@@ -3518,7 +3518,7 @@ describe('app-server scaffold', () => {
       '20259999': 'experimental'
     };
 
-    store.saveRegistration({
+    await store.saveRegistration({
       account_id: '90011087',
       strategy_mapping: strategyMapping
     });
@@ -3545,9 +3545,9 @@ describe('app-server scaffold', () => {
 
   it('defaults analysis payload strategy mapping to all approved EA strategies', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
-    store.saveRegistration({ account_id: '90011087' });
+    await store.saveRegistration({ account_id: '90011087' });
 
     const response = await server.inject({
       method: 'GET',
@@ -3571,15 +3571,15 @@ describe('app-server scaffold', () => {
 
   it('builds analysis payload market filters from Node snapshots', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-06-05T20:45:00.000Z' });
+    const server = await createApiServer({ store, nowIso: () => '2026-06-05T20:45:00.000Z' });
 
-    store.saveRegistration({ account_id: '90011087' });
-    store.saveHeartbeat({
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({
       account_id: '90011087',
       market_open: true,
       is_trade_allowed: true
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.55,
@@ -3587,7 +3587,7 @@ describe('app-server scaffold', () => {
       spread: 8.2,
       time: '2026-06-05T20:44:50.000Z'
     });
-    store.saveBars({
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'M30',
@@ -3624,16 +3624,16 @@ describe('app-server scaffold', () => {
 
   it('marks analysis market status untradeable when the latest tick is stale', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-06-04T13:00:00.000Z' });
+    const server = await createApiServer({ store, nowIso: () => '2026-06-04T13:00:00.000Z' });
 
-    store.saveRegistration({ account_id: '90011087' });
-    store.saveHeartbeat({
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({
       account_id: '90011087',
       market_open: true,
       is_trade_allowed: true,
       server_time: '2026.06.04 13:00'
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.55,
@@ -3669,7 +3669,7 @@ describe('app-server scaffold', () => {
 
   it('serves trading-core analysis from Node snapshots without enqueueing commands', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
     const snapshot = readReplayFixture('account_90011087_snapshot.json');
     const register = readFixture('register');
 
@@ -3796,19 +3796,19 @@ describe('app-server scaffold', () => {
       body: { account_id: '90011087' }
     });
     expect(JSON.parse(poll.body)).toEqual({ status: 'OK', commands: [], count: 0 });
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
   it('uses the latest H1 close for trading-core analysis when no current tick exists', async () => {
     const store = createInMemoryEaStore();
-    const server = createApiServer({ store, nowIso: () => '2026-04-16T12:00:00.000Z' });
-    store.saveBars({
+    const server = await createApiServer({ store, nowIso: () => '2026-04-16T12:00:00.000Z' });
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
       bars: pullbackBuyBars()
     });
-    store.saveBars({
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'D1',

@@ -38,12 +38,17 @@ import {
   type SseEvent,
   type SseHub
 } from '@gold-bot/observability';
+import {
+  DiscordNotifier,
+  FeishuNotifier,
+  type DiscordPayload
+} from '@gold-bot/notifications';
 import { type JsonResponse } from './http/response.js';
 import { parseJsonObject } from './http/json.js';
 import { requireAdminRoute, requireRouteToken } from './middleware/auth.js';
 import { handleEaRoute as routeEa } from './routes/ea.js';
 import { handleAdminRoute as routeAdmin, type ApiTokenRecord } from './routes/admin.js';
-import { handleAIRoute as routeAI } from './routes/ai.js';
+import { handleAIRoute as routeAI, type AIRouteDeps } from './routes/ai.js';
 import { createIndicatorAlertCache, handleIndicatorAlertRoute as routeIndicatorAlert, type IndicatorAlertCache } from './routes/indicator-alert.js';
 import { handleVisualRoute as routeVisual } from './routes/visual.js';
 import { AnalysisService } from './services/analysis/service.js';
@@ -79,6 +84,8 @@ export type AppServerOptions = {
   releaseRoot?: string;
   events?: SseHub<SseEvent>;
   metrics?: MetricsRegistry;
+  discord?: DiscordNotifier;
+  feishu?: FeishuNotifier;
 };
 
 type AppServerDeps = {
@@ -99,8 +106,10 @@ type AppServerDeps = {
   shadow: ShadowService;
   metrics: MetricsRegistry;
   recordHttp: (context: { method: string; url: string; statusCode: number; durationMs: number }) => void;
-  collectStoreMetrics: () => void;
+  collectStoreMetrics: () => Promise<void>;
   metricsText: () => Promise<string>;
+  discord: DiscordNotifier | null;
+  feishu: FeishuNotifier | null;
 };
 
 type EaReleaseInfo = {
@@ -128,10 +137,10 @@ const VALID_TRADE_PLAN_MODES = new Set(['observe', 'veto', 'approve', 'modify', 
 const VALID_TRADE_PLAN_SIDES = new Set(['buy', 'sell', 'none']);
 const AI_RISK_EXIT_SUGGESTIONS = new Set(['close_partial', 'close_all', 'close_short']);
 
-export function createAppServer(options: AppServerOptions = {}) {
+export async function createAppServer(options: AppServerOptions = {}) {
   const nowUnix = options.nowUnix ?? (() => Math.floor(Date.now() / 1000));
   const store = options.store ?? createInMemoryEaStore();
-  const storedTokens = store.listApiTokens();
+  const storedTokens = await store.listApiTokens();
   const validTokens = options.validTokens == null && storedTokens.length === 0
     ? null
     : new Set([...(options.validTokens ?? []), ...storedTokens.map((record) => record.token)]);
@@ -187,8 +196,12 @@ export function createAppServer(options: AppServerOptions = {}) {
     shadow,
     metrics,
     recordHttp: metricsMiddleware.record,
-    collectStoreMetrics: storeCollector.collect,
-    metricsText: () => metrics.registry.metrics()
+    collectStoreMetrics: async () => {
+      await storeCollector.collect();
+    },
+    metricsText: () => metrics.registry.metrics(),
+    discord: options.discord ?? null,
+    feishu: options.feishu ?? null
   };
   const appHandler = (req: IncomingMessage, res: ServerResponse): void => {
     void handleHttpRequest(req, res, deps);
@@ -300,7 +313,7 @@ async function routeRequest(
   }
 
   if (isEaCompatEndpoint(path)) {
-    return routeEa(
+    return await routeEa(
       {
         method,
         path,
@@ -315,9 +328,9 @@ async function routeRequest(
         validTokens: deps.validTokens,
         tokenAccounts: deps.tokenAccounts,
         adminTokens: deps.adminTokens,
-        onBarsSaved: (accountId, symbol, timeframe) => deps.scheduler.enqueueAnalysis(accountId, symbol, timeframe),
-        onPositionsSaved: (accountId, symbol) => deps.scheduler.enqueuePositionReview(accountId, symbol),
-        onOrderResult: (accountId, commandId, result, ticket, errorText, createdAt) => deps.commandLifecycle.reconcile(accountId, commandId, result, ticket, errorText, createdAt),
+        onBarsSaved: async (accountId, symbol, timeframe) => { void deps.scheduler.enqueueAnalysis(accountId, symbol, timeframe); },
+        onPositionsSaved: async (accountId, symbol) => { void deps.scheduler.enqueuePositionReview(accountId, symbol); },
+        onOrderResult: async (accountId, commandId, result, ticket, errorText, createdAt) => { void deps.commandLifecycle.reconcile(accountId, commandId, result, ticket, errorText, createdAt); },
       },
       {
         stringFieldOrEmpty,
@@ -342,19 +355,19 @@ async function routeRequest(
   if (method === 'GET' && path === '/shadow/metrics') {
     return {
       statusCode: 200,
-      body: deps.shadow.metrics()
+      body: await deps.shadow.metrics()
     };
   }
 
   if (method === 'GET' && path === '/shadow/qualification') {
     return {
       statusCode: 200,
-      body: deps.shadow.qualification()
+      body: await deps.shadow.qualification()
     };
   }
 
   if (path === '/indicator_alert/store' || path === '/indicator_alert/poll') {
-    return routeIndicatorAlert(
+    const response = routeIndicatorAlert(
       {
         method,
         path,
@@ -367,10 +380,20 @@ async function routeRequest(
         alerts: deps.alerts
       }
     );
+    if (response.statusCode === 200 && path === '/indicator_alert/store') {
+      const body = response.body as EaRecord | null;
+      if (body != null && body.should_send === true) {
+        const parsedAlert = parseStrictJsonObject(request.rawBody);
+        if (parsedAlert.ok) {
+          notifyIndicatorAlert(deps, parsedAlert.body);
+        }
+      }
+    }
+    return response;
   }
 
   if (path === '/visual/poll') {
-    return routeVisual(
+    return await routeVisual(
       {
         method,
         path,
@@ -409,7 +432,7 @@ async function routeRequest(
       };
     }
     try {
-      const comparison = deps.shadow.recordOracleComparison({
+      const comparison = await deps.shadow.recordOracleComparison({
         account_id: accountId,
         symbol,
         source: source === 'position_review' || source === 'ai_result' ? source : 'ea_analysis',
@@ -447,7 +470,7 @@ async function routeRequest(
 
   if (path.startsWith('/api/')) {
     if (path.includes('/analysis_payload/') || path.includes('/ai_result/')) {
-      return routeAI(
+      return await routeAI(
         {
           method,
           path,
@@ -462,7 +485,7 @@ async function routeRequest(
         }
       );
     }
-    return routeAdmin(
+    return await routeAdmin(
       {
         method,
         path,
@@ -490,7 +513,7 @@ async function routeRequest(
   return { statusCode: 404, body: { status: 'ERROR', message: 'not found' } };
 }
 
-function validateEaPayload(path: string, body: EaRecord, store: EaStore): string | null {
+async function validateEaPayload(path: string, body: EaRecord, store: EaStore): Promise<string | null> {
   switch (path) {
     case '/register':
       return normalizeRegisterPayload(body);
@@ -501,7 +524,7 @@ function validateEaPayload(path: string, body: EaRecord, store: EaStore): string
     case '/bars':
       return normalizeBarsPayload(body);
     case '/positions':
-      return normalizePositionsPayload(body, store);
+      return await normalizePositionsPayload(body, store);
     case '/order_result':
       if (hasInvalidOptionalString(body, ['command_id', 'result', 'error'])) {
         return 'invalid JSON';
@@ -649,7 +672,7 @@ function normalizeBarsPayload(body: EaRecord): string | null {
   return null;
 }
 
-function normalizePositionsPayload(body: EaRecord, store: EaStore): string | null {
+async function normalizePositionsPayload(body: EaRecord, store: EaStore): Promise<string | null> {
   if (hasInvalidOptionalString(body, ['symbol'])) {
     return 'invalid JSON';
   }
@@ -660,7 +683,7 @@ function normalizePositionsPayload(body: EaRecord, store: EaStore): string | nul
   if (!Array.isArray(body.positions)) {
     return 'invalid JSON';
   }
-  const registration = store.getRegistration(stringFieldOrEmpty(body, 'account_id').trim()) ?? {};
+  const registration = await store.getRegistration(stringFieldOrEmpty(body, 'account_id').trim()) ?? {};
   const mapping = {
     ...analysisStrategyMapping(recordField(registration, 'strategy_mapping') ?? {}),
     ...analysisStrategyMapping(recordField(body, 'strategy_mapping') ?? {})
@@ -712,17 +735,17 @@ function bootstrapTokenRecords(
   return records;
 }
 
-function tradingCoreAnalysis(store: EaStore, accountId: string, symbol: string, timestamp: string): EaRecord {
-  const latestTick = store.getLatestTick(accountId, symbol) ?? {};
-  const positions = filterPositionsForSymbol(symbol, store.getPositions(accountId, symbol));
+async function tradingCoreAnalysis(store: EaStore, accountId: string, symbol: string, timestamp: string): Promise<EaRecord> {
+  const latestTick = await store.getLatestTick(accountId, symbol) ?? {};
+  const positions = filterPositionsForSymbol(symbol, await store.getPositions(accountId, symbol));
   const replayBars = {
-    H1: store.getBars(accountId, symbol, 'H1'),
-    H4: store.getBars(accountId, symbol, 'H4'),
-    M30: store.getBars(accountId, symbol, 'M30'),
-    M15: store.getBars(accountId, symbol, 'M15'),
-    M5: store.getBars(accountId, symbol, 'M5'),
-    M1: store.getBars(accountId, symbol, 'M1'),
-    D1: store.getBars(accountId, symbol, 'D1')
+    H1: await store.getBars(accountId, symbol, 'H1'),
+    H4: await store.getBars(accountId, symbol, 'H4'),
+    M30: await store.getBars(accountId, symbol, 'M30'),
+    M15: await store.getBars(accountId, symbol, 'M15'),
+    M5: await store.getBars(accountId, symbol, 'M5'),
+    M1: await store.getBars(accountId, symbol, 'M1'),
+    D1: await store.getBars(accountId, symbol, 'D1')
   };
   return {
     status: 'OK',
@@ -743,19 +766,19 @@ function tradingCoreAnalysis(store: EaStore, accountId: string, symbol: string, 
   };
 }
 
-function handleAIResultRoute(
+async function handleAIResultRoute(
   _method: string,
   accountId: string,
   symbol: string,
   rawBody: string,
-  deps: Pick<AppServerDeps, 'store' | 'nowIso' | 'commandLifecycle' | 'shadow' | 'events' | 'aiApproveCooldown'>
-): JsonResponse {
+  deps: AIRouteDeps
+): Promise<JsonResponse> {
   const parsed = parseStrictJsonObject(rawBody);
   if (!parsed.ok) {
     return { statusCode: 400, body: { status: 'ERROR', message: 'invalid JSON' } };
   }
 
-  deps.store.saveAIResult(accountId, symbol, parsed.body);
+  await deps.store.saveAIResult(accountId, symbol, parsed.body);
   const eventTimestamp = deps.nowIso();
   const tradePlanPayload = parseTradePlanPayload(parsed.body, accountId, symbol);
   const tradePlan = tradePlanPayload.tradePlan;
@@ -764,10 +787,10 @@ function handleAIResultRoute(
     publishAIResultEvents(deps.events, accountId, symbol, parsed.body, undefined, undefined, eventTimestamp);
     const riskCommandRequested = shouldQueueAIRiskCommand(parsed.body);
     if (tradePlanPayload.validation == null) {
-      queueAIRiskCommands(deps, accountId, symbol, parsed.body);
+      await queueAIRiskCommands(deps, accountId, symbol, parsed.body);
     }
     if (!riskCommandRequested && dualTradePlan?.valid === true) {
-      queueAIApprovePendingCommands(deps, accountId, symbol, dualTradePlans(dualTradePlan), {}, eventTimestamp);
+      await queueAIApprovePendingCommands(deps, accountId, symbol, dualTradePlans(dualTradePlan), {}, eventTimestamp);
     }
     return {
       statusCode: 200,
@@ -775,15 +798,19 @@ function handleAIResultRoute(
     };
   }
 
-  const riskGate = aiTradePlanRiskGate(deps.store, accountId, symbol, tradePlan, eventTimestamp);
+  const riskGate = await aiTradePlanRiskGate(deps.store, accountId, symbol, tradePlan, eventTimestamp);
   const decisionId = stringFieldOrEmpty(tradePlan, 'decision_id');
   const mode = stringFieldOrEmpty(tradePlan, 'mode');
-  recordAIDecisionTimeline(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp);
+  const tradePlanSide = stringFieldOrEmpty(tradePlan, 'side');
+  await recordAIDecisionTimeline(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp);
   publishAIResultEvents(deps.events, accountId, symbol, parsed.body, tradePlan, riskGate, eventTimestamp);
+  if (tradePlanSide === 'buy' || tradePlanSide === 'sell') {
+    notifyAIResult(deps, accountId, symbol, tradePlan, tradePlanSide);
+  }
   const riskCommandRequested = shouldQueueAIRiskCommand(parsed.body);
-  const riskCommands = queueAIRiskCommands(deps, accountId, symbol, parsed.body, tradePlan, riskGate);
+  const riskCommands = await queueAIRiskCommands(deps, accountId, symbol, parsed.body, tradePlan, riskGate);
   const command = !riskCommandRequested
-    ? queueAIApprovePendingCommands(
+    ? await queueAIApprovePendingCommands(
       deps,
       accountId,
       symbol,
@@ -827,20 +854,20 @@ type DualTradePlan = {
   sell?: EaRecord;
 };
 
-function queueAIApprovePendingCommands(
+async function queueAIApprovePendingCommands(
   deps: Pick<AppServerDeps, 'store' | 'commandLifecycle' | 'aiApproveCooldown'>,
   accountId: string,
   symbol: string,
   tradePlans: EaRecord[],
   riskGate: EaRecord,
   eventTimestamp: string
-): StoredCommand | undefined {
+): Promise<StoredCommand | undefined> {
   let firstCommand: StoredCommand | undefined;
   for (const tradePlan of tradePlans) {
     if (!shouldQueueAIPending(tradePlan, riskGate)) {
       continue;
     }
-    const pendingGate = evaluateAIApprovePendingGate({
+    const pendingGate = await evaluateAIApprovePendingGate({
       store: deps.store,
       accountId,
       symbol,
@@ -851,7 +878,8 @@ function queueAIApprovePendingCommands(
     if (!pendingGate.accepted) {
       continue;
     }
-    const command = deps.commandLifecycle.acceptCandidate(accountId, tradePlanToCommandCandidate(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp));
+    const candidate = await tradePlanToCommandCandidate(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp);
+    const command = await deps.commandLifecycle.acceptCandidate(accountId, candidate);
     firstCommand ??= command;
     if (command.status === 'queued') {
       deps.aiApproveCooldown.mark(symbol, eventTimestamp);
@@ -864,9 +892,9 @@ function dualTradePlans(dualTradePlan: DualTradePlan): EaRecord[] {
   return [dualTradePlan.buy, dualTradePlan.sell].filter((tradePlan): tradePlan is EaRecord => tradePlan != null);
 }
 
-function recordAIDecisionTimeline(store: EaStore, accountId: string, symbol: string, tradePlan: EaRecord, riskGate: EaRecord, createdAt: string): void {
+async function recordAIDecisionTimeline(store: EaStore, accountId: string, symbol: string, tradePlan: EaRecord, riskGate: EaRecord, createdAt: string): Promise<void> {
   const decisionId = stringFieldOrEmpty(tradePlan, 'decision_id');
-  store.recordDecisionEvent({
+  await store.recordDecisionEvent({
     decision_id: decisionId,
     account_id: accountId,
     symbol,
@@ -882,7 +910,7 @@ function recordAIDecisionTimeline(store: EaStore, accountId: string, symbol: str
     related_command_id: '',
     created_at: createdAt
   });
-  store.recordDecisionEvent({
+  await store.recordDecisionEvent({
     decision_id: decisionId,
     account_id: accountId,
     symbol,
@@ -940,6 +968,50 @@ function isAIAnalysisFailure(payload: EaRecord): boolean {
   return numberField(payload, 'suggested_sl') === 0 && numberField(payload, 'suggested_tp') === 0;
 }
 
+function notifyIndicatorAlert(
+  deps: Pick<AppServerDeps, 'discord' | 'feishu'>,
+  alert: EaRecord
+): void {
+  const symbol = stringFieldOrEmpty(alert, 'symbol') || 'XAUUSD';
+  const indicator = stringFieldOrEmpty(alert, 'indicator');
+  const direction = stringFieldOrEmpty(alert, 'direction');
+  const summary = `[GOLD-BOT] Alert: ${symbol} ${direction} ${indicator}`.trim();
+  if (summary.length === 0) {
+    return;
+  }
+  fireNotifications(deps, summary, summary);
+}
+
+function notifyAIResult(
+  deps: Pick<AppServerDeps, 'discord' | 'feishu'>,
+  accountId: string,
+  symbol: string,
+  tradePlan: EaRecord,
+  side: string
+): void {
+  const planSymbol = stringFieldOrEmpty(tradePlan, 'symbol') || symbol;
+  const mode = stringFieldOrEmpty(tradePlan, 'mode');
+  const confidence = numberField(tradePlan, 'confidence');
+  const summary = `[GOLD-BOT] AI Signal: ${planSymbol} ${side} (mode=${mode || 'approve'} confidence=${confidence} account=${accountId})`;
+  fireNotifications(deps, summary, summary);
+}
+
+function fireNotifications(
+  deps: Pick<AppServerDeps, 'discord' | 'feishu'>,
+  discordContent: string,
+  feishuContent: string
+): void {
+  const discord = deps.discord;
+  if (discord != null && discord.isConfigured()) {
+    const payload: DiscordPayload = { content: discordContent };
+    void discord.send(payload).catch(() => {});
+  }
+  const feishu = deps.feishu;
+  if (feishu != null && feishu.isConfigured()) {
+    void feishu.send({ title: 'GOLD-BOT', content: feishuContent }).catch(() => {});
+  }
+}
+
 function aiResultEventPayload(payload: EaRecord, symbol: string, tradePlan?: EaRecord, riskGate?: EaRecord): EaRecord {
   if (tradePlan == null) {
     return payload;
@@ -985,16 +1057,18 @@ function queueAIRiskCommands(
   payload: EaRecord,
   tradePlan?: EaRecord,
   riskGate?: EaRecord
-): StoredCommand[] {
+): Promise<StoredCommand[]> {
+  return (async () => {
   if (!shouldQueueAIRiskCommand(payload) || !aiRiskGateAllowsCommand(tradePlan, riskGate)) {
     return [];
   }
-  const candidates = buildAIRiskCommandCandidates(deps.store, accountId, symbol, payload, deps.nowIso(), tradePlan, riskGate);
-  return candidates.map((candidate) => {
-    const stored = deps.store.saveCommandCandidate(accountId, candidate);
-    deps.store.promoteCommand(stored.command_id);
-    return deps.store.getCommand(stored.command_id) ?? { ...stored, status: 'queued' };
-  });
+  const candidates = await buildAIRiskCommandCandidates(deps.store, accountId, symbol, payload, deps.nowIso(), tradePlan, riskGate);
+  return Promise.all(candidates.map(async (candidate) => {
+    const stored = await deps.store.saveCommandCandidate(accountId, candidate);
+    await deps.store.promoteCommand(stored.command_id);
+    return (await deps.store.getCommand(stored.command_id)) ?? { ...stored, status: 'queued' };
+  }));
+  })();
 }
 
 function aiRiskGateAllowsCommand(tradePlan?: EaRecord, riskGate?: EaRecord): boolean {
@@ -1031,7 +1105,7 @@ function buildAIRiskCommandCandidates(
   nowIso: string,
   tradePlan?: EaRecord,
   riskGate?: EaRecord
-): CommandCandidate[] {
+): Promise<CommandCandidate[]> {
   const exitSuggestion = stringFieldOrEmpty(payload, 'exit_suggestion').toLowerCase();
   const timestamp = aiRiskCommandTimestamp(nowIso);
   const timestampNanos = aiRiskCommandTimestampNanos(nowIso);
@@ -1053,7 +1127,7 @@ function buildAIRiskCommandCandidates(
     candidate.lots_pct = 0.5;
   }
   attachAIRiskTradePlanMetadata(candidate, tradePlan, riskGate);
-  return [candidate];
+  return Promise.resolve([candidate]);
 }
 
 function buildCloseShortRiskCommands(
@@ -1065,8 +1139,9 @@ function buildCloseShortRiskCommands(
   confidence: unknown,
   tradePlan?: EaRecord,
   riskGate?: EaRecord
-): CommandCandidate[] {
-  return store.getPositions(accountId, symbol).flatMap((position): CommandCandidate[] => {
+): Promise<CommandCandidate[]> {
+  return (async () => {
+  return (await store.getPositions(accountId, symbol)).flatMap((position): CommandCandidate[] => {
     const ticket = numberField(position, 'ticket');
     if (ticket <= 0) {
       return [];
@@ -1090,6 +1165,7 @@ function buildCloseShortRiskCommands(
     attachAIRiskTradePlanMetadata(candidate, tradePlan, riskGate);
     return [candidate];
   });
+  })();
 }
 
 function attachAIRiskTradePlanMetadata(candidate: CommandCandidate, tradePlan?: EaRecord, riskGate?: EaRecord): void {
@@ -1301,10 +1377,12 @@ function validateTradePlan(tradePlan: EaRecord, expectedAccountId: string, expec
   return undefined;
 }
 
-function aiTradePlanRiskGate(store: EaStore, accountId: string, symbol: string, tradePlan: EaRecord, now: string): EaRecord {
-  const registration = store.getRegistration(accountId) ?? {};
-  const heartbeat = store.getHeartbeat(accountId) ?? {};
-  const latestTick = store.getLatestTick(accountId, symbol) ?? {};
+function aiTradePlanRiskGate(store: EaStore, accountId: string, symbol: string, tradePlan: EaRecord, now: string): Promise<EaRecord> {
+  return (async () => {
+  const registration = await store.getRegistration(accountId) ?? {};
+  const heartbeat = await store.getHeartbeat(accountId) ?? {};
+  const latestTick = await store.getLatestTick(accountId, symbol) ?? {};
+  const positions = await store.getPositions(accountId, symbol);
   const result = evaluateRiskGate({
     now,
     account: {
@@ -1325,7 +1403,7 @@ function aiTradePlanRiskGate(store: EaStore, accountId: string, symbol: string, 
         ask: numberField(latestTick, 'ask'),
         spread: numberField(latestTick, 'spread')
       },
-      positions: store.getPositions(accountId, symbol).map((position) => ({
+      positions: positions.map((position) => ({
         ticket: numberField(position, 'ticket'),
         symbol: stringFieldOrEmpty(position, 'symbol'),
         type: stringFieldOrEmpty(position, 'type'),
@@ -1361,6 +1439,7 @@ function aiTradePlanRiskGate(store: EaStore, accountId: string, symbol: string, 
     max_margin_lots: result.maxMarginLots,
     canProduceLiveCommands: result.canProduceLiveCommands
   };
+  })();
 }
 
 function tradePlanToCommandCandidate(
@@ -1370,16 +1449,18 @@ function tradePlanToCommandCandidate(
   tradePlan: EaRecord,
   riskGate: EaRecord,
   nowIso: string
-): CommandCandidate {
+): Promise<CommandCandidate> {
+  return (async () => {
   return buildAIApproveCommandCandidate({
     accountId,
     symbol,
     tradePlan,
     riskGate,
     nowIso,
-    currentPrice: aiApproveCurrentPrice(store.getLatestTick(accountId, symbol) ?? {}),
-    atr: latestH1Atr(store.getBars(accountId, symbol, 'H1'))
+    currentPrice: aiApproveCurrentPrice((await store.getLatestTick(accountId, symbol)) ?? {}),
+    atr: latestH1Atr(await store.getBars(accountId, symbol, 'H1'))
   });
+  })();
 }
 
 function aiApproveCurrentPrice(tick: EaRecord): number {
@@ -1406,18 +1487,19 @@ function riskGateEntryZone(value: EaRecord | undefined): { min?: number; max?: n
   };
 }
 
-function analysisPayload(store: EaStore, accountId: string, symbol: string, timestamp: string): EaRecord {
-  const registration = store.getRegistration(accountId) ?? {};
-  const heartbeat = store.getHeartbeat(accountId) ?? {};
-  const latestTick = store.getLatestTick(accountId, symbol) ?? {};
-  const positions = store.getPositions(accountId, symbol);
-  const barsByTimeframe = analysisBarsByTimeframe(store, accountId, symbol);
+function analysisPayload(store: EaStore, accountId: string, symbol: string, timestamp: string): Promise<EaRecord> {
+  return (async () => {
+  const registration = await store.getRegistration(accountId) ?? {};
+  const heartbeat = await store.getHeartbeat(accountId) ?? {};
+  const latestTick = await store.getLatestTick(accountId, symbol) ?? {};
+  const positions = await store.getPositions(accountId, symbol);
+  const barsByTimeframe = await analysisBarsByTimeframe(store, accountId, symbol);
   const enrichedBarsByTimeframe = enrichBarsByTimeframe(barsByTimeframe);
   const payloadBarsByTimeframe = recentBarsByTimeframe(enrichedBarsByTimeframe, ANALYSIS_PAYLOAD_BARS_LIMIT);
   const marketStatus = analysisMarketStatus(heartbeat, latestTick, timestamp);
   const trendBarsByTimeframe = {
     ...enrichedBarsByTimeframe,
-    D1: enrichAnalysisBars(store.getBars(accountId, symbol, 'D1'))
+    D1: enrichAnalysisBars(await store.getBars(accountId, symbol, 'D1'))
   };
   const harmonicContext = buildHarmonicContextPayload(enrichedBarsByTimeframe);
   const smcContext = buildSMCContextPayload(enrichedBarsByTimeframe);
@@ -1480,6 +1562,7 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
     timestamp: shanghaiTimestamp(timestamp),
     trend_context: trendContext(trendBarsByTimeframe)
   };
+  })();
 }
 
 function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timestamp: string): { marketOpen: boolean; isTradeAllowed: boolean } {
@@ -1497,13 +1580,15 @@ function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timesta
   return { marketOpen, isTradeAllowed };
 }
 
-function analysisBarsByTimeframe(store: EaStore, accountId: string, symbol: string): Record<string, EaRecord[]> {
+function analysisBarsByTimeframe(store: EaStore, accountId: string, symbol: string): Promise<Record<string, EaRecord[]>> {
+  return (async () => {
   return {
-    M15: store.getBars(accountId, symbol, 'M15'),
-    M30: store.getBars(accountId, symbol, 'M30'),
-    H1: store.getBars(accountId, symbol, 'H1'),
-    H4: store.getBars(accountId, symbol, 'H4')
+    M15: await store.getBars(accountId, symbol, 'M15'),
+    M30: await store.getBars(accountId, symbol, 'M30'),
+    H1: await store.getBars(accountId, symbol, 'H1'),
+    H4: await store.getBars(accountId, symbol, 'H4')
   };
+  })();
 }
 
 function enrichBarsByTimeframe(barsByTimeframe: Record<string, EaRecord[]>): Record<string, EaRecord[]> {
@@ -2062,12 +2147,15 @@ function roundToEven(value: number, decimals: number): number {
   return Math.round(scaled) / factor;
 }
 
-function accountSummaries(store: EaStore): EaRecord[] {
-  return store.listAccountIds().map((accountId) => {
-    const registration = store.getRegistration(accountId) ?? {};
-    const heartbeat = store.getHeartbeat(accountId) ?? {};
-    const positions = store.getPositions(accountId);
-    return {
+function accountSummaries(store: EaStore): Promise<EaRecord[]> {
+  return (async () => {
+  const accountIds = await store.listAccountIds();
+  const summaries: EaRecord[] = [];
+  for (const accountId of accountIds) {
+    const registration = await store.getRegistration(accountId) ?? {};
+    const heartbeat = await store.getHeartbeat(accountId) ?? {};
+    const positions = await store.getPositions(accountId);
+    summaries.push({
       account_id: accountId,
       balance: numberField(heartbeat, 'balance'),
       broker: stringFieldOrEmpty(registration, 'broker'),
@@ -2077,13 +2165,16 @@ function accountSummaries(store: EaStore): EaRecord[] {
       market_open: booleanField(heartbeat, 'market_open'),
       positions: positions.length,
       server_name: stringFieldOrEmpty(registration, 'server_name')
-    };
-  });
+    });
+  }
+  return summaries;
+  })();
 }
 
-function accountDetail(store: EaStore, accountId: string, timestamp: string): EaRecord {
-  const payload = analysisPayload(store, accountId, 'XAUUSD', timestamp);
-  const defaultSymbolAIResult = store.getAIResults(accountId)
+function accountDetail(store: EaStore, accountId: string, timestamp: string): Promise<EaRecord> {
+  return (async () => {
+  const payload = await analysisPayload(store, accountId, 'XAUUSD', timestamp);
+  const defaultSymbolAIResult = (await store.getAIResults(accountId))
     .find((record) => stringFieldOrEmpty(record, 'symbol').toUpperCase() === 'XAUUSD');
   const latestAIResult = defaultSymbolAIResult == null ? {} : stripNodeAIResultEnvelope(defaultSymbolAIResult);
   return {
@@ -2093,8 +2184,9 @@ function accountDetail(store: EaStore, accountId: string, timestamp: string): Ea
     positions: payload.positions,
     indicators: payload.indicators,
     ai_result: latestAIResult,
-    decision_events: store.listDecisionEvents({ account_id: accountId, limit: 10 })
+    decision_events: await store.listDecisionEvents({ account_id: accountId, limit: 10 })
   };
+  })();
 }
 
 function stripNodeAIResultEnvelope(record: EaRecord): EaRecord {
@@ -2187,8 +2279,9 @@ function auditChecks(report: ReturnType<typeof buildShadowReport>): EaRecord[] {
   ];
 }
 
-function buildAuditBody(store: EaStore, timestamp: string): EaRecord {
-  const comparisons = store.listShadowComparisons();
+function buildAuditBody(store: EaStore, timestamp: string): Promise<EaRecord> {
+  return (async () => {
+  const comparisons = await store.listShadowComparisons();
   const report = buildShadowReport(comparisons);
   const summary = auditChecks(report);
   if (comparisons.length === 0) {
@@ -2215,6 +2308,7 @@ function buildAuditBody(store: EaStore, timestamp: string): EaRecord {
     report,
     events: []
   };
+  })();
 }
 
 function eventStreamSnapshot(_store: EaStore, _timestamp: string): string {
@@ -2268,7 +2362,7 @@ function eaDownloadResponse(releaseRoot: string): JsonResponse {
 }
 
 async function prometheusMetricsResponse(deps: AppServerDeps): Promise<JsonResponse> {
-  deps.collectStoreMetrics();
+  await deps.collectStoreMetrics();
   deps.recordHttp({ method: 'GET', url: '/metrics', statusCode: 200, durationMs: 0 });
   return {
     statusCode: 200,

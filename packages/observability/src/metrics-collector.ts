@@ -36,13 +36,13 @@ export function createStoreMetricsCollector(options: StoreMetricsCollectorOption
   const store = options.store;
   const now = options.now ?? (() => Date.now());
 
-  function collect(): StoreMetricsSnapshot {
-    const accountIds = store.listAccountIds();
+  async function collect(): Promise<StoreMetricsSnapshot> {
+    const accountIds = await store.listAccountIds();
     let positionsSeen = 0;
     let heartbeatsSeen = 0;
 
     for (const accountId of accountIds) {
-      const heartbeat = store.getHeartbeat(accountId);
+      const heartbeat = await store.getHeartbeat(accountId);
       if (heartbeat) {
         heartbeatsSeen++;
         const ts = asNumber(heartbeat.timestamp) ?? asNumber(heartbeat.ts) ?? asNumber(heartbeat.time);
@@ -61,15 +61,15 @@ export function createStoreMetricsCollector(options: StoreMetricsCollectorOption
         if (dailyPL != null) metrics.accountDailyPL.labels(accountId).set(dailyPL);
       }
 
-      const symbols = store.listSymbols(accountId);
+      const symbols = await store.listSymbols(accountId);
       for (const symbol of symbols) {
-        const tick = store.getLatestTick(accountId, symbol);
+        const tick = await store.getLatestTick(accountId, symbol);
         if (tick) {
           const spread = asNumber(tick.spread);
           if (spread != null) metrics.spreadPoints.labels(accountId, symbol).set(spread);
         }
 
-        const positions = store.getPositions(accountId, symbol);
+        const positions = await store.getPositions(accountId, symbol);
         positionsSeen += positions.length;
         metrics.accountPositions.labels(accountId, symbol).set(positions.length);
       }
