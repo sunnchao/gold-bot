@@ -5,12 +5,12 @@ import { CommandLifecycleService } from '../command-lifecycle/service.js';
 import { AnalysisService } from '../analysis/service.js';
 
 describe('SchedulerService', () => {
-  it('publishes replay signals through the command lifecycle for cutover accounts', () => {
+  it('publishes replay signals through the command lifecycle for cutover accounts', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
-    saveTradeableHeartbeat(store);
-    store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
-    store.saveBars({
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
@@ -43,10 +43,10 @@ describe('SchedulerService', () => {
       () => '2026-04-13T08:00:00.000Z'
     );
 
-    scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
-    scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+    await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+    await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
 
-    const commands = store.listCommands('90011087');
+    const commands = await store.listCommands('90011087');
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
       source: 'live_strategy',
@@ -61,9 +61,9 @@ describe('SchedulerService', () => {
     expect(commands[0].decision_id).toBe(commands[0].command_id);
   });
 
-  it('skips replay analysis for non-live strategy timeframes', () => {
+  it('skips replay analysis for non-live strategy timeframes', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
+    await store.setRuntimeMode('90011087', 'cutover');
     let calls = 0;
     const scheduler = new SchedulerService(
       {
@@ -90,16 +90,16 @@ describe('SchedulerService', () => {
       store
     );
 
-    scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'D1');
+    await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'D1');
 
     expect(calls).toBe(0);
-    expect(store.listCommands('90011087')).toEqual([]);
+    expect(await store.listCommands('90011087')).toEqual([]);
   });
 
-  it('skips replay analysis when EA runtime is not tradeable', () => {
+  it('skips replay analysis when EA runtime is not tradeable', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
-    store.saveHeartbeat({
+    await store.setRuntimeMode('90011087', 'cutover');
+    await store.saveHeartbeat({
       account_id: '90011087',
       market_open: false,
       is_trade_allowed: true
@@ -130,15 +130,15 @@ describe('SchedulerService', () => {
       store
     );
 
-    scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+    await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
 
     expect(calls).toBe(0);
-    expect(store.listCommands('90011087')).toEqual([]);
+    expect(await store.listCommands('90011087')).toEqual([]);
   });
 
-  it('skips replay analysis when heartbeat is missing', () => {
+  it('skips replay analysis when heartbeat is missing', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
+    await store.setRuntimeMode('90011087', 'cutover');
     let calls = 0;
     const scheduler = new SchedulerService(
       {
@@ -165,15 +165,15 @@ describe('SchedulerService', () => {
       store
     );
 
-    scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+    await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
 
     expect(calls).toBe(0);
-    expect(store.listCommands('90011087')).toEqual([]);
+    expect(await store.listCommands('90011087')).toEqual([]);
   });
 
-  it('skips position review when heartbeat is missing', () => {
+  it('skips position review when heartbeat is missing', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
+    await store.setRuntimeMode('90011087', 'cutover');
     let calls = 0;
     const scheduler = new SchedulerService(
       {
@@ -194,16 +194,16 @@ describe('SchedulerService', () => {
       store
     );
 
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
 
     expect(calls).toBe(0);
-    expect(store.listCommands('90011087')).toEqual([]);
+    expect(await store.listCommands('90011087')).toEqual([]);
   });
 
-  it('publishes replay position commands through the command lifecycle for cutover accounts', () => {
+  it('does not queue replay-only position manager commands during position review', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
-    saveTradeableHeartbeat(store);
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
     const commandLifecycle = new CommandLifecycleService(store);
     const scheduler = new SchedulerService(
       {
@@ -225,47 +225,18 @@ describe('SchedulerService', () => {
       () => '2026-04-13T08:00:00.000Z'
     );
 
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
 
-    const commands = store.listCommands('90011087');
-    expect(commands).toHaveLength(2);
-    expect(commands).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          command_id: expect.stringMatching(/^mod_[0-9a-f]{16}$/),
-          action: 'MODIFY',
-          source: 'ai_stop_loss',
-          status: 'queued',
-          ticket: 777,
-          new_sl: 3330,
-          sl: 3330,
-          tp: 3345,
-          old_sl: 3325,
-          distance: 5,
-          atr: 10,
-          decision_id: 'tpv1_modify',
-          trigger_time: '2026-04-13T08:00:00.000Z',
-          analysis_mode: 'positions'
-        }),
-        expect.objectContaining({
-          command_id: expect.stringMatching(/^pos_[0-9a-f]{16}$/),
-          action: 'CLOSE',
-          source: 'position_review',
-          status: 'queued',
-          ticket: 777,
-          lots: 0.04
-        })
-      ])
-    );
+    expect(await store.listCommands('90011087')).toEqual([]);
   });
 
-  it('publishes position-triggered replay signals with positions analysis mode', () => {
+  it('publishes position-triggered replay signals with positions analysis mode', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
-    saveTradeableHeartbeat(store);
-    store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
-    store.saveBars({
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
@@ -297,10 +268,10 @@ describe('SchedulerService', () => {
       () => '2026-04-13T08:00:00.000Z'
     );
 
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
 
-    const commands = store.listCommands('90011087');
+    const commands = await store.listCommands('90011087');
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
       source: 'live_strategy',
@@ -310,23 +281,23 @@ describe('SchedulerService', () => {
     });
   });
 
-  it('queues AI stop-loss modify commands during position review when no replay signal is produced', () => {
+  it('queues AI stop-loss modify commands during position review when no replay signal is produced', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
-    saveTradeableHeartbeat(store);
-    store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3333.9, ask: 3334.1 });
-    store.saveBars({
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3333.9, ask: 3334.1 });
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
       bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3333, high: 3335, low: 3330, close: 3334, atr: 1.5 }]
     });
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       symbol: 'XAUUSD',
       positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY', open_price: 3333, lots: 0.2, sl: 3331, tp: 3344 }]
     });
-    store.saveAIResult('90011087', 'XAUUSD', {
+    await store.saveAIResult('90011087', 'XAUUSD', {
       suggested_sl: 3332.8,
       trade_plan: { decision_id: 'tpv1_modify_sl' }
     });
@@ -347,10 +318,10 @@ describe('SchedulerService', () => {
       () => '2026-04-13T08:02:00.000Z'
     );
 
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
 
-    const commands = store.listCommands('90011087');
+    const commands = await store.listCommands('90011087');
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
       command_id: expect.stringMatching(/^mod_[0-9a-f]{16}$/),
@@ -371,23 +342,23 @@ describe('SchedulerService', () => {
     });
   });
 
-  it('suppresses AI stop-loss modify commands for the same ticket inside the five-minute cooldown', () => {
+  it('suppresses AI stop-loss modify commands for the same ticket inside the five-minute cooldown', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
-    saveTradeableHeartbeat(store);
-    store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3333.9, ask: 3334.1 });
-    store.saveBars({
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3333.9, ask: 3334.1 });
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
       bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3333, high: 3335, low: 3330, close: 3334, atr: 1.5 }]
     });
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       symbol: 'XAUUSD',
       positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY', open_price: 3333, lots: 0.2, sl: 3331, tp: 3344 }]
     });
-    store.saveAIResult('90011087', 'XAUUSD', {
+    await store.saveAIResult('90011087', 'XAUUSD', {
       suggested_sl: 3332.8,
       trade_plan: { decision_id: 'tpv1_modify_sl' }
     });
@@ -409,13 +380,13 @@ describe('SchedulerService', () => {
       () => now
     );
 
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
     now = '2026-04-13T08:04:00.000Z';
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
     now = '2026-04-13T08:07:00.000Z';
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
 
-    const commands = store.listCommands('90011087').filter((command) => command.source === 'ai_stop_loss');
+    const commands = (await store.listCommands('90011087')).filter((command) => command.source === 'ai_stop_loss');
     expect(commands).toHaveLength(2);
     expect(commands.map((command) => command.trigger_time)).toEqual([
       '2026-04-13T08:02:00.000Z',
@@ -423,23 +394,23 @@ describe('SchedulerService', () => {
     ]);
   });
 
-  it('hydrates and persists position manager state during position review', () => {
+  it('hydrates existing position manager state during position review without persisting replay-only state', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
-    saveTradeableHeartbeat(store);
-    store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3343.1, ask: 3343.2 });
-    store.saveBars({
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3343.1, ask: 3343.2 });
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
       bars: flatH1Bars(15)
     });
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       symbol: 'XAUUSD',
       positions: [{ ticket: 202, symbol: 'XAUUSD', type: 'BUY', open_price: 3340, lots: 0.5, sl: 3340 }]
     });
-    store.savePositionState('90011087', 'XAUUSD', {
+    await store.savePositionState('90011087', 'XAUUSD', {
       ticket: 202,
       tp1_hit: true,
       tp2_hit: false,
@@ -452,10 +423,10 @@ describe('SchedulerService', () => {
     const analysis = new AnalysisService(store, () => '2026-04-13T08:00:00.000Z');
     const scheduler = new SchedulerService(analysis, new CommandLifecycleService(store), undefined, store);
 
-    scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
 
-    expect(store.listCommands('90011087')).toEqual([]);
-    expect(store.loadPositionStates('90011087', 'XAUUSD')).toEqual([
+    expect(await store.listCommands('90011087')).toEqual([]);
+    expect(await store.loadPositionStates('90011087', 'XAUUSD')).toEqual([
       expect.objectContaining({
         ticket: 202,
         tp1_hit: true,
@@ -476,8 +447,8 @@ function flatH1Bars(count: number) {
   }));
 }
 
-function saveTradeableHeartbeat(store: ReturnType<typeof createInMemoryEaStore>) {
-  store.saveHeartbeat({
+async function saveTradeableHeartbeat(store: ReturnType<typeof createInMemoryEaStore>) {
+  await store.saveHeartbeat({
     account_id: '90011087',
     market_open: true,
     is_trade_allowed: true

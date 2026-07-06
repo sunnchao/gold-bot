@@ -13,19 +13,19 @@ export type BootstrapResult = {
   legacyTokensImported: number;
 };
 
-export function bootstrapTokens(
+export async function bootstrapTokens(
   store: EaStore,
   adminToken: string,
   legacyTokensPath?: string
-): BootstrapResult {
+): Promise<BootstrapResult> {
   let adminTokensSeeded = 0;
   let legacyTokensImported = 0;
 
   // Seed admin token from environment variable
   if (adminToken.length > 0) {
-    const existing = store.listApiTokens().find((t) => t.token === adminToken);
+    const existing = (await store.listApiTokens()).find((t) => t.token === adminToken);
     if (!existing) {
-      store.saveApiToken({
+      await store.saveApiToken({
         token: adminToken,
         name: 'env-admin',
         is_admin: true,
@@ -43,9 +43,9 @@ export function bootstrapTokens(
       const legacy = JSON.parse(content) as LegacyTokenRecord[];
 
       for (const record of legacy) {
-        const existing = store.listApiTokens().find((t) => t.token === record.token);
+        const existing = (await store.listApiTokens()).find((t) => t.token === record.token);
         if (!existing) {
-          store.saveApiToken({
+          await store.saveApiToken({
             token: record.token,
             name: record.name ?? '',
             is_admin: record.is_admin ?? false,

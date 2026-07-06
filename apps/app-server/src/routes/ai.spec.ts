@@ -20,12 +20,12 @@ function routeDeps(): AIRouteDeps {
 }
 
 const helpers: AIRouteHelpers = {
-  analysisPayload: (_store: EaStore, requestedAccountId: string, symbol: string) => ({
+  analysisPayload: async (_store: EaStore, requestedAccountId: string, symbol: string) => ({
     status: 'OK',
     account_id: requestedAccountId,
     symbol
   }),
-  handleAIResultRoute: () => ({
+  handleAIResultRoute: async () => ({
     statusCode: 200,
     body: { status: 'OK' }
   })
@@ -40,8 +40,8 @@ function request(overrides: Pick<AIRouteRequest, 'method' | 'path' | 'url'>): AI
 }
 
 describe('AI route analysis_payload parity', () => {
-  it('allows non-GET legacy analysis payload requests like the Go handler', () => {
-    const response = handleAIRoute(
+  it('allows non-GET legacy analysis payload requests like the Go handler', async () => {
+    const response = await handleAIRoute(
       request({
         method: 'POST',
         path: `/api/analysis_payload/${accountId}`,
@@ -58,8 +58,8 @@ describe('AI route analysis_payload parity', () => {
     });
   });
 
-  it('allows non-GET v2 analysis payload requests like the Go handler', () => {
-    const response = handleAIRoute(
+  it('allows non-GET v2 analysis payload requests like the Go handler', async () => {
+    const response = await handleAIRoute(
       request({
         method: 'PUT',
         path: `/api/v2/analysis_payload/${accountId}/XAUUSD`,

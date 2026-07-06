@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ArbitrationManager, defaultArbitrationConfig } from './service.js';
 import { createInMemoryEaStore } from '@gold-bot/persistence';
 
@@ -76,10 +76,10 @@ describe('ArbitrationManager', () => {
       sleep: async () => {
         // on first poll, approve the signal
         if (signalId === 0) {
-          const pending = store.getPendingSignals('90011087', 'XAUUSD');
+          const pending = await store.getPendingSignals('90011087', 'XAUUSD');
           const id = (pending[0] as { id?: number }).id ?? 0;
           signalId = id;
-          store.updatePendingSignalArbitration(id, 'approved', 'manual_review');
+          await store.updatePendingSignalArbitration(id, 'approved', 'manual_review');
         }
       },
       now: () => new Date(0)
@@ -100,9 +100,9 @@ describe('ArbitrationManager', () => {
       sleep: async () => {
         if (!approved) {
           approved = true;
-          const pending = store.getPendingSignals('90011087', 'XAUUSD');
+          const pending = await store.getPendingSignals('90011087', 'XAUUSD');
           const id = (pending[0] as { id?: number }).id ?? 0;
-          store.updatePendingSignalArbitration(id, 'rejected', 'too_risky');
+          await store.updatePendingSignalArbitration(id, 'rejected', 'too_risky');
         }
       },
       now: () => new Date(0)
@@ -127,7 +127,7 @@ describe('ArbitrationManager', () => {
     });
 
     await manager.submitSignal('90011087', 'XAUUSD', makeSignal({ side: 'sell', score: 10, strategy: 'momentum_scalp' }));
-    const pending = store.getPendingSignals('90011087', 'XAUUSD');
+    const pending = await store.getPendingSignals('90011087', 'XAUUSD');
     expect(pending.length).toBe(1);
     const signal = pending[0];
     expect(String(signal.status)).toBe('pending');
@@ -156,11 +156,11 @@ describe('ArbitrationManager', () => {
     });
 
     await manager.submitSignal('90011087', 'XAUUSD', makeSignal({ all_strategies: ['pullback', 'momentum_scalp'] }));
-    const pending = store.getPendingSignals('90011087', 'XAUUSD');
+    const pending = await store.getPendingSignals('90011087', 'XAUUSD');
     expect(String(pending[0].indicators)).toContain('"all_strategies":["pullback","momentum_scalp"]');
   });
 
-  it('delegates expireStaleSignals / getPendingSignals / updateArbitrationResult to store', () => {
+  it('delegates expireStaleSignals / getPendingSignals / updateArbitrationResult to store', async () => {
     const store = createInMemoryEaStore();
     const manager = new ArbitrationManager({
       store,
@@ -169,18 +169,18 @@ describe('ArbitrationManager', () => {
       now: () => new Date(0)
     });
 
-    store.savePendingSignal({
+    await store.savePendingSignal({
       account_id: '90011087',
       symbol: 'XAUUSD',
       status: 'pending',
       created_at: new Date(0).toISOString(),
       expires_at: new Date(0).toISOString()
     });
-    const pending = manager.getPendingSignals('90011087', 'XAUUSD');
+    const pending = await manager.getPendingSignals('90011087', 'XAUUSD');
     expect(pending.length).toBe(1);
     const id = Number(pending[0].id);
-    expect(manager.updateArbitrationResult(id, 'approved', 'manual')).toBe(true);
-    const expired = manager.expireStaleSignals();
+    expect(await manager.updateArbitrationResult(id, 'approved', 'manual')).toBe(true);
+    const expired = await manager.expireStaleSignals();
     expect(expired).toBe(0);
   });
 

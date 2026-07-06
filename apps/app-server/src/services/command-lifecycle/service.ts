@@ -9,23 +9,23 @@ export class CommandLifecycleService {
     private readonly shadow?: ShadowService
   ) {}
 
-  acceptCandidate(accountId: string, candidate: CommandCandidate): StoredCommand {
-    const stored = this.store.saveCommandCandidate(accountId, candidate);
-    const mode = resolveRuntimeMode(this.store.getRuntimeMode(accountId), this.defaultRuntimeMode);
+  async acceptCandidate(accountId: string, candidate: CommandCandidate): Promise<StoredCommand> {
+    const stored = await this.store.saveCommandCandidate(accountId, candidate);
+    const mode = resolveRuntimeMode(await this.store.getRuntimeMode(accountId), this.defaultRuntimeMode);
     if (mode === 'cutover') {
-      this.store.promoteCommand(stored.command_id);
+      await this.store.promoteCommand(stored.command_id);
     } else {
-      this.store.demoteCommandToShadowOnly(stored.command_id);
+      await this.store.demoteCommandToShadowOnly(stored.command_id);
     }
-    const resolved = this.store.getCommand(stored.command_id) ?? stored;
-    this.shadow?.recordRuntimeSnapshot({
+    const resolved = (await this.store.getCommand(stored.command_id)) ?? stored;
+    await this.shadow?.recordRuntimeSnapshot({
       account_id: accountId,
       symbol: typeof resolved.symbol === 'string' && resolved.symbol.length > 0 ? resolved.symbol : 'XAUUSD',
       source: shadowSourceForCommand(resolved.source),
       command: resolved,
       created_at: resolved.created_at
     });
-    this.store.recordShadowComparison({
+    await this.store.recordShadowComparison({
       account_id: accountId,
       symbol: typeof resolved.symbol === 'string' && resolved.symbol.length > 0 ? resolved.symbol : 'XAUUSD',
       protocol_ok: true,
@@ -38,8 +38,8 @@ export class CommandLifecycleService {
     return resolved;
   }
 
-  reconcile(accountId: string, commandId: string, result: string, ticket?: number, errorText?: string, createdAt?: string): boolean {
-    return this.store.reconcileCommandResult(accountId, commandId, result, ticket, errorText, createdAt);
+  async reconcile(accountId: string, commandId: string, result: string, ticket?: number, errorText?: string, createdAt?: string): Promise<boolean> {
+    return await this.store.reconcileCommandResult(accountId, commandId, result, ticket, errorText, createdAt);
   }
 }
 
@@ -54,8 +54,8 @@ function shadowSourceForCommand(source: StoredCommand['source']): ShadowRuntimeS
 }
 
 function resolveRuntimeMode(storedMode: RuntimeMode, defaultRuntimeMode: RuntimeMode): RuntimeMode {
-  if (storedMode === 'oracle' && defaultRuntimeMode === 'shadow') {
-    return 'shadow';
+  if (storedMode === 'oracle' && (defaultRuntimeMode === 'shadow' || defaultRuntimeMode === 'cutover')) {
+    return defaultRuntimeMode;
   }
   return storedMode;
 }

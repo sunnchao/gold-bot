@@ -1,5 +1,5 @@
 {
-  "name": "@gold-bot/persistence",
+  "name": "@gold-bot/notifications",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,17 +11,10 @@
       "import": "./dist/index.js"
     }
   },
-  "dependencies": {
-    "@gold-bot/shared-contracts": "workspace:*",
-    "pg": "^8.22.0"
-  },
   "scripts": {
-    "build": "tsc -p tsconfig.json && mkdir -p dist/migrations && cp src/migrations/*.sql dist/migrations/",
+    "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "pnpm run typecheck"
-  },
-  "devDependencies": {
-    "@types/pg": "^8.20.0"
   }
 }

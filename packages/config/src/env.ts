@@ -3,8 +3,14 @@ export type GoldBotEnv = {
   GB_APP_SERVER_HOST: string;
   GB_APP_SERVER_PORT: number;
   GB_EA_STORE_SQLITE_PATH: string;
+  GB_EA_STORE_POSTGRES_DSN: string;
   GB_NODE_SHADOW_MODE: boolean;
   GB_ADMIN_TOKEN: string;
+  GB_LEGACY_TOKENS_PATH: string;
+  GB_REDIS_URL: string;
+  GB_DISCORD_WEBHOOK_URL: string;
+  GB_FEISHU_WEBHOOK_URL: string;
+  GB_FEISHU_SECRET: string;
 };
 
 type EnvSource = Partial<Record<string, string | undefined>>;
@@ -15,8 +21,14 @@ export function loadGoldBotEnv(source: EnvSource = process.env): GoldBotEnv {
     GB_APP_SERVER_HOST: source.GB_APP_SERVER_HOST ?? '127.0.0.1',
     GB_APP_SERVER_PORT: parsePort(source.GB_APP_SERVER_PORT),
     GB_EA_STORE_SQLITE_PATH: source.GB_EA_STORE_SQLITE_PATH ?? '',
-    GB_NODE_SHADOW_MODE: parseBoolean(source.GB_NODE_SHADOW_MODE, true),
-    GB_ADMIN_TOKEN: source.GB_ADMIN_TOKEN ?? source.ADMIN_TOKEN ?? ''
+    GB_EA_STORE_POSTGRES_DSN: source.GB_EA_STORE_POSTGRES_DSN ?? '',
+    GB_NODE_SHADOW_MODE: parseBoolean(source.GB_NODE_SHADOW_MODE, false),
+    GB_ADMIN_TOKEN: source.GB_ADMIN_TOKEN ?? source.ADMIN_TOKEN ?? '',
+    GB_LEGACY_TOKENS_PATH: source.GB_LEGACY_TOKENS_PATH ?? '',
+    GB_REDIS_URL: source.GB_REDIS_URL ?? '',
+    GB_DISCORD_WEBHOOK_URL: source.GB_DISCORD_WEBHOOK_URL ?? '',
+    GB_FEISHU_WEBHOOK_URL: source.GB_FEISHU_WEBHOOK_URL ?? '',
+    GB_FEISHU_SECRET: source.GB_FEISHU_SECRET ?? ''
   };
 }
 

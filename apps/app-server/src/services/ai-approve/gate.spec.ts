@@ -7,17 +7,17 @@ const symbol = 'XAUUSD';
 const nowIso = '2026-04-13T08:00:00.000Z';
 
 describe('AI approve pending gate', () => {
-  it('accepts valid approve plans when market context is Go-compatible', () => {
+  it('accepts valid approve plans when market context is Go-compatible', async () => {
     const store = createInMemoryEaStore();
-    seedStrongTrendState(store);
+    await seedStrongTrendState(store);
 
-    expect(evaluateAIApprovePendingGate({
+    await expect(evaluateAIApprovePendingGate({
       store,
       accountId,
       symbol,
       tradePlan: tradePlan(),
       nowIso
-    })).toMatchObject({
+    })).resolves.toMatchObject({
       accepted: true,
       currentPrice: 3335.6,
       entry: 3335.6,
@@ -26,10 +26,10 @@ describe('AI approve pending gate', () => {
     });
   });
 
-  it('rejects active duplicate AI approve pending commands', () => {
+  it('rejects active duplicate AI approve pending commands', async () => {
     const store = createInMemoryEaStore();
-    seedStrongTrendState(store);
-    const pending = store.saveCommandCandidate(accountId, {
+    await seedStrongTrendState(store);
+    const pending = await store.saveCommandCandidate(accountId, {
       command_id: 'ai_pending_90011087_XAUUSD_active',
       source: 'ai_approve',
       symbol,
@@ -37,101 +37,101 @@ describe('AI approve pending gate', () => {
       action: 'SIGNAL',
       expiration: 1776081600
     });
-    store.promoteCommand(pending.command_id);
+    await store.promoteCommand(pending.command_id);
 
-    expect(evaluateAIApprovePendingGate({
+    await expect(evaluateAIApprovePendingGate({
       store,
       accountId,
       symbol,
       tradePlan: tradePlan(),
       nowIso
-    })).toEqual({
+    })).resolves.toEqual({
       accepted: false,
       reason: 'pending.duplicate'
     });
   });
 
-  it('rejects weak trend consensus after the Go lots-halving rule', () => {
+  it('rejects weak trend consensus after the Go lots-halving rule', async () => {
     const store = createInMemoryEaStore();
-    seedStrongTrendState(store, { trend: 'neutral' });
+    await seedStrongTrendState(store, { trend: 'neutral' });
 
-    expect(evaluateAIApprovePendingGate({
+    await expect(evaluateAIApprovePendingGate({
       store,
       accountId,
       symbol,
       tradePlan: tradePlan(),
       nowIso
-    })).toEqual({
+    })).resolves.toEqual({
       accepted: false,
       reason: 'trend.weak_lots_below_min'
     });
   });
 
-  it('mirrors Go same-side and add-on distance gates', () => {
+  it('mirrors Go same-side and add-on distance gates', async () => {
     const store = createInMemoryEaStore();
-    seedStrongTrendState(store);
-    store.savePositions({
+    await seedStrongTrendState(store);
+    await store.savePositions({
       account_id: accountId,
       symbol,
       positions: [{ ticket: 1001, symbol, type: 'BUY', lots: 0.1, open_price: 3335, strategy: 'ai_signal' }]
     });
 
-    expect(evaluateAIApprovePendingGate({
+    await expect(evaluateAIApprovePendingGate({
       store,
       accountId,
       symbol,
       tradePlan: tradePlan(),
       nowIso
-    })).toEqual({
+    })).resolves.toEqual({
       accepted: false,
       reason: 'position.same_side'
     });
 
-    expect(evaluateAIApprovePendingGate({
+    await expect(evaluateAIApprovePendingGate({
       store,
       accountId,
       symbol,
       tradePlan: tradePlan({ add_on: true }),
       nowIso
-    })).toEqual({
+    })).resolves.toEqual({
       accepted: false,
       reason: 'position.add_on_distance'
     });
 
-    expect(evaluateAIApprovePendingGate({
+    await expect(evaluateAIApprovePendingGate({
       store,
       accountId,
       symbol,
       tradePlan: tradePlan({ entry_zone: { min: 3338.1, max: 3338.1 }, add_on: true }),
       nowIso
-    })).toMatchObject({ accepted: true, entry: 3338.1 });
+    })).resolves.toMatchObject({ accepted: true, entry: 3338.1 });
   });
 
-  it('rejects cooldown and far H1 ATR entry distance', () => {
+  it('rejects cooldown and far H1 ATR entry distance', async () => {
     const store = createInMemoryEaStore();
-    seedStrongTrendState(store);
+    await seedStrongTrendState(store);
     const cooldown = createAIApproveCooldown();
     cooldown.mark(symbol, '2026-04-13T07:45:00.000Z');
 
-    expect(evaluateAIApprovePendingGate({
+    await expect(evaluateAIApprovePendingGate({
       store,
       accountId,
       symbol,
       tradePlan: tradePlan(),
       nowIso,
       cooldown
-    })).toEqual({
+    })).resolves.toEqual({
       accepted: false,
       reason: 'cooldown.active'
     });
 
-    expect(evaluateAIApprovePendingGate({
+    await expect(evaluateAIApprovePendingGate({
       store,
       accountId,
       symbol,
       tradePlan: tradePlan({ entry_zone: { min: 3350, max: 3350 } }),
       nowIso
-    })).toEqual({
+    })).resolves.toEqual({
       accepted: false,
       reason: 'entry.too_far_from_market'
     });
@@ -158,8 +158,8 @@ function tradePlan(overrides: EaRecord = {}): EaRecord {
   };
 }
 
-function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 'neutral' } = {}): void {
-  store.saveTick({
+async function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 'neutral' } = {}): Promise<void> {
+  await store.saveTick({
     account_id: accountId,
     symbol,
     bid: 3335.5,
@@ -172,7 +172,7 @@ function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 'neutr
     ? { close: 3336, ema20: 3335, ema50: 3330, adx: 35, atr: 2, rsi: 60 }
     : { close: 3335, ema20: 3335, ema50: 3335, adx: 10, atr: 2, rsi: 50 };
   for (const timeframe of ['D1', 'H4', 'H1', 'M30', 'M15']) {
-    store.saveBars({
+    await store.saveBars({
       account_id: accountId,
       symbol,
       timeframe,

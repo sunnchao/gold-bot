@@ -3,25 +3,25 @@ import { createInMemoryEaStore } from '@gold-bot/persistence';
 import { AnalysisService } from './service.js';
 
 describe('AnalysisService', () => {
-  it('passes the latest stored AI result into replay analysis', () => {
+  it('passes the latest stored AI result into replay analysis', async () => {
     const store = createInMemoryEaStore();
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 95,
       ask: 95
     });
-    store.saveBars({
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
       bars: pullbackBuyBars()
     });
-    store.saveAIResult('90011087', 'XAUUSD', {
+    await store.saveAIResult('90011087', 'XAUUSD', {
       suggested_sl: 93
     });
 
-    const result = new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
+    const result = await new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
 
     expect(result.replay.signal).toMatchObject({
       strategy: 'pullback',
@@ -31,16 +31,16 @@ describe('AnalysisService', () => {
     });
   });
 
-  it('uses the latest H1 close for replay analysis when no current tick exists', () => {
+  it('uses the latest H1 close for replay analysis when no current tick exists', async () => {
     const store = createInMemoryEaStore();
-    store.saveBars({
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
       bars: pullbackBuyBars()
     });
 
-    const result = new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
+    const result = await new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
 
     expect(result.replay.signal).toMatchObject({
       strategy: 'pullback',
@@ -49,28 +49,28 @@ describe('AnalysisService', () => {
     });
   });
 
-  it('passes D1 bars into replay trend scoring', () => {
+  it('passes D1 bars into replay trend scoring', async () => {
     const store = createInMemoryEaStore();
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 95,
       ask: 95
     });
-    store.saveBars({
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
       bars: pullbackBuyBars()
     });
-    store.saveBars({
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'D1',
       bars: d1TrendBars()
     });
 
-    const result = new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
+    const result = await new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
 
     expect(result.replay.signal).toMatchObject({
       strategy: 'pullback',
@@ -79,27 +79,27 @@ describe('AnalysisService', () => {
     });
   });
 
-  it('filters unrelated position symbols before replay conflict checks', () => {
+  it('filters unrelated position symbols before replay conflict checks', async () => {
     const store = createInMemoryEaStore();
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 95,
       ask: 95
     });
-    store.saveBars({
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
       bars: pullbackBuyBars()
     });
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       symbol: 'XAUUSD',
       positions: [{ ticket: 2002, symbol: 'GBPJPY', type: 'BUY', lots: 0.2, open_price: 95.1, profit: 1.5 }]
     });
 
-    const result = new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
+    const result = await new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
 
     expect(result.replay.signal).toMatchObject({
       strategy: 'pullback',

@@ -22,6 +22,8 @@ COPY packages/observability/src ./packages/observability/src
 COPY packages/trading-core/package.json packages/trading-core/tsconfig.json ./packages/trading-core/
 COPY packages/trading-core/src ./packages/trading-core/src
 
+COPY mt4_ea ./mt4_ea
+
 RUN corepack enable && pnpm install --frozen-lockfile && pnpm --filter app-server build
 
 FROM node:24-bookworm-slim AS runtime
@@ -30,6 +32,6 @@ WORKDIR /workspace
 
 COPY --from=builder /workspace /workspace
 
-EXPOSE 3000
+EXPOSE 8880
 
 CMD ["/bin/sh", "-lc", "corepack enable && pnpm --filter app-server start"]

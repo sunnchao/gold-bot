@@ -1,6 +1,5 @@
 import type { EaRecord } from '@gold-bot/persistence';
 import type { HeaderMap } from '@gold-bot/shared-contracts';
-import { parseJsonObject } from '../http/json.js';
 import { error, type JsonResponse } from '../http/response.js';
 import { requireRouteToken } from '../middleware/auth.js';
 
@@ -78,7 +77,7 @@ export function handleIndicatorAlertRoute(request: IndicatorAlertRouteRequest, d
     return error(405, 'method not allowed');
   }
 
-  const parsed = parseJsonObject(request.rawBody);
+  const parsed = parseStrictJsonObject(request.rawBody);
   if (!parsed.ok) {
     return error(400, 'invalid json');
   }
@@ -87,11 +86,12 @@ export function handleIndicatorAlertRoute(request: IndicatorAlertRouteRequest, d
     if (!isGoDecodableIndicatorAlert(parsed.body)) {
       return error(400, 'invalid json');
     }
+    const alert = sanitizeIndicatorAlert(parsed.body);
     return {
       statusCode: 200,
       body: {
         status: 'ok',
-        should_send: deps.alerts.add(parsed.body as IndicatorAlert)
+        should_send: deps.alerts.add(alert)
       }
     };
   }
@@ -128,6 +128,22 @@ const GO_STRING_FIELDS = [
 ] as const;
 
 const GO_NUMBER_FIELDS = ['price', 'confidence'] as const;
+const GO_ALERT_FIELDS = [...GO_STRING_FIELDS, ...GO_NUMBER_FIELDS] as const;
+
+function parseStrictJsonObject(rawBody: string): { ok: true; body: EaRecord } | { ok: false } {
+  if (rawBody.trim().length === 0) {
+    return { ok: false };
+  }
+  try {
+    const parsed = JSON.parse(rawBody) as unknown;
+    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false };
+    }
+    return { ok: true, body: parsed as EaRecord };
+  } catch {
+    return { ok: false };
+  }
+}
 
 function isGoDecodableIndicatorAlert(record: EaRecord): boolean {
   for (const field of GO_STRING_FIELDS) {
@@ -143,6 +159,17 @@ function isGoDecodableIndicatorAlert(record: EaRecord): boolean {
     }
   }
   return true;
+}
+
+function sanitizeIndicatorAlert(record: EaRecord): IndicatorAlert {
+  const alert: EaRecord = {};
+  for (const field of GO_ALERT_FIELDS) {
+    const value = record[field];
+    if (value != null) {
+      alert[field] = value;
+    }
+  }
+  return alert;
 }
 
 function alertKey(alert: IndicatorAlert): string {

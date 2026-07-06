@@ -5,7 +5,7 @@ import { createAppServer } from '../app.js';
 describe('EA lifecycle normalization parity', () => {
   it('rejects register scalar type mismatches like the Go decoder', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store });
+    const server = await createAppServer({ store });
 
     for (const body of [
       { account_id: '90011087', broker: 123 },
@@ -21,12 +21,16 @@ describe('EA lifecycle normalization parity', () => {
       expect(response.statusCode).toBe(400);
       expect(JSON.parse(response.body)).toEqual({ status: 'ERROR', message: 'invalid JSON' });
     }
-    expect(store.getRegistration('90011087')).toBeUndefined();
+    expect(await store.getRegistration('90011087')).toBeUndefined();
   });
 
   it('stores Go heartbeat runtime defaults and rejects boolean type mismatches', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store, nowUnix: () => 1772342400 });
+    const server = await createAppServer({
+      store,
+      nowUnix: () => 1772342400,
+      nowIso: () => '2026-03-01T00:00:00.000Z'
+    });
 
     const accepted = await server.inject({
       method: 'POST',
@@ -34,7 +38,8 @@ describe('EA lifecycle normalization parity', () => {
       body: {
         account_id: '90011087',
         balance: 1000.5,
-        equity: 1100.25
+        equity: 1100.25,
+        server_time: '2026.03.01 08:00:00'
       }
     });
     const rejected = await server.inject({
@@ -48,21 +53,24 @@ describe('EA lifecycle normalization parity', () => {
 
     expect(accepted.statusCode).toBe(200);
     expect(JSON.parse(accepted.body)).toEqual({ status: 'OK', server_time: 1772342400 });
-    expect(store.getHeartbeat('90011087')).toMatchObject({
+    expect(await store.getHeartbeat('90011087')).toMatchObject({
       connected: true,
       market_open: false,
       is_trade_allowed: false,
       balance: 1000.5,
-      equity: 1100.25
+      equity: 1100.25,
+      mt4_server_time: '2026.03.01 08:00:00',
+      last_heartbeat_at: '2026-03-01T00:00:00.000Z',
+      updated_at: '2026-03-01T00:00:00.000Z'
     });
     expect(rejected.statusCode).toBe(400);
     expect(JSON.parse(rejected.body)).toEqual({ status: 'ERROR', message: 'invalid JSON' });
-    expect(store.getHeartbeat('90022000')).toBeUndefined();
+    expect(await store.getHeartbeat('90022000')).toBeUndefined();
   });
 
   it('writes the Go default tick symbol into the stored snapshot and rejects numeric type mismatches', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({ store });
+    const server = await createAppServer({ store });
 
     const accepted = await server.inject({
       method: 'POST',
@@ -84,13 +92,13 @@ describe('EA lifecycle normalization parity', () => {
 
     expect(accepted.statusCode).toBe(200);
     expect(JSON.parse(accepted.body)).toEqual({ status: 'OK' });
-    expect(store.getLatestTick('90011087', 'XAUUSD')).toMatchObject({
+    expect(await store.getLatestTick('90011087', 'XAUUSD')).toMatchObject({
       symbol: 'XAUUSD',
       bid: 3335.55,
       ask: 3335.75
     });
     expect(rejected.statusCode).toBe(400);
     expect(JSON.parse(rejected.body)).toEqual({ status: 'ERROR', message: 'invalid JSON' });
-    expect(store.getLatestTick('90022000', 'XAUUSD')).toBeUndefined();
+    expect(await store.getLatestTick('90022000', 'XAUUSD')).toBeUndefined();
   });
 });

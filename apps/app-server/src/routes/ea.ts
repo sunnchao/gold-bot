@@ -27,10 +27,10 @@ export type EaRouteDeps = {
 export type EaRouteHelpers = {
   stringFieldOrEmpty: (record: EaRecord, field: string) => string;
   symbolOrDefault: (record: EaRecord) => string;
-  validateEaPayload: (path: string, body: EaRecord, store: EaStore) => string | null;
+  validateEaPayload: (path: string, body: EaRecord, store: EaStore) => Promise<string | null>;
 };
 
-export function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, helpers: EaRouteHelpers): JsonResponse {
+export async function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, helpers: EaRouteHelpers): Promise<JsonResponse> {
   if (deps.validTokens != null) {
     const token = extractRouteToken(request.headers, request.url);
     if (token == null || !deps.validTokens.has(token)) {
@@ -53,37 +53,42 @@ export function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, helper
     return error(403, 'token not authorized for account');
   }
 
-  const validationError = helpers.validateEaPayload(request.path, parsed.body, deps.store);
+  const validationError = await helpers.validateEaPayload(request.path, parsed.body, deps.store);
   if (validationError != null) {
     return error(400, validationError);
   }
 
   switch (request.path) {
     case '/register':
-      deps.store.saveRegistration(parsed.body);
+      await deps.store.saveRegistration(parsed.body);
       return ok({ status: 'OK', message: 'registered' });
-    case '/heartbeat':
-      deps.store.saveHeartbeat(parsed.body);
+    case '/heartbeat': {
+      const heartbeatAt = deps.nowIso();
+      parsed.body.mt4_server_time = helpers.stringFieldOrEmpty(parsed.body, 'server_time');
+      parsed.body.last_heartbeat_at = heartbeatAt;
+      parsed.body.updated_at = heartbeatAt;
+      await deps.store.saveHeartbeat(parsed.body);
       return ok({ status: 'OK', server_time: deps.nowUnix() });
+    }
     case '/tick':
-      deps.store.saveTick(parsed.body);
+      await deps.store.saveTick(parsed.body);
       return ok({ status: 'OK' });
     case '/bars':
-      deps.store.saveBars(parsed.body);
+      await deps.store.saveBars(parsed.body);
       deps.onBarsSaved?.(accountId, helpers.symbolOrDefault(parsed.body), helpers.stringFieldOrEmpty(parsed.body, 'timeframe'));
       return ok({
         status: 'OK',
         received: Array.isArray(parsed.body.bars) ? parsed.body.bars.length : 0
       });
     case '/positions':
-      deps.store.savePositions(parsed.body);
+      await deps.store.savePositions(parsed.body);
       deps.onPositionsSaved?.(accountId, helpers.symbolOrDefault(parsed.body));
       return ok({
         status: 'OK',
         count: Array.isArray(parsed.body.positions) ? parsed.body.positions.length : 0
       });
     case '/poll': {
-      const commands = deps.store.pollCommands(accountId);
+      const commands = await deps.store.pollCommands(accountId);
       return ok({
         status: 'OK',
         commands,
@@ -100,7 +105,7 @@ export function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, helper
         deps.nowIso()
       );
       if (deps.onOrderResult == null) {
-        deps.store.saveOrderResult(parsed.body);
+        await deps.store.saveOrderResult(parsed.body);
       }
       return ok({ status: 'OK' });
     default:

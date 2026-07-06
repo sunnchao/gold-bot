@@ -6,36 +6,36 @@ import { createInMemoryEaStore } from '@gold-bot/persistence';
 import { bootstrapTokens } from './tokens.js';
 
 describe('bootstrapTokens', () => {
-  it('seeds admin token from environment variable', () => {
+  it('seeds admin token from environment variable', async () => {
     const store = createInMemoryEaStore();
-    const result = bootstrapTokens(store, 'test-admin-token-123');
+    const result = await bootstrapTokens(store, 'test-admin-token-123');
 
     expect(result.adminTokensSeeded).toBe(1);
     expect(result.legacyTokensImported).toBe(0);
 
-    const tokens = store.listApiTokens();
+    const tokens = await store.listApiTokens();
     expect(tokens).toHaveLength(1);
     expect(tokens[0].token).toBe('test-admin-token-123');
     expect(tokens[0].is_admin).toBe(true);
     expect(tokens[0].name).toBe('env-admin');
   });
 
-  it('skips seeding if admin token already exists', () => {
+  it('skips seeding if admin token already exists', async () => {
     const store = createInMemoryEaStore();
-    store.saveApiToken({
+    await store.saveApiToken({
       token: 'existing-admin',
       name: 'manual',
       is_admin: true,
       accounts: []
     });
 
-    const result = bootstrapTokens(store, 'existing-admin');
+    const result = await bootstrapTokens(store, 'existing-admin');
 
     expect(result.adminTokensSeeded).toBe(0);
-    expect(store.listApiTokens()).toHaveLength(1);
+    expect(await store.listApiTokens()).toHaveLength(1);
   });
 
-  it('imports legacy tokens from JSON file', () => {
+  it('imports legacy tokens from JSON file', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'token-bootstrap-'));
     const tokensPath = join(tmpDir, 'tokens.json');
 
@@ -49,12 +49,12 @@ describe('bootstrapTokens', () => {
       );
 
       const store = createInMemoryEaStore();
-      const result = bootstrapTokens(store, '', tokensPath);
+      const result = await bootstrapTokens(store, '', tokensPath);
 
       expect(result.adminTokensSeeded).toBe(0);
       expect(result.legacyTokensImported).toBe(2);
 
-      const tokens = store.listApiTokens();
+      const tokens = await store.listApiTokens();
       expect(tokens).toHaveLength(2);
       expect(tokens[0].token).toBe('legacy-token-1');
       expect(tokens[0].is_admin).toBe(false);
@@ -65,7 +65,7 @@ describe('bootstrapTokens', () => {
     }
   });
 
-  it('skips legacy tokens that already exist', () => {
+  it('skips legacy tokens that already exist', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'token-bootstrap-'));
     const tokensPath = join(tmpDir, 'tokens.json');
 
@@ -79,31 +79,31 @@ describe('bootstrapTokens', () => {
       );
 
       const store = createInMemoryEaStore();
-      store.saveApiToken({
+      await store.saveApiToken({
         token: 'existing-token',
         name: 'manual',
         is_admin: false,
         accounts: []
       });
 
-      const result = bootstrapTokens(store, '', tokensPath);
+      const result = await bootstrapTokens(store, '', tokensPath);
 
       expect(result.legacyTokensImported).toBe(1);
-      expect(store.listApiTokens()).toHaveLength(2);
+      expect(await store.listApiTokens()).toHaveLength(2);
     } finally {
       rmSync(tmpDir, { recursive: true });
     }
   });
 
-  it('handles missing legacy tokens file gracefully', () => {
+  it('handles missing legacy tokens file gracefully', async () => {
     const store = createInMemoryEaStore();
-    const result = bootstrapTokens(store, '', '/nonexistent/tokens.json');
+    const result = await bootstrapTokens(store, '', '/nonexistent/tokens.json');
 
     expect(result.adminTokensSeeded).toBe(0);
     expect(result.legacyTokensImported).toBe(0);
   });
 
-  it('combines admin token seed and legacy import', () => {
+  it('combines admin token seed and legacy import', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'token-bootstrap-'));
     const tokensPath = join(tmpDir, 'tokens.json');
 
@@ -114,11 +114,11 @@ describe('bootstrapTokens', () => {
       );
 
       const store = createInMemoryEaStore();
-      const result = bootstrapTokens(store, 'admin-token', tokensPath);
+      const result = await bootstrapTokens(store, 'admin-token', tokensPath);
 
       expect(result.adminTokensSeeded).toBe(1);
       expect(result.legacyTokensImported).toBe(1);
-      expect(store.listApiTokens()).toHaveLength(2);
+      expect(await store.listApiTokens()).toHaveLength(2);
     } finally {
       rmSync(tmpDir, { recursive: true });
     }

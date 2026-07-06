@@ -94,10 +94,10 @@ export class ArbitrationManager {
       strategy: stringField(signal, 'strategy')
     };
 
-    this.store.savePendingSignal(pending);
+    await this.store.savePendingSignal(pending);
 
     // The store clones the record and assigns the id internally; read it back to recover the id.
-    const stored = this.findFreshPending(accountId, symbol, this.now().getTime());
+    const stored = await this.findFreshPending(accountId, symbol, this.now().getTime());
     const signalId = stored != null ? numberField(stored, 'id') : 0;
     if (signalId <= 0) {
       const result: ArbitrationResult = { signalId: 0, status: 'timeout', reason: 'save_failed' };
@@ -152,7 +152,7 @@ export class ArbitrationManager {
         return { signalId, status: 'timeout', reason: 'max_wait_exceeded' };
       }
 
-      const current = this.findPending(signalId, accountId, symbol);
+      const current = await this.findPending(signalId, accountId, symbol);
       if (current == null) {
         // signal expired or removed externally
         return { signalId, status: 'timeout', reason: 'expired' };
@@ -168,28 +168,28 @@ export class ArbitrationManager {
     }
   }
 
-  private findPending(signalId: number, accountId: string, symbol: string): EaRecord | undefined {
-    return this.store.getPendingSignalById(accountId, symbol, signalId);
+  private async findPending(signalId: number, accountId: string, symbol: string): Promise<EaRecord | undefined> {
+    return await this.store.getPendingSignalById(accountId, symbol, signalId);
   }
 
-  private findFreshPending(accountId: string, symbol: string, createdAtMs: number): EaRecord | undefined {
-    const signals = this.store.getPendingSignals(accountId, symbol);
+  private async findFreshPending(accountId: string, symbol: string, createdAtMs: number): Promise<EaRecord | undefined> {
+    const signals = await this.store.getPendingSignals(accountId, symbol);
     if (signals.length === 0) return undefined;
     const target = new Date(createdAtMs).toISOString();
     const byCreated = signals.find((entry) => stringField(entry, 'created_at') === target);
     return byCreated ?? signals[0];
   }
 
-  getPendingSignals(accountId: string, symbol: string): EaRecord[] {
-    return this.store.getPendingSignals(accountId, symbol);
+  async getPendingSignals(accountId: string, symbol: string): Promise<EaRecord[]> {
+    return await this.store.getPendingSignals(accountId, symbol);
   }
 
-  updateArbitrationResult(signalId: number, result: 'approved' | 'rejected', reason: string): boolean {
-    return this.store.updatePendingSignalArbitration(signalId, result, reason);
+  async updateArbitrationResult(signalId: number, result: 'approved' | 'rejected', reason: string): Promise<boolean> {
+    return await this.store.updatePendingSignalArbitration(signalId, result, reason);
   }
 
-  expireStaleSignals(): number {
-    return this.store.expirePendingSignals(this.now().toISOString());
+  async expireStaleSignals(): Promise<number> {
+    return await this.store.expirePendingSignals(this.now().toISOString());
   }
 
   activeCount(): number {

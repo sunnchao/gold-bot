@@ -8,8 +8,14 @@ describe('loadGoldBotEnv', () => {
       GB_APP_SERVER_HOST: '127.0.0.1',
       GB_APP_SERVER_PORT: 3000,
       GB_EA_STORE_SQLITE_PATH: '',
-      GB_NODE_SHADOW_MODE: true,
-      GB_ADMIN_TOKEN: ''
+      GB_EA_STORE_POSTGRES_DSN: '',
+      GB_NODE_SHADOW_MODE: false,
+      GB_ADMIN_TOKEN: '',
+      GB_LEGACY_TOKENS_PATH: '',
+      GB_REDIS_URL: '',
+      GB_DISCORD_WEBHOOK_URL: '',
+      GB_FEISHU_WEBHOOK_URL: '',
+      GB_FEISHU_SECRET: ''
     });
   });
 
@@ -28,8 +34,14 @@ describe('loadGoldBotEnv', () => {
       GB_APP_SERVER_HOST: '0.0.0.0',
       GB_APP_SERVER_PORT: 3100,
       GB_EA_STORE_SQLITE_PATH: '/tmp/gold-bot-ea.sqlite',
+      GB_EA_STORE_POSTGRES_DSN: '',
       GB_NODE_SHADOW_MODE: false,
-      GB_ADMIN_TOKEN: 'gb-admin-token'
+      GB_ADMIN_TOKEN: 'gb-admin-token',
+      GB_LEGACY_TOKENS_PATH: '',
+      GB_REDIS_URL: '',
+      GB_DISCORD_WEBHOOK_URL: '',
+      GB_FEISHU_WEBHOOK_URL: '',
+      GB_FEISHU_SECRET: ''
     });
   });
 

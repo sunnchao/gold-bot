@@ -31,15 +31,15 @@ export type AdminRouteDeps = {
 };
 
 export type AdminRouteHelpers = {
-  tradingCoreAnalysis: (store: EaStore, accountId: string, symbol: string, timestamp: string) => EaRecord;
-  accountDetail: (store: EaStore, accountId: string, timestamp: string) => EaRecord;
-  accountSummaries: (store: EaStore) => EaRecord[];
+  tradingCoreAnalysis: (store: EaStore, accountId: string, symbol: string, timestamp: string) => Promise<EaRecord>;
+  accountDetail: (store: EaStore, accountId: string, timestamp: string) => Promise<EaRecord>;
+  accountSummaries: (store: EaStore) => Promise<EaRecord[]>;
   overviewCards: (accounts: EaRecord[]) => EaRecord[];
-  buildAuditBody: (store: EaStore, timestamp: string) => EaRecord;
+  buildAuditBody: (store: EaStore, timestamp: string) => Promise<EaRecord>;
   eventStreamSnapshot: (store: EaStore, timestamp: string) => string;
 };
 
-export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDeps, helpers: AdminRouteHelpers): JsonResponse {
+export async function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDeps, helpers: AdminRouteHelpers): Promise<JsonResponse> {
   const parts = request.path.split('/').filter(Boolean);
 
   const isAccountBoundRead =
@@ -91,7 +91,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
     }
     return {
       statusCode: 200,
-      body: helpers.tradingCoreAnalysis(deps.store, parts[3], parts[4], deps.nowIso())
+      body: await helpers.tradingCoreAnalysis(deps.store, parts[3], parts[4], deps.nowIso())
     };
   }
   if (
@@ -120,7 +120,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       body: {
         status: 'OK',
         account_id: parts[3],
-        decision_events: deps.store.listDecisionEvents({
+        decision_events: await deps.store.listDecisionEvents({
           account_id: parts[3],
           symbol: query.get('symbol')?.trim() ?? '',
           status: query.get('status')?.trim() ?? '',
@@ -141,7 +141,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       statusCode: 200,
       body: {
         status: 'OK',
-        expired: deps.store.expirePendingSignals(deps.nowIso())
+        expired: await deps.store.expirePendingSignals(deps.nowIso())
       }
     };
   }
@@ -166,7 +166,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
     if (result !== 'approved' && result !== 'rejected') {
       return error(400, "result must be 'approved' or 'rejected'");
     }
-    if (!deps.store.updatePendingSignalArbitration(signalId, result, reason)) {
+    if (!(await deps.store.updatePendingSignalArbitration(signalId, result, reason))) {
       return error(500, `update arbitration for signal ${signalId}: not found`);
     }
     return {
@@ -203,7 +203,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       deps.validTokens?.add(token);
       deps.tokenAccounts?.set(token, new Set(accounts));
       deps.tokenRecords.set(token, { token, name, accounts, isAdmin: false });
-      deps.store.saveApiToken({ token, name, accounts, is_admin: false });
+      await deps.store.saveApiToken({ token, name, accounts, is_admin: false });
       return {
         statusCode: 200,
         body: {
@@ -232,7 +232,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
     deps.validTokens?.delete(token);
     deps.tokenAccounts?.delete(token);
     deps.adminTokens.delete(token);
-    deps.store.deleteApiToken(token);
+    await deps.store.deleteApiToken(token);
     return {
       statusCode: 200,
       body: {
@@ -264,19 +264,19 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
   if (parts[0] === 'api' && parts[1] === 'symbols' && parts[2] != null && parts.length === 3) {
     return {
       statusCode: 200,
-      body: deps.store.listSymbols(parts[2])
+      body: await deps.store.listSymbols(parts[2])
     };
   }
   if (parts[0] === 'api' && parts[1] === 'ai_symbols' && parts[2] != null && parts.length === 3) {
     return {
       statusCode: 200,
-      body: deps.store.listAISymbols(parts[2])
+      body: await deps.store.listAISymbols(parts[2])
     };
   }
   if (parts[0] === 'api' && parts[1] === 'pending_signal' && parts[2] != null && parts[3] != null && parts.length === 4) {
     return {
       statusCode: 200,
-      body: deps.store.getPendingSignals(parts[2], parts[3])
+      body: await deps.store.getPendingSignals(parts[2], parts[3])
     };
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'accounts' && parts.length === 3) {
@@ -284,21 +284,21 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       statusCode: 200,
       body: {
         status: 'OK',
-        accounts: helpers.accountSummaries(deps.store)
+        accounts: await helpers.accountSummaries(deps.store)
       }
     };
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'accounts' && parts[3] != null && parts.length === 4) {
-    if (!hasAccountSnapshot(deps.store, parts[3])) {
+    if (!(await hasAccountSnapshot(deps.store, parts[3]))) {
       return error(500, `account ${parts[3]} not found`);
     }
     return {
       statusCode: 200,
-      body: helpers.accountDetail(deps.store, parts[3], deps.nowIso())
+      body: await helpers.accountDetail(deps.store, parts[3], deps.nowIso())
     };
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'overview' && parts.length === 3) {
-    const accounts = helpers.accountSummaries(deps.store);
+    const accounts = await helpers.accountSummaries(deps.store);
     return {
       statusCode: 200,
       body: {
@@ -312,7 +312,7 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'audit' && parts.length === 3) {
     return {
       statusCode: 200,
-      body: helpers.buildAuditBody(deps.store, deps.nowIso())
+      body: await helpers.buildAuditBody(deps.store, deps.nowIso())
     };
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'events' && parts[3] === 'stream' && parts.length === 4) {
@@ -320,15 +320,15 @@ export function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDep
       statusCode: 200,
       headers: eventStreamHeaders(),
       body: null,
-      rawBody: helpers.eventStreamSnapshot(deps.store, deps.nowIso())
+      rawBody: await helpers.eventStreamSnapshot(deps.store, deps.nowIso())
     };
   }
 
   return error(404, 'not found');
 }
 
-function hasAccountSnapshot(store: EaStore, accountId: string): boolean {
-  return store.listAccountIds().includes(accountId);
+async function hasAccountSnapshot(store: EaStore, accountId: string): Promise<boolean> {
+  return (await store.listAccountIds()).includes(accountId);
 }
 
 function parseDecisionLimit(raw: string): number | undefined | null {

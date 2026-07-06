@@ -17,72 +17,64 @@ export class SchedulerService {
     private readonly nowIso: () => string = () => new Date().toISOString()
   ) {}
 
-  enqueueAnalysis(accountId: string, symbol: string, timeframe = ''): void {
-    if (!isLiveStrategyTimeframe(timeframe) || !this.canRunLiveAnalysis(accountId)) {
+  async enqueueAnalysis(accountId: string, symbol: string, timeframe = ''): Promise<void> {
+    if (!isLiveStrategyTimeframe(timeframe) || !(await this.canRunLiveAnalysis(accountId))) {
       return;
     }
-    this.publishReplaySignal(accountId, symbol);
+    await this.publishReplaySignal(accountId, symbol);
   }
 
-  enqueuePositionReview(accountId: string, symbol: string): void {
-    if (!this.canRunLiveAnalysis(accountId)) {
+  async enqueuePositionReview(accountId: string, symbol: string): Promise<void> {
+    if (!(await this.canRunLiveAnalysis(accountId))) {
       return;
     }
-    const result = this.analysis.analyzeAccountSymbol(accountId, symbol);
-    this.analysis.persistPositionStates?.(accountId, symbol, result.replay.position_states ?? null);
-    this.shadow?.recordRuntimeSnapshot({
-      account_id: accountId,
-      symbol,
-      source: 'position_review',
-      signal: result.replay.signal,
-      command: result.replay.position_commands,
-    });
-    this.queueReplaySignal(accountId, symbol, result.replay.signal, 'positions');
+    const result = await this.analysis.analyzeAccountSymbol(accountId, symbol);
+    if (this.shadow) {
+      await this.shadow.recordRuntimeSnapshot({
+        account_id: accountId,
+        symbol,
+        source: 'position_review',
+        signal: result.replay.signal,
+        command: result.replay.position_commands,
+      });
+    }
+    await this.queueReplaySignal(accountId, symbol, result.replay.signal, 'positions');
     if (result.replay.signal == null) {
-      this.queueAIStopLossAdjust(accountId, symbol);
-    }
-    for (const command of (result.replay.position_commands ?? [])) {
-      const candidate = this.positionCommandCandidate(accountId, symbol, command as unknown as EaRecord);
-      if (this.store?.getCommand(candidate.command_id ?? '') != null) {
-        continue;
-      }
-      if (this.isAIStopLossCooldownActive(accountId, symbol, candidate)) {
-        continue;
-      }
-      this.commandLifecycle.acceptCandidate(accountId, candidate);
-      this.rememberAIStopLossQueued(accountId, symbol, candidate);
+      await this.queueAIStopLossAdjust(accountId, symbol);
     }
   }
 
-  private canRunLiveAnalysis(accountId: string): boolean {
-    const heartbeat = this.store?.getHeartbeat(accountId);
-    return explicitBoolean(heartbeat ?? {}, 'market_open') === true && explicitBoolean(heartbeat ?? {}, 'is_trade_allowed') === true;
+  private async canRunLiveAnalysis(accountId: string): Promise<boolean> {
+    const heartbeat = (await this.store?.getHeartbeat(accountId)) ?? {};
+    return explicitBoolean(heartbeat, 'market_open') === true && explicitBoolean(heartbeat, 'is_trade_allowed') === true;
   }
 
-  private publishReplaySignal(accountId: string, symbol: string): void {
-    const result = this.analysis.analyzeAccountSymbol(accountId, symbol);
-    this.shadow?.recordRuntimeSnapshot({
-      account_id: accountId,
-      symbol,
-      source: 'ea_analysis',
-      signal: result.replay.signal,
-      command: null,
-    });
-    this.queueReplaySignal(accountId, symbol, result.replay.signal, 'bars');
+  private async publishReplaySignal(accountId: string, symbol: string): Promise<void> {
+    const result = await this.analysis.analyzeAccountSymbol(accountId, symbol);
+    if (this.shadow) {
+      await this.shadow.recordRuntimeSnapshot({
+        account_id: accountId,
+        symbol,
+        source: 'ea_analysis',
+        signal: result.replay.signal,
+        command: null,
+      });
+    }
+    await this.queueReplaySignal(accountId, symbol, result.replay.signal, 'bars');
   }
 
-  private queueReplaySignal(accountId: string, symbol: string, signal: unknown, analysisMode: 'bars' | 'positions'): void {
+  private async queueReplaySignal(accountId: string, symbol: string, signal: unknown, analysisMode: 'bars' | 'positions'): Promise<void> {
     if (signal == null) {
       return;
     }
     const signalRecord = signal as EaRecord;
-    const bars = this.barsByTimeframe(accountId, symbol);
+    const bars = await this.barsByTimeframe(accountId, symbol);
     const triggerKey = liveDecisionKey(stringField(signalRecord, 'strategy'), bars);
     const commandId = liveCommandId(accountId, symbol, signalRecord, triggerKey);
-    if (this.store?.getCommand(commandId) != null) {
+    if ((await this.store?.getCommand(commandId)) != null) {
       return;
     }
-    const currentPrice = liveCurrentPrice(this.store?.getLatestTick(accountId, symbol) ?? {}, bars);
+    const currentPrice = liveCurrentPrice((await this.store?.getLatestTick(accountId, symbol)) ?? {}, bars);
     const atr = latestAtr(bars.H1) || numberField(signalRecord, 'atr');
     const orderType = orderTypeForSignal(currentPrice, numberField(signalRecord, 'entry'), atr, stringField(signalRecord, 'side'));
     const candidate: CommandCandidate = {
@@ -113,34 +105,34 @@ export class SchedulerService {
     if (orderType !== 'market') {
       candidate.expiration = unixSeconds(this.nowIso()) + 24 * 60 * 60;
     }
-    this.commandLifecycle.acceptCandidate(accountId, candidate);
+    await this.commandLifecycle.acceptCandidate(accountId, candidate);
   }
 
-  private queueAIStopLossAdjust(accountId: string, symbol: string): void {
-    const aiResult = this.latestAIResult(accountId, symbol);
+  private async queueAIStopLossAdjust(accountId: string, symbol: string): Promise<void> {
+    const aiResult = await this.latestAIResult(accountId, symbol);
     const aiSL = numberField(aiResult ?? {}, 'suggested_sl') || numberField(aiResult ?? {}, 'suggestedSL');
     if (aiResult == null || aiSL <= 0) {
       return;
     }
-    const bars = this.barsByTimeframe(accountId, symbol);
+    const bars = await this.barsByTimeframe(accountId, symbol);
     const atr = latestAtr(bars.H1);
     if (atr <= 0) {
       return;
     }
-    const currentPrice = liveCurrentPrice(this.store?.getLatestTick(accountId, symbol) ?? {}, bars);
+    const currentPrice = liveCurrentPrice((await this.store?.getLatestTick(accountId, symbol)) ?? {}, bars);
     if (currentPrice <= 0) {
       return;
     }
     const decisionId = aiDecisionId(aiResult);
-    for (const position of this.store?.getPositions?.(accountId, symbol) ?? []) {
+    for (const position of (await this.store?.getPositions?.(accountId, symbol)) ?? []) {
       const candidate = this.aiStopLossCommandCandidate(accountId, symbol, position, aiSL, atr, currentPrice, decisionId);
-      if (candidate == null || this.store?.getCommand(candidate.command_id ?? '') != null) {
+      if (candidate == null || (await this.store?.getCommand(candidate.command_id ?? '')) != null) {
         continue;
       }
       if (this.isAIStopLossCooldownActive(accountId, symbol, candidate)) {
         continue;
       }
-      this.commandLifecycle.acceptCandidate(accountId, candidate);
+      await this.commandLifecycle.acceptCandidate(accountId, candidate);
       this.rememberAIStopLossQueued(accountId, symbol, candidate);
     }
   }
@@ -172,8 +164,9 @@ export class SchedulerService {
     );
   }
 
-  private latestAIResult(accountId: string, symbol: string): EaRecord | undefined {
-    return this.store?.getAIResults?.(accountId).find((result) => stringField(result, 'symbol') === symbol);
+  private async latestAIResult(accountId: string, symbol: string): Promise<EaRecord | undefined> {
+    const results = (await this.store?.getAIResults?.(accountId)) ?? [];
+    return results.find((result) => stringField(result, 'symbol') === symbol);
   }
 
   private aiStopLossCommandCandidate(
@@ -236,52 +229,14 @@ export class SchedulerService {
     return candidate;
   }
 
-  private positionCommandCandidate(accountId: string, symbol: string, command: EaRecord): CommandCandidate {
-    const action = stringField(command, 'action');
-    const ticket = numberField(command, 'ticket');
-    const reason = stringField(command, 'reason');
-    const aiStopLoss = isAIStopLossModify(command);
-    const commandId = positionCommandId(accountId, symbol, command, this.nowIso());
-    const candidate: CommandCandidate = {
-      command_id: commandId,
-      action,
-      source: aiStopLoss ? 'ai_stop_loss' : 'position_review',
-      symbol,
-      ticket,
-      reason,
-      analysis_mode: 'positions'
-    };
-    const lots = numberField(command, 'lots');
-    if (lots > 0) {
-      candidate.lots = lots;
-    }
-    const newSl = numberField(command, 'new_sl');
-    if (newSl > 0) {
-      candidate.new_sl = newSl;
-    }
-    if (aiStopLoss) {
-      candidate.sl = numberField(command, 'sl') || newSl;
-      candidate.tp = numberField(command, 'tp');
-      candidate.old_sl = numberField(command, 'old_sl');
-      candidate.distance = numberField(command, 'distance');
-      candidate.atr = numberField(command, 'atr');
-      candidate.trigger_time = stringField(command, 'trigger_time') || this.nowIso();
-      const decisionId = stringField(command, 'decision_id');
-      if (decisionId.length > 0) {
-        candidate.decision_id = decisionId;
-      }
-    }
-    return candidate;
-  }
-
-  private barsByTimeframe(accountId: string, symbol: string): Record<string, EaRecord[]> {
+  private async barsByTimeframe(accountId: string, symbol: string): Promise<Record<string, EaRecord[]>> {
     return {
-      H1: this.store?.getBars(accountId, symbol, 'H1') ?? [],
-      H4: this.store?.getBars(accountId, symbol, 'H4') ?? [],
-      M30: this.store?.getBars(accountId, symbol, 'M30') ?? [],
-      M15: this.store?.getBars(accountId, symbol, 'M15') ?? [],
-      M5: this.store?.getBars(accountId, symbol, 'M5') ?? [],
-      M1: this.store?.getBars(accountId, symbol, 'M1') ?? []
+      H1: (await this.store?.getBars(accountId, symbol, 'H1')) ?? [],
+      H4: (await this.store?.getBars(accountId, symbol, 'H4')) ?? [],
+      M30: (await this.store?.getBars(accountId, symbol, 'M30')) ?? [],
+      M15: (await this.store?.getBars(accountId, symbol, 'M15')) ?? [],
+      M5: (await this.store?.getBars(accountId, symbol, 'M5')) ?? [],
+      M1: (await this.store?.getBars(accountId, symbol, 'M1')) ?? []
     };
   }
 }
@@ -339,24 +294,6 @@ function liveCommandId(accountId: string, symbol: string, signal: EaRecord, deci
   return `live_${createHash('sha1').update(seed).digest('hex').slice(0, 16)}`;
 }
 
-function positionCommandId(accountId: string, symbol: string, command: EaRecord, nowIso: string): string {
-  const ticket = numberField(command, 'ticket');
-  if (isAIStopLossModify(command)) {
-    return aiStopLossCommandId(accountId, symbol, ticket, nowIso);
-  }
-  const seed = [
-    accountId,
-    symbol.toUpperCase(),
-    ticket,
-    stringField(command, 'action'),
-    stringField(command, 'reason'),
-    numberField(command, 'lots'),
-    numberField(command, 'new_sl'),
-    utcMinuteKey(nowIso)
-  ].join('|');
-  return `pos_${createHash('sha1').update(seed).digest('hex').slice(0, 16)}`;
-}
-
 function aiStopLossCommandId(accountId: string, symbol: string, ticket: number, nowIso: string): string {
   const seed = [accountId, symbol.toUpperCase(), ticket, utcMinuteKey(nowIso)].join('|');
   return `mod_${createHash('sha1').update(seed).digest('hex').slice(0, 16)}`;
@@ -370,17 +307,6 @@ function aiDecisionId(aiResult: EaRecord): string {
 function recordField(record: EaRecord, field: string): EaRecord | undefined {
   const value = record[field];
   return value != null && typeof value === 'object' && !Array.isArray(value) ? value as EaRecord : undefined;
-}
-
-function isAIStopLossModify(command: EaRecord): boolean {
-  return stringField(command, 'action') === 'MODIFY' && (
-    hasFiniteNumber(command, 'sl') ||
-    hasFiniteNumber(command, 'tp') ||
-    hasFiniteNumber(command, 'old_sl') ||
-    hasFiniteNumber(command, 'distance') ||
-    hasFiniteNumber(command, 'atr') ||
-    stringField(command, 'decision_id').length > 0
-  );
 }
 
 function utcMinuteKey(value: string): string {
@@ -442,11 +368,6 @@ function unixSeconds(value: string): number {
 function numberField(record: EaRecord, field: string): number {
   const value = record[field];
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
-}
-
-function hasFiniteNumber(record: EaRecord, field: string): boolean {
-  const value = record[field];
-  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function stringField(record: EaRecord, field: string): string {

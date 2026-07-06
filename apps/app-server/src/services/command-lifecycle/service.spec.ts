@@ -4,13 +4,13 @@ import { CommandLifecycleService } from './service.js';
 import { ShadowService } from '../shadow/service.js';
 
 describe('CommandLifecycleService', () => {
-  it('keeps candidates shadow_only when the account is not in cutover mode', () => {
+  it('keeps candidates shadow_only when the account is not in cutover mode', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'shadow');
+    await store.setRuntimeMode('90011087', 'shadow');
     const shadow = new ShadowService(store, () => '2026-04-13T08:00:00.000Z');
     const service = new CommandLifecycleService(store, 'oracle', shadow);
 
-    const stored = service.acceptCandidate('90011087', {
+    const stored = await service.acceptCandidate('90011087', {
       command_id: 'shadow_cmd',
       action: 'SIGNAL',
       source: 'ai_result',
@@ -19,8 +19,8 @@ describe('CommandLifecycleService', () => {
     });
 
     expect(stored.status).toBe('shadow_only');
-    expect(store.pollCommands('90011087')).toEqual([]);
-    expect(store.listShadowComparisons()).toEqual([
+    expect(await store.pollCommands('90011087')).toEqual([]);
+    expect(await store.listShadowComparisons()).toEqual([
       {
         account_id: '90011087',
         symbol: 'XAUUSD',
@@ -34,12 +34,12 @@ describe('CommandLifecycleService', () => {
     ]);
   });
 
-  it('queues candidates only for cutover accounts', () => {
+  it('queues candidates only for cutover accounts', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'cutover');
+    await store.setRuntimeMode('90011087', 'cutover');
     const service = new CommandLifecycleService(store);
 
-    const stored = service.acceptCandidate('90011087', {
+    const stored = await service.acceptCandidate('90011087', {
       command_id: 'cutover_cmd',
       action: 'SIGNAL',
       source: 'ai_result',
@@ -48,9 +48,9 @@ describe('CommandLifecycleService', () => {
     });
 
     expect(stored.status).toBe('queued');
-    expect(store.pollCommands('90011087')).toHaveLength(1);
-    expect(store.listShadowComparisons()).toHaveLength(1);
-    expect(store.listShadowComparisons()[0]).toMatchObject({
+    expect(await store.pollCommands('90011087')).toHaveLength(1);
+    expect(await store.listShadowComparisons()).toHaveLength(1);
+    expect((await store.listShadowComparisons())[0]).toMatchObject({
       account_id: '90011087',
       symbol: 'XAUUSD',
       oracle_compared: false,
@@ -58,13 +58,13 @@ describe('CommandLifecycleService', () => {
     });
   });
 
-  it('records AI approve commands under the AI result shadow source', () => {
+  it('records AI approve commands under the AI result shadow source', async () => {
     const store = createInMemoryEaStore();
-    store.setRuntimeMode('90011087', 'shadow');
+    await store.setRuntimeMode('90011087', 'shadow');
     const shadow = new ShadowService(store, () => '2026-04-13T08:00:00.000Z');
     const service = new CommandLifecycleService(store, 'oracle', shadow);
 
-    const stored = service.acceptCandidate('90011087', {
+    const stored = await service.acceptCandidate('90011087', {
       command_id: 'ai_pending_90011087_XAUUSD_buy',
       action: 'SIGNAL',
       source: 'ai_approve',
@@ -73,7 +73,7 @@ describe('CommandLifecycleService', () => {
     });
 
     expect(stored.source).toBe('ai_approve');
-    expect(store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ai_result')).toEqual(
+    expect(await store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ai_result')).toEqual(
       expect.objectContaining({
         account_id: '90011087',
         symbol: 'XAUUSD',
@@ -81,7 +81,7 @@ describe('CommandLifecycleService', () => {
         command: expect.objectContaining({ source: 'ai_approve' })
       })
     );
-    expect(store.listShadowComparisons()).toEqual([
+    expect(await store.listShadowComparisons()).toEqual([
       expect.objectContaining({
         account_id: '90011087',
         symbol: 'XAUUSD',
@@ -90,11 +90,11 @@ describe('CommandLifecycleService', () => {
     ]);
   });
 
-  it('uses the configured shadow default when no explicit runtime mode is stored', () => {
+  it('uses the configured shadow default when no explicit runtime mode is stored', async () => {
     const store = createInMemoryEaStore();
     const service = new CommandLifecycleService(store, 'shadow');
 
-    const stored = service.acceptCandidate('90011087', {
+    const stored = await service.acceptCandidate('90011087', {
       command_id: 'default_shadow_cmd',
       action: 'SIGNAL',
       source: 'ai_result',
@@ -103,6 +103,24 @@ describe('CommandLifecycleService', () => {
     });
 
     expect(stored.status).toBe('shadow_only');
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
+  });
+
+  it('uses the configured cutover default when no explicit runtime mode is stored', async () => {
+    const store = createInMemoryEaStore();
+    const service = new CommandLifecycleService(store, 'cutover');
+
+    const stored = await service.acceptCandidate('90011087', {
+      command_id: 'default_cutover_cmd',
+      action: 'SIGNAL',
+      source: 'live_strategy',
+      symbol: 'XAUUSD',
+      strategy: 'pullback'
+    });
+
+    expect(stored.status).toBe('queued');
+    expect(await store.pollCommands('90011087')).toEqual([
+      expect.objectContaining({ command_id: 'default_cutover_cmd', action: 'SIGNAL' })
+    ]);
   });
 });

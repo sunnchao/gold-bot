@@ -1,4 +1,5 @@
 import type { EaRecord, EaStore } from '@gold-bot/persistence';
+import type { DiscordNotifier, FeishuNotifier } from '@gold-bot/notifications';
 import type { AIApproveCooldown } from '../services/ai-approve/gate.js';
 import type { CommandLifecycleService } from '../services/command-lifecycle/service.js';
 import type { ShadowService } from '../services/shadow/service.js';
@@ -25,14 +26,16 @@ export type AIRouteDeps = {
   validTokens: Set<string> | null;
   tokenAccounts: Map<string, Set<string>> | null;
   adminTokens: Set<string>;
+  discord: DiscordNotifier | null;
+  feishu: FeishuNotifier | null;
 };
 
 export type AIRouteHelpers = {
-  analysisPayload: (store: EaStore, accountId: string, symbol: string, timestamp: string) => EaRecord;
-  handleAIResultRoute: (method: string, accountId: string, symbol: string, rawBody: string, deps: AIRouteDeps) => JsonResponse;
+  analysisPayload: (store: EaStore, accountId: string, symbol: string, timestamp: string) => Promise<EaRecord>;
+  handleAIResultRoute: (method: string, accountId: string, symbol: string, rawBody: string, deps: AIRouteDeps) => Promise<JsonResponse>;
 };
 
-export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helpers: AIRouteHelpers): JsonResponse {
+export async function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helpers: AIRouteHelpers): Promise<JsonResponse> {
   const parts = request.path.split('/').filter(Boolean);
 
   if (parts[0] === 'api' && parts[1] === 'analysis_payload' && parts[2] != null && parts.length === 3) {
@@ -45,7 +48,7 @@ export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helper
     }
     return {
       statusCode: 200,
-      body: helpers.analysisPayload(deps.store, parts[2], 'XAUUSD', deps.nowIso())
+      body: await helpers.analysisPayload(deps.store, parts[2], 'XAUUSD', deps.nowIso())
     };
   }
   if (parts[0] === 'api' && parts[1] === 'v2' && parts[2] === 'analysis_payload' && parts[3] != null && parts[4] != null && parts.length === 5) {
@@ -58,7 +61,7 @@ export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helper
     }
     return {
       statusCode: 200,
-      body: helpers.analysisPayload(deps.store, parts[3], parts[4], deps.nowIso())
+      body: await helpers.analysisPayload(deps.store, parts[3], parts[4], deps.nowIso())
     };
   }
   if (parts[0] === 'api' && parts[1] === 'ai_result' && parts[2] != null && parts.length === 3) {
@@ -69,7 +72,7 @@ export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helper
     if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, parts[2], deps.adminTokens)) {
       return error(403, 'forbidden');
     }
-    return helpers.handleAIResultRoute(request.method, parts[2], 'XAUUSD', request.rawBody, deps);
+    return await helpers.handleAIResultRoute(request.method, parts[2], 'XAUUSD', request.rawBody, deps);
   }
   if (parts[0] === 'api' && parts[1] === 'v2' && parts[2] === 'ai_result' && parts[3] != null && parts[4] != null && parts.length === 5) {
     const tokenResult = requireRouteToken(deps.validTokens, request.headers, request.url);
@@ -79,7 +82,7 @@ export function handleAIRoute(request: AIRouteRequest, deps: AIRouteDeps, helper
     if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, parts[3], deps.adminTokens)) {
       return error(403, 'forbidden');
     }
-    return helpers.handleAIResultRoute(request.method, parts[3], parts[4], request.rawBody, deps);
+    return await helpers.handleAIResultRoute(request.method, parts[3], parts[4], request.rawBody, deps);
   }
 
   return error(404, 'not found');

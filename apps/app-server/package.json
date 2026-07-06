@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@gold-bot/config": "workspace:*",
+    "@gold-bot/notifications": "workspace:*",
     "@gold-bot/observability": "workspace:*",
     "@gold-bot/persistence": "workspace:*",
     "@gold-bot/shared-contracts": "workspace:*",

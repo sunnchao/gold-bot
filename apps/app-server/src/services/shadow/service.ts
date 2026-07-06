@@ -23,9 +23,9 @@ export class ShadowService {
     private readonly nowIso: () => string
   ) {}
 
-  metrics(): ShadowMetrics {
-    const comparisons = this.store.listShadowComparisons();
-    const totals = this.store.summarizeShadowComparisons();
+  async metrics(): Promise<ShadowMetrics> {
+    const comparisons = await this.store.listShadowComparisons();
+    const totals = await this.store.summarizeShadowComparisons();
     return {
       status: 'OK',
       generated_at: this.nowIso(),
@@ -39,15 +39,15 @@ export class ShadowService {
     };
   }
 
-  qualification(): ShadowQualification {
-    const metrics = this.metrics();
+  async qualification(): Promise<ShadowQualification> {
+    const metrics = await this.metrics();
     return {
       ...metrics,
       summary: metrics.report.checks
     };
   }
 
-  recordRuntimeSnapshot(input: ShadowRuntimeSnapshotInput): ShadowRuntimeSnapshot {
+  async recordRuntimeSnapshot(input: ShadowRuntimeSnapshotInput): Promise<void> {
     const snapshot: ShadowRuntimeSnapshot = {
       account_id: input.account_id,
       symbol: input.symbol,
@@ -56,14 +56,13 @@ export class ShadowService {
       command: input.command,
       created_at: input.created_at ?? this.nowIso()
     };
-    this.store.saveShadowSnapshot(snapshot);
-    return snapshot;
+    await this.store.saveShadowSnapshot(snapshot);
   }
 
-  recordOracleComparison(input: ShadowComparisonInput): ShadowComparison {
+  async recordOracleComparison(input: ShadowComparisonInput): Promise<ShadowComparison> {
     const runtimeSnapshot =
       input.node ??
-      this.store.getLatestShadowSnapshot(input.account_id, input.symbol, input.source) ??
+      (await this.store.getLatestShadowSnapshot(input.account_id, input.symbol, input.source)) ??
       null;
     if (runtimeSnapshot == null) {
       throw new Error('shadow runtime snapshot not found');
@@ -78,7 +77,7 @@ export class ShadowService {
       source: input.source,
       created_at: input.created_at ?? this.nowIso()
     };
-    this.store.recordShadowComparison(comparison);
+    await this.store.recordShadowComparison(comparison);
     return comparison;
   }
 }

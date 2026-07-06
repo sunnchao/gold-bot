@@ -12,6 +12,8 @@ export type { RuntimeStateRecord } from './runtime-state.js';
 export type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary, ShadowRuntimeSnapshot } from './shadow.js';
 export type { StoredApiToken, StoredApiTokenInput } from './tokens.js';
 export { runMigrations, loadMigrations, type Migration } from './migrate.js';
+export { createPostgresEaStore } from './postgres.js';
+export { runMigrationsPostgres, type PostgresClient } from './migrate.js';
 
 export const persistenceStatus = {
   writesLiveCommands: false
@@ -36,53 +38,53 @@ export type PositionStateRecord = {
 };
 
 export type EaStore = {
-  saveRegistration(payload: EaRecord): void;
-  getRegistration(accountId: string): EaRecord | undefined;
-  saveHeartbeat(payload: EaRecord): void;
-  getHeartbeat(accountId: string): EaRecord | undefined;
-  saveTick(payload: EaRecord): void;
-  getLatestTick(accountId: string, symbol: string): EaRecord | undefined;
-  saveBars(payload: EaRecord): void;
-  getBars(accountId: string, symbol: string, timeframe: string): EaRecord[];
-  savePositions(payload: EaRecord): void;
-  getPositions(accountId: string, symbol?: string): EaRecord[];
-  savePositionState(accountId: string, symbol: string, state: PositionStateRecord): void;
-  loadPositionStates(accountId: string, symbol: string): PositionStateRecord[];
-  deleteStalePositionStates(accountId: string, symbol: string, activeTickets: number[]): void;
-  saveOrderResult(payload: EaRecord): void;
-  getOrderResults(accountId: string): EaRecord[];
-  enqueueCommand(accountId: string, command: EaCommand): void;
-  saveCommandCandidate(accountId: string, candidate: CommandCandidate): StoredCommand;
-  promoteCommand(commandId: string): void;
-  demoteCommandToShadowOnly(commandId: string): void;
-  getCommand(commandId: string): StoredCommand | undefined;
-  listCommands(accountId: string): StoredCommand[];
-  hasActiveAIApprovePending(accountId: string, symbol: string, side: string, nowIso: string): boolean;
-  getRuntimeMode(accountId: string): RuntimeMode;
-  setRuntimeMode(accountId: string, mode: RuntimeMode): void;
-  reconcileCommandResult(accountId: string, commandId: string, result: string, ticket?: number, errorText?: string, createdAt?: string): boolean;
-  pollCommands(accountId: string): EaCommand[];
-  recordShadowComparison(payload: ShadowComparison): void;
-  listShadowComparisons(filter?: ShadowComparisonFilter): ShadowComparison[];
-  summarizeShadowComparisons(filter?: ShadowComparisonFilter): ShadowComparisonSummary;
-  saveShadowSnapshot(payload: ShadowRuntimeSnapshot): void;
-  getLatestShadowSnapshot(accountId: string, symbol: string, source: CommandSource): ShadowRuntimeSnapshot | undefined;
-  recordDecisionEvent(payload: DecisionEventInput): void;
-  listDecisionEvents(filter: DecisionEventFilter): DecisionEvent[];
-  savePendingSignal(payload: EaRecord): void;
-  getPendingSignals(accountId: string, symbol: string): EaRecord[];
-  getPendingSignalById(accountId: string, symbol: string, id: number): EaRecord | undefined;
-  updatePendingSignalArbitration(id: number, result: string, reason: string): boolean;
-  expirePendingSignals(nowIso: string): number;
-  saveAIResult(accountId: string, symbol: string, payload: EaRecord): void;
-  getAIResults(accountId: string): EaRecord[];
-  saveApiToken(payload: StoredApiTokenInput): void;
-  listApiTokens(): StoredApiToken[];
-  deleteApiToken(token: string): boolean;
-  listAccountIds(): string[];
-  listSymbols(accountId: string): string[];
-  listAISymbols(accountId: string): string[];
-  close?(): void;
+  saveRegistration(payload: EaRecord): Promise<void>;
+  getRegistration(accountId: string): Promise<EaRecord | undefined>;
+  saveHeartbeat(payload: EaRecord): Promise<void>;
+  getHeartbeat(accountId: string): Promise<EaRecord | undefined>;
+  saveTick(payload: EaRecord): Promise<void>;
+  getLatestTick(accountId: string, symbol: string): Promise<EaRecord | undefined>;
+  saveBars(payload: EaRecord): Promise<void>;
+  getBars(accountId: string, symbol: string, timeframe: string): Promise<EaRecord[]>;
+  savePositions(payload: EaRecord): Promise<void>;
+  getPositions(accountId: string, symbol?: string): Promise<EaRecord[]>;
+  savePositionState(accountId: string, symbol: string, state: PositionStateRecord): Promise<void>;
+  loadPositionStates(accountId: string, symbol: string): Promise<PositionStateRecord[]>;
+  deleteStalePositionStates(accountId: string, symbol: string, activeTickets: number[]): Promise<void>;
+  saveOrderResult(payload: EaRecord): Promise<void>;
+  getOrderResults(accountId: string): Promise<EaRecord[]>;
+  enqueueCommand(accountId: string, command: EaCommand): Promise<void>;
+  saveCommandCandidate(accountId: string, candidate: CommandCandidate): Promise<StoredCommand>;
+  promoteCommand(commandId: string): Promise<void>;
+  demoteCommandToShadowOnly(commandId: string): Promise<void>;
+  getCommand(commandId: string): Promise<StoredCommand | undefined>;
+  listCommands(accountId: string): Promise<StoredCommand[]>;
+  hasActiveAIApprovePending(accountId: string, symbol: string, side: string, nowIso: string): Promise<boolean>;
+  getRuntimeMode(accountId: string): Promise<RuntimeMode>;
+  setRuntimeMode(accountId: string, mode: RuntimeMode): Promise<void>;
+  reconcileCommandResult(accountId: string, commandId: string, result: string, ticket?: number, errorText?: string, createdAt?: string): Promise<boolean>;
+  pollCommands(accountId: string): Promise<EaCommand[]>;
+  recordShadowComparison(payload: ShadowComparison): Promise<void>;
+  listShadowComparisons(filter?: ShadowComparisonFilter): Promise<ShadowComparison[]>;
+  summarizeShadowComparisons(filter?: ShadowComparisonFilter): Promise<ShadowComparisonSummary>;
+  saveShadowSnapshot(payload: ShadowRuntimeSnapshot): Promise<void>;
+  getLatestShadowSnapshot(accountId: string, symbol: string, source: CommandSource): Promise<ShadowRuntimeSnapshot | undefined>;
+  recordDecisionEvent(payload: DecisionEventInput): Promise<void>;
+  listDecisionEvents(filter: DecisionEventFilter): Promise<DecisionEvent[]>;
+  savePendingSignal(payload: EaRecord): Promise<void>;
+  getPendingSignals(accountId: string, symbol: string): Promise<EaRecord[]>;
+  getPendingSignalById(accountId: string, symbol: string, id: number): Promise<EaRecord | undefined>;
+  updatePendingSignalArbitration(id: number, result: string, reason: string): Promise<boolean>;
+  expirePendingSignals(nowIso: string): Promise<number>;
+  saveAIResult(accountId: string, symbol: string, payload: EaRecord): Promise<void>;
+  getAIResults(accountId: string): Promise<EaRecord[]>;
+  saveApiToken(payload: StoredApiTokenInput): Promise<void>;
+  listApiTokens(): Promise<StoredApiToken[]>;
+  deleteApiToken(token: string): Promise<boolean>;
+  listAccountIds(): Promise<string[]>;
+  listSymbols(accountId: string): Promise<string[]>;
+  listAISymbols(accountId: string): Promise<string[]>;
+  close?(): Promise<void>;
 };
 
 type StoreState = {
@@ -129,36 +131,36 @@ export function createInMemoryEaStore(): EaStore {
   };
 
   return {
-    saveRegistration(payload) {
+    async saveRegistration(payload) {
       state.registrations.set(accountId(payload), cloneRecord(payload));
     },
-    getRegistration(accountId) {
+    async getRegistration(accountId) {
       return cloneOptionalRecord(state.registrations.get(accountId));
     },
-    saveHeartbeat(payload) {
+    async saveHeartbeat(payload) {
       state.heartbeats.set(accountId(payload), cloneRecord(payload));
     },
-    getHeartbeat(accountId) {
+    async getHeartbeat(accountId) {
       return cloneOptionalRecord(state.heartbeats.get(accountId));
     },
-    saveTick(payload) {
+    async saveTick(payload) {
       state.ticks.set(symbolKey(accountId(payload), symbolOrDefault(payload)), cloneRecord(payload));
     },
-    getLatestTick(accountId, symbol) {
+    async getLatestTick(accountId, symbol) {
       return cloneOptionalRecord(state.ticks.get(symbolKey(accountId, symbol)));
     },
-    saveBars(payload) {
+    async saveBars(payload) {
       const bars = Array.isArray(payload.bars) ? payload.bars : [];
       state.bars.set(barKey(accountId(payload), symbolOrDefault(payload), stringField(payload, 'timeframe')), cloneArray(bars));
     },
-    getBars(accountId, symbol, timeframe) {
+    async getBars(accountId, symbol, timeframe) {
       return cloneArray(state.bars.get(barKey(accountId, symbol, timeframe)) ?? []);
     },
-    savePositions(payload) {
+    async savePositions(payload) {
       const positions = Array.isArray(payload.positions) ? payload.positions : [];
       state.positions.set(symbolKey(accountId(payload), symbolOrDefault(payload)), cloneArray(positions));
     },
-    getPositions(accountId, symbol) {
+    async getPositions(accountId, symbol) {
       if (symbol != null && symbol.length > 0) {
         return cloneArray(state.positions.get(symbolKey(accountId, symbol)) ?? []);
       }
@@ -166,16 +168,16 @@ export function createInMemoryEaStore(): EaStore {
         .filter(([key]) => key.startsWith(`${accountId}:`))
         .flatMap(([, positions]) => cloneArray(positions));
     },
-    savePositionState(accountId, symbol, positionState) {
+    async savePositionState(accountId, symbol, positionState) {
       state.positionStates.set(positionStateKey(accountId, symbol, positionState.ticket), normalizePositionState(positionState));
     },
-    loadPositionStates(accountId, symbol) {
+    async loadPositionStates(accountId, symbol) {
       return Array.from(state.positionStates.entries())
         .filter(([key]) => key.startsWith(`${accountId}:${symbol}:`))
         .map(([, positionState]) => structuredClone(positionState))
         .sort((left, right) => left.ticket - right.ticket);
     },
-    deleteStalePositionStates(accountId, symbol, activeTickets) {
+    async deleteStalePositionStates(accountId, symbol, activeTickets) {
       const active = new Set(activeTickets);
       for (const key of state.positionStates.keys()) {
         const [stateAccount, stateSymbol, ticket] = key.split(':');
@@ -184,20 +186,20 @@ export function createInMemoryEaStore(): EaStore {
         }
       }
     },
-    saveOrderResult(payload) {
+    async saveOrderResult(payload) {
       const key = accountId(payload);
       const current = state.orderResults.get(key) ?? [];
       state.orderResults.set(key, [...current, cloneRecord(payload)]);
     },
-    getOrderResults(accountId) {
+    async getOrderResults(accountId) {
       return cloneArray(state.orderResults.get(accountId) ?? []);
     },
-    enqueueCommand(accountId, command) {
+    async enqueueCommand(accountId, command) {
       const stored = createStoredCommand(accountId, cloneCommand(command), 'queued');
       state.commands.set(stored.command_id, stored);
       recordCommandDecisionInMemory(state, stored, 'command_enqueued', 'pending', stored.created_at);
     },
-    saveCommandCandidate(accountId, candidate) {
+    async saveCommandCandidate(accountId, candidate) {
       const commandId = typeof candidate.command_id === 'string' && candidate.command_id.length > 0
         ? candidate.command_id
         : `cmd_${state.nextCommandId++}`;
@@ -210,7 +212,7 @@ export function createInMemoryEaStore(): EaStore {
       state.commands.set(commandId, stored);
       return structuredClone(stored);
     },
-    promoteCommand(commandId) {
+    async promoteCommand(commandId) {
       const command = state.commands.get(commandId);
       if (command != null) {
         const wasQueued = command.status === 'queued';
@@ -220,32 +222,32 @@ export function createInMemoryEaStore(): EaStore {
         }
       }
     },
-    demoteCommandToShadowOnly(commandId) {
+    async demoteCommandToShadowOnly(commandId) {
       const command = state.commands.get(commandId);
       if (command != null) {
         command.status = 'shadow_only';
       }
     },
-    getCommand(commandId) {
+    async getCommand(commandId) {
       return cloneStoredCommand(state.commands.get(commandId));
     },
-    listCommands(accountId) {
+    async listCommands(accountId) {
       return Array.from(state.commands.values())
         .filter((command) => command.account_id === accountId)
         .sort((left, right) => left.created_at.localeCompare(right.created_at))
         .map(cloneStoredCommand)
         .filter((command): command is StoredCommand => command != null);
     },
-    hasActiveAIApprovePending(accountId, symbol, side, nowIso) {
+    async hasActiveAIApprovePending(accountId, symbol, side, nowIso) {
       return Array.from(state.commands.values()).some((command) => isActiveAIApprovePendingCommand(command, accountId, symbol, side, nowIso));
     },
-    getRuntimeMode(accountId) {
+    async getRuntimeMode(accountId) {
       return state.runtimeModes.get(accountId) ?? 'oracle';
     },
-    setRuntimeMode(accountId, mode) {
+    async setRuntimeMode(accountId, mode) {
       state.runtimeModes.set(accountId, mode);
     },
-    reconcileCommandResult(accountId, commandId, result, ticket, errorText = '', createdAt = currentTimestamp()) {
+    async reconcileCommandResult(accountId, commandId, result, ticket, errorText = '', createdAt = currentTimestamp()) {
       const command = state.commands.get(commandId);
       if (command == null || command.account_id !== accountId || command.status !== 'delivered') {
         return false;
@@ -261,7 +263,7 @@ export function createInMemoryEaStore(): EaStore {
       } else {
         command.failed_at = createdAt;
       }
-      this.saveOrderResult({
+      await this.saveOrderResult({
         account_id: accountId,
         command_id: commandId,
         result,
@@ -275,7 +277,7 @@ export function createInMemoryEaStore(): EaStore {
       }
       return true;
     },
-    pollCommands(accountId) {
+    async pollCommands(accountId) {
       const pending = Array.from(state.commands.values()).filter((command) => command.account_id === accountId && command.status === 'queued');
       const deliveredAt = currentTimestamp();
       for (const command of pending) {
@@ -285,29 +287,29 @@ export function createInMemoryEaStore(): EaStore {
       }
       return pending.map(toEaCommand);
     },
-    recordShadowComparison(payload) {
+    async recordShadowComparison(payload) {
       state.shadowComparisons.push(structuredClone(payload));
     },
-    listShadowComparisons(filter) {
+    async listShadowComparisons(filter) {
       return structuredClone(filterShadowComparisons(state.shadowComparisons, filter));
     },
-    summarizeShadowComparisons(filter) {
+    async summarizeShadowComparisons(filter) {
       return summarizeShadowComparisons(filterShadowComparisons(state.shadowComparisons, filter));
     },
-    saveShadowSnapshot(payload) {
+    async saveShadowSnapshot(payload) {
       state.shadowSnapshots.set(shadowSnapshotKey(payload.account_id, payload.symbol, payload.source), structuredClone(payload));
     },
-    getLatestShadowSnapshot(accountId, symbol, source) {
+    async getLatestShadowSnapshot(accountId, symbol, source) {
       const snapshot = state.shadowSnapshots.get(shadowSnapshotKey(accountId, symbol, source));
       return snapshot == null ? undefined : structuredClone(snapshot);
     },
-    recordDecisionEvent(payload) {
+    async recordDecisionEvent(payload) {
       state.decisionEvents.push(normalizeDecisionEvent(payload, state.nextDecisionEventId++));
     },
-    listDecisionEvents(filter) {
+    async listDecisionEvents(filter) {
       return structuredClone(filterDecisionEvents(state.decisionEvents, filter));
     },
-    savePendingSignal(payload) {
+    async savePendingSignal(payload) {
       const key = symbolKey(accountId(payload), symbolOrDefault(payload));
       const signal = normalizePendingSignal(payload);
       const explicitId = numericField(signal, 'id');
@@ -325,39 +327,39 @@ export function createInMemoryEaStore(): EaStore {
         state.decisionEvents.push(normalizeDecisionEvent(event, state.nextDecisionEventId++));
       }
     },
-    getPendingSignals(accountId, symbol) {
+    async getPendingSignals(accountId, symbol) {
       return pendingSignalsNewestFirst(state.pendingSignals.get(symbolKey(accountId, symbol)) ?? []);
     },
-    getPendingSignalById(accountId, symbol, id) {
+    async getPendingSignalById(accountId, symbol, id) {
       const entries = state.pendingSignals.get(symbolKey(accountId, symbol)) ?? [];
       const found = entries.find((entry) => numericField(entry, 'id') === id);
       return found == null ? undefined : structuredClone(found);
     },
-    updatePendingSignalArbitration(id, result, reason) {
+    async updatePendingSignalArbitration(id, result, reason) {
       return updatePendingSignalInMemory(state.pendingSignals, id, result, reason);
     },
-    expirePendingSignals(nowIso) {
+    async expirePendingSignals(nowIso) {
       return expirePendingSignalsInMemory(state.pendingSignals, nowIso);
     },
-    saveAIResult(accountId, symbol, payload) {
+    async saveAIResult(accountId, symbol, payload) {
       state.aiResults.set(symbolKey(accountId, symbol), { account_id: accountId, symbol, ...cloneRecord(payload) });
     },
-    getAIResults(accountId) {
+    async getAIResults(accountId) {
       return Array.from(state.aiResults.entries())
         .filter(([key]) => key.startsWith(`${accountId}:`))
         .map(([, result]) => cloneRecord(result));
     },
-    saveApiToken(payload) {
+    async saveApiToken(payload) {
       const token = normalizeApiToken(payload);
       state.apiTokens.set(token.token, token);
     },
-    listApiTokens() {
+    async listApiTokens() {
       return Array.from(state.apiTokens.values()).map((token) => structuredClone(token));
     },
-    deleteApiToken(token) {
+    async deleteApiToken(token) {
       return state.apiTokens.delete(token);
     },
-    listAccountIds() {
+    async listAccountIds() {
       const out: string[] = [];
       for (const key of [
         ...state.registrations.keys(),
@@ -374,7 +376,7 @@ export function createInMemoryEaStore(): EaStore {
       }
       return out;
     },
-    listSymbols(accountId) {
+    async listSymbols(accountId) {
       const out: string[] = [];
       for (const key of state.ticks.keys()) {
         appendSymbolFromKey(out, key, accountId);
@@ -387,7 +389,7 @@ export function createInMemoryEaStore(): EaStore {
       }
       return out;
     },
-    listAISymbols(accountId) {
+    async listAISymbols(accountId) {
       const registrationSymbols = stringArrayField(state.registrations.get(accountId), 'ai_symbols');
       if (registrationSymbols.length > 0) {
         return registrationSymbols;
@@ -396,7 +398,7 @@ export function createInMemoryEaStore(): EaStore {
       if (heartbeatSymbols.length > 0) {
         return heartbeatSymbols;
       }
-      const fallback = this.listSymbols(accountId).sort();
+      const fallback = (await this.listSymbols(accountId)).sort();
       return fallback;
     }
   };
@@ -696,41 +698,41 @@ export function createSqliteEaStore(path: string): EaStore {
   const deleteApiToken = db.prepare(`DELETE FROM tokens WHERE token = ?`);
 
   return {
-    saveRegistration(payload) {
+    async saveRegistration(payload) {
       saveSnapshot.run('registration', accountId(payload), '', '', toJson(payload));
     },
-    getRegistration(accountId) {
+    async getRegistration(accountId) {
       return snapshotRecord(getSnapshot, 'registration', accountId, '', '');
     },
-    saveHeartbeat(payload) {
+    async saveHeartbeat(payload) {
       saveSnapshot.run('heartbeat', accountId(payload), '', '', toJson(payload));
     },
-    getHeartbeat(accountId) {
+    async getHeartbeat(accountId) {
       return snapshotRecord(getSnapshot, 'heartbeat', accountId, '', '');
     },
-    saveTick(payload) {
+    async saveTick(payload) {
       saveSnapshot.run('tick', accountId(payload), symbolOrDefault(payload), '', toJson(payload));
     },
-    getLatestTick(accountId, symbol) {
+    async getLatestTick(accountId, symbol) {
       return snapshotRecord(getSnapshot, 'tick', accountId, symbol, '');
     },
-    saveBars(payload) {
+    async saveBars(payload) {
       saveSnapshot.run('bars', accountId(payload), symbolOrDefault(payload), stringField(payload, 'timeframe'), toJson(payload));
     },
-    getBars(accountId, symbol, timeframe) {
+    async getBars(accountId, symbol, timeframe) {
       return (snapshotRecord(getSnapshot, 'bars', accountId, symbol, timeframe)?.bars as EaRecord[] | undefined) ?? [];
     },
-    savePositions(payload) {
+    async savePositions(payload) {
       saveSnapshot.run('positions', accountId(payload), symbolOrDefault(payload), '', toJson(payload));
     },
-    getPositions(accountId, symbol) {
+    async getPositions(accountId, symbol) {
       if (symbol != null && symbol.length > 0) {
         return (snapshotRecord(getSnapshot, 'positions', accountId, symbol, '')?.positions as EaRecord[] | undefined) ?? [];
       }
       const rows = snapshotRows(db, 'positions', accountId);
       return rows.flatMap((row) => (Array.isArray(row.positions) ? (row.positions as EaRecord[]) : []));
     },
-    savePositionState(accountId, symbol, state) {
+    async savePositionState(accountId, symbol, state) {
       const normalized = normalizePositionState(state);
       upsertPositionState.run(
         accountId,
@@ -745,10 +747,10 @@ export function createSqliteEaStore(path: string): EaStore {
         normalized.last_modify_time
       );
     },
-    loadPositionStates(accountId, symbol) {
+    async loadPositionStates(accountId, symbol) {
       return (selectPositionStates.all(accountId, symbol) as PositionStateRow[]).map(positionStateFromRow);
     },
-    deleteStalePositionStates(accountId, symbol, activeTickets) {
+    async deleteStalePositionStates(accountId, symbol, activeTickets) {
       if (activeTickets.length === 0) {
         deletePositionStatesForSymbol.run(accountId, symbol);
         return;
@@ -759,13 +761,13 @@ export function createSqliteEaStore(path: string): EaStore {
         WHERE account_id = ? AND symbol = ? AND ticket NOT IN (${placeholders})
       `).run(accountId, symbol, ...activeTickets);
     },
-    saveOrderResult(payload) {
+    async saveOrderResult(payload) {
       insertEvent.run('order_result', accountId(payload), '', toJson(payload), 1);
     },
-    getOrderResults(accountId) {
+    async getOrderResults(accountId) {
       return eventPayloads(selectEventsAnyDelivery, 'order_result', accountId);
     },
-    enqueueCommand(accountId, command) {
+    async enqueueCommand(accountId, command) {
       const stored = createStoredCommand(accountId, cloneCommand(command), 'queued');
       insertRuntimeCommand.run(
         stored.command_id,
@@ -780,7 +782,7 @@ export function createSqliteEaStore(path: string): EaStore {
       );
       recordCommandDecisionInSqlite(insertDecisionEvent, stored, 'command_enqueued', 'pending', stored.created_at);
     },
-    saveCommandCandidate(accountId, candidate) {
+    async saveCommandCandidate(accountId, candidate) {
       const commandId = typeof candidate.command_id === 'string' && candidate.command_id.length > 0 ? candidate.command_id : `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const stored = createStoredCommand(accountId, {
         ...cloneRecord(candidate),
@@ -801,7 +803,7 @@ export function createSqliteEaStore(path: string): EaStore {
       );
       return stored;
     },
-    promoteCommand(commandId) {
+    async promoteCommand(commandId) {
       const row = selectRuntimeCommand.get(commandId) as RuntimeCommandRow | undefined;
       const command = row == null ? undefined : runtimeCommandFromRow(commandId, row);
       updateRuntimeCommandStatus.run('queued', '', '', commandId);
@@ -809,29 +811,29 @@ export function createSqliteEaStore(path: string): EaStore {
         recordCommandDecisionInSqlite(insertDecisionEvent, command, 'command_enqueued', 'pending', command.created_at);
       }
     },
-    demoteCommandToShadowOnly(commandId) {
+    async demoteCommandToShadowOnly(commandId) {
       updateRuntimeCommandStatus.run('shadow_only', '', '', commandId);
     },
-    getCommand(commandId) {
+    async getCommand(commandId) {
       const row = selectRuntimeCommand.get(commandId) as RuntimeCommandRow | undefined;
       return row == null ? undefined : runtimeCommandFromRow(commandId, row);
     },
-    listCommands(accountId) {
+    async listCommands(accountId) {
       return (selectRuntimeCommandsByAccount.all(accountId) as RuntimeCommandListRow[]).map((row) => runtimeCommandFromListRow(row));
     },
-    hasActiveAIApprovePending(accountId, symbol, side, nowIso) {
+    async hasActiveAIApprovePending(accountId, symbol, side, nowIso) {
       return (selectQueuedRuntimeCommands.all(accountId) as RuntimeCommandListRow[])
         .map((row) => runtimeCommandFromListRow(row))
         .some((command) => isActiveAIApprovePendingCommand(command, accountId, symbol, side, nowIso));
     },
-    getRuntimeMode(accountId) {
+    async getRuntimeMode(accountId) {
       const row = selectRuntimeState.get(accountId) as { mode?: string } | undefined;
       return row != null && typeof row.mode === 'string' && isRuntimeMode(row.mode) ? row.mode : 'oracle';
     },
-    setRuntimeMode(accountId, mode) {
+    async setRuntimeMode(accountId, mode) {
       upsertRuntimeState.run(accountId, mode, mode === 'cutover' ? 1 : 0);
     },
-    reconcileCommandResult(accountId, commandId, result, ticket, errorText = '', createdAt = currentTimestamp()) {
+    async reconcileCommandResult(accountId, commandId, result, ticket, errorText = '', createdAt = currentTimestamp()) {
       const normalizedTicket = ticket ?? 0;
       const update = isAckResult(result) ? ackRuntimeCommandResult : failRuntimeCommandResult;
       const updateResult = update.run(result, normalizedTicket, errorText, createdAt, commandId, accountId);
@@ -866,7 +868,7 @@ export function createSqliteEaStore(path: string): EaStore {
       }
       return true;
     },
-    pollCommands(accountId) {
+    async pollCommands(accountId) {
       const rows = selectQueuedRuntimeCommands.all(accountId) as RuntimeCommandListRow[];
       const delivered: StoredCommand[] = [];
       const deliveredAt = currentTimestamp();
@@ -878,7 +880,7 @@ export function createSqliteEaStore(path: string): EaStore {
       }
       return delivered.map(toEaCommand);
     },
-    recordShadowComparison(payload) {
+    async recordShadowComparison(payload) {
       insertShadowComparison.run(
         payload.account_id,
         payload.symbol,
@@ -890,7 +892,7 @@ export function createSqliteEaStore(path: string): EaStore {
         payload.created_at
       );
     },
-    listShadowComparisons(filter) {
+    async listShadowComparisons(filter) {
       const comparisons: ShadowComparison[] = (selectShadowComparisons.all() as Array<{
         account_id: string;
         symbol: string;
@@ -912,17 +914,17 @@ export function createSqliteEaStore(path: string): EaStore {
       }));
       return filterShadowComparisons(comparisons, filter);
     },
-    summarizeShadowComparisons(filter) {
-      return summarizeShadowComparisons(this.listShadowComparisons(filter));
+    async summarizeShadowComparisons(filter) {
+      return summarizeShadowComparisons(await this.listShadowComparisons(filter));
     },
-    saveShadowSnapshot(payload) {
+    async saveShadowSnapshot(payload) {
       upsertShadowSnapshot.run(payload.account_id, payload.symbol, payload.source, toJson(payload));
     },
-    getLatestShadowSnapshot(accountId, symbol, source) {
+    async getLatestShadowSnapshot(accountId, symbol, source) {
       const row = selectShadowSnapshot.get(accountId, symbol, source) as { payload_json?: string } | undefined;
       return typeof row?.payload_json === 'string' ? (fromJson(row.payload_json) as ShadowRuntimeSnapshot) : undefined;
     },
-    recordDecisionEvent(payload) {
+    async recordDecisionEvent(payload) {
       const event = normalizeDecisionEvent(payload, 0);
       insertDecisionEvent.run(
         event.decision_id,
@@ -936,10 +938,10 @@ export function createSqliteEaStore(path: string): EaStore {
         event.created_at
       );
     },
-    listDecisionEvents(filter) {
+    async listDecisionEvents(filter) {
       return selectDecisionEvents(db, filter);
     },
-    savePendingSignal(payload) {
+    async savePendingSignal(payload) {
       const signal = normalizePendingSignal(payload);
       if (numericField(signal, 'id') > 0) {
         replacePendingSignalInSqlite(db, signal);
@@ -952,27 +954,27 @@ export function createSqliteEaStore(path: string): EaStore {
         insertDecisionEventRecord(insertDecisionEvent, event);
       }
     },
-    getPendingSignals(accountId, symbol) {
+    async getPendingSignals(accountId, symbol) {
       return pendingSignalsNewestFirst(eventPayloads(selectEventsBySymbol, 'pending_signal', accountId, symbol));
     },
-    getPendingSignalById(accountId, symbol, id) {
+    async getPendingSignalById(accountId, symbol, id) {
       const payloads = eventPayloads(selectEventsBySymbol, 'pending_signal', accountId, symbol);
       const found = payloads.find((entry) => numericField(entry, 'id') === id);
       return found == null ? undefined : structuredClone(found);
     },
-    updatePendingSignalArbitration(id, result, reason) {
+    async updatePendingSignalArbitration(id, result, reason) {
       return updatePendingSignalInSqlite(db, id, result, reason);
     },
-    expirePendingSignals(nowIso) {
+    async expirePendingSignals(nowIso) {
       return expirePendingSignalsInSqlite(db, nowIso);
     },
-    saveAIResult(accountId, symbol, payload) {
+    async saveAIResult(accountId, symbol, payload) {
       saveSnapshot.run('ai_result', accountId, symbol, '', toJson({ account_id: accountId, symbol, ...payload }));
     },
-    getAIResults(accountId) {
+    async getAIResults(accountId) {
       return eventPayloads(selectSnapshotsByKindAccount, 'ai_result', accountId);
     },
-    saveApiToken(payload) {
+    async saveApiToken(payload) {
       const token = normalizeApiToken(payload);
       upsertApiToken.run(token.token, token.name, token.is_admin ? 1 : 0, token.created_at);
       deleteApiTokenAccounts.run(token.token);
@@ -980,7 +982,7 @@ export function createSqliteEaStore(path: string): EaStore {
         insertApiTokenAccount.run(token.token, account);
       }
     },
-    listApiTokens() {
+    async listApiTokens() {
       return (selectApiTokens.all() as Array<{ token: string; name: string; is_admin: number; created_at: string }>).map((row) => ({
         token: row.token,
         name: row.name,
@@ -989,12 +991,12 @@ export function createSqliteEaStore(path: string): EaStore {
         created_at: row.created_at
       }));
     },
-    deleteApiToken(token) {
+    async deleteApiToken(token) {
       deleteApiTokenAccounts.run(token);
       const result = deleteApiToken.run(token);
       return result.changes > 0;
     },
-    listAccountIds() {
+    async listAccountIds() {
       const out: string[] = [];
       for (const row of selectSnapshotAccounts.all() as Array<{ account_id: string }>) {
         appendUnique(out, row.account_id);
@@ -1004,22 +1006,22 @@ export function createSqliteEaStore(path: string): EaStore {
       }
       return out;
     },
-    listSymbols(accountId) {
+    async listSymbols(accountId) {
       const out: string[] = [];
       for (const row of selectSnapshotSymbols.all(accountId) as Array<{ symbol: string }>) {
         appendUnique(out, row.symbol);
       }
       return out;
     },
-    listAISymbols(accountId) {
-      const registrationSymbols = stringArrayField(this.getRegistration(accountId), 'ai_symbols');
+    async listAISymbols(accountId) {
+      const registrationSymbols = stringArrayField(await this.getRegistration(accountId), 'ai_symbols');
       if (registrationSymbols.length > 0) {
         return registrationSymbols;
       }
-      const heartbeatSymbols = stringArrayField(this.getHeartbeat(accountId), 'ai_symbols');
-      return heartbeatSymbols.length > 0 ? heartbeatSymbols : this.listSymbols(accountId).sort();
+      const heartbeatSymbols = stringArrayField(await this.getHeartbeat(accountId), 'ai_symbols');
+      return heartbeatSymbols.length > 0 ? heartbeatSymbols : (await this.listSymbols(accountId)).sort();
     },
-    close() {
+    async close() {
       db.close();
     }
   };

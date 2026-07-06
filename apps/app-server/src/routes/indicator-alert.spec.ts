@@ -49,6 +49,24 @@ describe('indicator alert route', () => {
     expect(recent).toEqual([original]);
     expect(poll.body).toEqual({ status: 'ok', count: 1, alerts: [original] });
   });
+
+  it('rejects Go decoder-incompatible indicator alert payloads without caching them', () => {
+    const alerts = createIndicatorAlertCache(() => 1772342400000);
+    const deps: IndicatorAlertRouteDeps = {
+      validTokens: new Set([routeToken]),
+      alerts
+    };
+
+    const invalidStore = handleIndicatorAlertRoute(rawRequest('/indicator_alert/store', '[]'), deps);
+    const invalidPoll = handleIndicatorAlertRoute(rawRequest('/indicator_alert/poll', JSON.stringify({ account_id: 123 })), deps);
+    const poll = handleIndicatorAlertRoute(pollRequest(), deps);
+
+    expect(invalidStore.statusCode).toBe(400);
+    expect(invalidStore.body).toEqual({ status: 'ERROR', message: 'invalid json' });
+    expect(invalidPoll.statusCode).toBe(400);
+    expect(invalidPoll.body).toEqual({ status: 'ERROR', message: 'invalid json' });
+    expect(poll.body).toEqual({ status: 'ok', count: 0, alerts: [] });
+  });
 });
 
 function storeRequest(alert: IndicatorAlert): IndicatorAlertRouteRequest {
@@ -68,5 +86,15 @@ function pollRequest(): IndicatorAlertRouteRequest {
     headers: { 'X-API-Token': routeToken },
     url: '/indicator_alert/poll',
     rawBody: JSON.stringify({ account_id: 'ignored-by-go' })
+  };
+}
+
+function rawRequest(path: '/indicator_alert/store' | '/indicator_alert/poll', rawBody: string): IndicatorAlertRouteRequest {
+  return {
+    method: 'POST',
+    path,
+    headers: { 'X-API-Token': routeToken },
+    url: path,
+    rawBody
   };
 }

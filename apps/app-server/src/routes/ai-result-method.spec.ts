@@ -8,7 +8,7 @@ const token = 'fixture-user-token';
 describe('AI result method parity', () => {
   it('accepts non-POST ai_result requests like the Go handler', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({
+    const server = await createAppServer({
       store,
       validTokens: [token],
       tokenAccounts: { [token]: [accountId] },
@@ -27,7 +27,7 @@ describe('AI result method parity', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ status: 'OK', received: true });
-    expect(store.getAIResults(accountId)).toContainEqual(expect.objectContaining({
+    expect(await store.getAIResults(accountId)).toContainEqual(expect.objectContaining({
       symbol: 'XAUUSD',
       bias: 'bullish',
       confidence: 82
@@ -36,7 +36,7 @@ describe('AI result method parity', () => {
 
   it('accepts non-POST v2 ai_result requests like the Go handler', async () => {
     const store = createInMemoryEaStore();
-    const server = createAppServer({
+    const server = await createAppServer({
       store,
       validTokens: [token],
       tokenAccounts: { [token]: [accountId] },
@@ -55,7 +55,7 @@ describe('AI result method parity', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ status: 'OK', received: true });
-    expect(store.getAIResults(accountId)).toContainEqual(expect.objectContaining({
+    expect(await store.getAIResults(accountId)).toContainEqual(expect.objectContaining({
       symbol: 'GBPJPY',
       bias: 'bearish',
       confidence: 64

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createInMemoryEaStore, createSqliteEaStore, persistenceStatus, type EaCommand } from './index.js';
 
-function withAdvancingDate<T>(startIso: string, stepMs: number, callback: () => T): T {
+async function withAdvancingDate<T>(startIso: string, stepMs: number, callback: () => T | Promise<T>): Promise<T> {
   const RealDate = Date;
   const startMs = RealDate.parse(startIso);
   let calls = 0;
@@ -26,7 +26,7 @@ function withAdvancingDate<T>(startIso: string, stepMs: number, callback: () => 
   }
   vi.stubGlobal('Date', AdvancingDate);
   try {
-    return callback();
+    return await callback();
   } finally {
     vi.unstubAllGlobals();
   }
@@ -37,49 +37,49 @@ describe('persistence scaffold', () => {
     expect(persistenceStatus.writesLiveCommands).toBe(false);
   });
 
-  it('stores EA lifecycle snapshots by account', () => {
+  it('stores EA lifecycle snapshots by account', async () => {
     const store = createInMemoryEaStore();
 
-    store.saveRegistration({
+    await store.saveRegistration({
       account_id: '90011087',
       broker: 'Demo Broker',
       ai_symbols: ['XAUUSD', 'GBPJPY']
     });
-    store.saveHeartbeat({
+    await store.saveHeartbeat({
       account_id: '90011087',
       balance: 1000.5,
       equity: 1100.25,
       ai_symbols: ['XAUUSD']
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
       bid: 3335.5,
       ask: 3335.8
     });
-    store.saveBars({
+    await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
       timeframe: 'H1',
       bars: [{ time: '2026.04.13 07:00', open: 3331.25, high: 3337.1, low: 3330.9, close: 3335.75 }]
     });
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       positions: [{ ticket: 1001, symbol: 'XAUUSD', type: 'BUY', lots: 0.1 }]
     });
-    store.saveOrderResult({
+    await store.saveOrderResult({
       account_id: '90011087',
       command_id: 'sig_1',
       result: 'filled',
       ticket: 1001
     });
 
-    expect(store.getRegistration('90011087')).toMatchObject({ broker: 'Demo Broker' });
-    expect(store.getHeartbeat('90011087')).toMatchObject({ equity: 1100.25 });
-    expect(store.getLatestTick('90011087', 'XAUUSD')).toMatchObject({ ask: 3335.8 });
-    expect(store.getBars('90011087', 'XAUUSD', 'H1')).toHaveLength(1);
-    expect(store.getPositions('90011087')).toHaveLength(1);
-    expect(store.getOrderResults('90011087')).toEqual([
+    expect(await store.getRegistration('90011087')).toMatchObject({ broker: 'Demo Broker' });
+    expect(await store.getHeartbeat('90011087')).toMatchObject({ equity: 1100.25 });
+    expect(await store.getLatestTick('90011087', 'XAUUSD')).toMatchObject({ ask: 3335.8 });
+    expect(await store.getBars('90011087', 'XAUUSD', 'H1')).toHaveLength(1);
+    expect(await store.getPositions('90011087')).toHaveLength(1);
+    expect(await store.getOrderResults('90011087')).toEqual([
       {
         account_id: '90011087',
         command_id: 'sig_1',
@@ -89,23 +89,23 @@ describe('persistence scaffold', () => {
     ]);
   });
 
-  it('isolates position snapshots by account and symbol while preserving account-wide reads', () => {
+  it('isolates position snapshots by account and symbol while preserving account-wide reads', async () => {
     const store = createInMemoryEaStore();
 
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       symbol: 'XAUUSD',
       positions: [{ ticket: 1001, symbol: 'XAUUSD', type: 'BUY', lots: 0.1 }]
     });
-    store.savePositions({
+    await store.savePositions({
       account_id: '90011087',
       symbol: 'GBPJPY',
       positions: [{ ticket: 2002, symbol: 'GBPJPY', type: 'SELL', lots: 0.2 }]
     });
 
-    expect(store.getPositions('90011087', 'XAUUSD').map((position) => position.ticket)).toEqual([1001]);
-    expect(store.getPositions('90011087', 'GBPJPY').map((position) => position.ticket)).toEqual([2002]);
-    expect(store.getPositions('90011087').map((position) => position.ticket).sort()).toEqual([1001, 2002]);
+    expect((await store.getPositions('90011087', 'XAUUSD')).map((position) => position.ticket)).toEqual([1001]);
+    expect((await store.getPositions('90011087', 'GBPJPY')).map((position) => position.ticket)).toEqual([2002]);
+    expect((await store.getPositions('90011087')).map((position) => position.ticket).sort()).toEqual([1001, 2002]);
   });
 
   for (const testCase of [
@@ -131,10 +131,10 @@ describe('persistence scaffold', () => {
       }
     }
   ]) {
-    it(`stores symbol-scoped position manager states in ${testCase.name} storage`, () => {
+    it(`stores symbol-scoped position manager states in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        store.savePositionState('90011087', 'XAUUSD', {
+        await store.savePositionState('90011087', 'XAUUSD', {
           ticket: 1001,
           tp1_hit: true,
           tp2_hit: false,
@@ -144,7 +144,7 @@ describe('persistence scaffold', () => {
           open_time: '2026-04-13T06:00:00.000Z',
           last_modify_time: '2026-04-13T08:00:00.000Z'
         });
-        store.savePositionState('90011087', 'GBPJPY', {
+        await store.savePositionState('90011087', 'GBPJPY', {
           ticket: 1001,
           tp1_hit: false,
           tp2_hit: false,
@@ -155,7 +155,7 @@ describe('persistence scaffold', () => {
           last_modify_time: '2026-04-13T08:05:00.000Z'
         });
 
-        expect(store.loadPositionStates('90011087', 'XAUUSD')).toEqual([
+        expect(await store.loadPositionStates('90011087', 'XAUUSD')).toEqual([
           {
             ticket: 1001,
             tp1_hit: true,
@@ -168,7 +168,7 @@ describe('persistence scaffold', () => {
           }
         ]);
 
-        store.savePositionState('90011087', 'XAUUSD', {
+        await store.savePositionState('90011087', 'XAUUSD', {
           ticket: 1001,
           tp1_hit: true,
           tp2_hit: true,
@@ -178,7 +178,7 @@ describe('persistence scaffold', () => {
           open_time: '2026-04-13T06:00:00.000Z',
           last_modify_time: '2026-04-13T09:00:00.000Z'
         });
-        store.savePositionState('90011087', 'XAUUSD', {
+        await store.savePositionState('90011087', 'XAUUSD', {
           ticket: 1002,
           tp1_hit: false,
           tp2_hit: false,
@@ -189,9 +189,9 @@ describe('persistence scaffold', () => {
           last_modify_time: '2026-04-13T07:00:00.000Z'
         });
 
-        expect(store.loadPositionStates('90011087', 'XAUUSD').map((state) => state.ticket)).toEqual([1001, 1002]);
-        store.deleteStalePositionStates('90011087', 'XAUUSD', [1001]);
-        expect(store.loadPositionStates('90011087', 'XAUUSD')).toEqual([
+        expect((await store.loadPositionStates('90011087', 'XAUUSD')).map((state) => state.ticket)).toEqual([1001, 1002]);
+        await store.deleteStalePositionStates('90011087', 'XAUUSD', [1001]);
+        expect(await store.loadPositionStates('90011087', 'XAUUSD')).toEqual([
           {
             ticket: 1001,
             tp1_hit: true,
@@ -203,34 +203,34 @@ describe('persistence scaffold', () => {
             last_modify_time: '2026-04-13T09:00:00.000Z'
           }
         ]);
-        expect(store.loadPositionStates('90011087', 'GBPJPY').map((state) => state.ticket)).toEqual([1001]);
-        store.deleteStalePositionStates('90011087', 'XAUUSD', []);
-        expect(store.loadPositionStates('90011087', 'XAUUSD')).toEqual([]);
+        expect((await store.loadPositionStates('90011087', 'GBPJPY')).map((state) => state.ticket)).toEqual([1001]);
+        await store.deleteStalePositionStates('90011087', 'XAUUSD', []);
+        expect(await store.loadPositionStates('90011087', 'XAUUSD')).toEqual([]);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
 
-    it(`keeps only the latest AI result per symbol in ${testCase.name} storage`, () => {
+    it(`keeps only the latest AI result per symbol in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        store.saveAIResult('90011087', 'XAUUSD', { confidence: 70, bias: 'old' });
-        store.saveAIResult('90011087', 'GBPJPY', { confidence: 61, bias: 'cross' });
-        store.saveAIResult('90011087', 'XAUUSD', { confidence: 82, bias: 'new' });
+        await store.saveAIResult('90011087', 'XAUUSD', { confidence: 70, bias: 'old' });
+        await store.saveAIResult('90011087', 'GBPJPY', { confidence: 61, bias: 'cross' });
+        await store.saveAIResult('90011087', 'XAUUSD', { confidence: 82, bias: 'new' });
 
-        expect(store.getAIResults('90011087')).toEqual([
+        expect(await store.getAIResults('90011087')).toEqual([
           { account_id: '90011087', symbol: 'XAUUSD', confidence: 82, bias: 'new' },
           { account_id: '90011087', symbol: 'GBPJPY', confidence: 61, bias: 'cross' }
         ]);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
   }
 
-  it('delivers explicitly queued commands once without generating commands itself', () => {
+  it('delivers explicitly queued commands once without generating commands itself', async () => {
     const store = createInMemoryEaStore();
     const command: EaCommand = {
       command_id: 'sig_1',
@@ -244,27 +244,27 @@ describe('persistence scaffold', () => {
       score: 7
     };
 
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
 
-    store.enqueueCommand('90011087', command);
+    await store.enqueueCommand('90011087', command);
 
-    expect(store.pollCommands('90011087')).toEqual([command]);
-    expect(store.pollCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([command]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
   });
 
-  it('defaults an unseen account to oracle mode and persists explicit runtime modes', () => {
+  it('defaults an unseen account to oracle mode and persists explicit runtime modes', async () => {
     const store = createInMemoryEaStore();
 
-    expect(store.getRuntimeMode('90011087')).toBe('oracle');
+    expect(await store.getRuntimeMode('90011087')).toBe('oracle');
 
-    store.setRuntimeMode('90011087', 'cutover');
-    expect(store.getRuntimeMode('90011087')).toBe('cutover');
+    await store.setRuntimeMode('90011087', 'cutover');
+    expect(await store.getRuntimeMode('90011087')).toBe('cutover');
   });
 
-  it('stores command candidates and transitions them through queued, delivered, and acked states', () => {
+  it('stores command candidates and transitions them through queued, delivered, and acked states', async () => {
     const store = createInMemoryEaStore();
 
-    const stored = store.saveCommandCandidate('90011087', {
+    const stored = await store.saveCommandCandidate('90011087', {
       source: 'ai_result',
       symbol: 'XAUUSD',
       action: 'SIGNAL',
@@ -273,17 +273,17 @@ describe('persistence scaffold', () => {
     });
 
     expect(stored.status).toBe('draft');
-    expect(store.getCommand(stored.command_id)?.status).toBe('draft');
+    expect((await store.getCommand(stored.command_id))?.status).toBe('draft');
 
-    store.promoteCommand(stored.command_id);
+    await store.promoteCommand(stored.command_id);
 
-    const delivered = store.pollCommands('90011087');
+    const delivered = await store.pollCommands('90011087');
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toMatchObject({ source: 'ai_result' });
-    expect(store.getCommand(stored.command_id)?.status).toBe('delivered');
+    expect((await store.getCommand(stored.command_id))?.status).toBe('delivered');
 
-    store.reconcileCommandResult('90011087', stored.command_id, 'OK', 1001);
-    expect(store.getCommand(stored.command_id)).toMatchObject({
+    await store.reconcileCommandResult('90011087', stored.command_id, 'OK', 1001);
+    expect(await store.getCommand(stored.command_id)).toMatchObject({
       status: 'acked',
       result: 'OK',
       ticket: 1001
@@ -313,10 +313,10 @@ describe('persistence scaffold', () => {
       }
     }
   ]) {
-    it(`applies order results only to delivered commands in ${testCase.name} storage`, () => {
+    it(`applies order results only to delivered commands in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        const stored = store.saveCommandCandidate('90011087', {
+        const stored = await store.saveCommandCandidate('90011087', {
           command_id: 'sig_order_ack',
           source: 'ai_result',
           symbol: 'XAUUSD',
@@ -324,10 +324,10 @@ describe('persistence scaffold', () => {
           strategy: 'ai_signal',
           decision_id: 'tpv1_order_ack'
         });
-        store.promoteCommand(stored.command_id);
+        await store.promoteCommand(stored.command_id);
 
         expect(
-          store.reconcileCommandResult(
+          await store.reconcileCommandResult(
             '90011087',
             stored.command_id,
             'OK',
@@ -336,12 +336,12 @@ describe('persistence scaffold', () => {
             '2026-04-13T08:00:00.000Z'
           )
         ).toBe(false);
-        expect(store.getCommand(stored.command_id)).toMatchObject({ status: 'queued' });
-        expect(store.getOrderResults('90011087')).toEqual([]);
+        expect(await store.getCommand(stored.command_id)).toMatchObject({ status: 'queued' });
+        expect(await store.getOrderResults('90011087')).toEqual([]);
 
-        expect(store.pollCommands('90011087')).toHaveLength(1);
+        expect(await store.pollCommands('90011087')).toHaveLength(1);
         expect(
-          store.reconcileCommandResult(
+          await store.reconcileCommandResult(
             '90011087',
             stored.command_id,
             'OK',
@@ -350,14 +350,14 @@ describe('persistence scaffold', () => {
             '2026-04-13T08:01:00.000Z'
           )
         ).toBe(true);
-        expect(store.getCommand(stored.command_id)).toMatchObject({
+        expect(await store.getCommand(stored.command_id)).toMatchObject({
           status: 'acked',
           result: 'OK',
           ticket: 1001,
           acked_at: '2026-04-13T08:01:00.000Z',
           error_text: ''
         });
-        expect(store.getOrderResults('90011087')).toEqual([
+        expect(await store.getOrderResults('90011087')).toEqual([
           {
             account_id: '90011087',
             command_id: stored.command_id,
@@ -367,7 +367,7 @@ describe('persistence scaffold', () => {
             created_at: '2026-04-13T08:01:00.000Z'
           }
         ]);
-        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'acked' })).toEqual([
+        expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'acked' })).toEqual([
           expect.objectContaining({
             decision_id: 'tpv1_order_ack',
             stage: 'order_result',
@@ -386,7 +386,7 @@ describe('persistence scaffold', () => {
         ]);
 
         expect(
-          store.reconcileCommandResult(
+          await store.reconcileCommandResult(
             '90011087',
             stored.command_id,
             'ERROR',
@@ -396,7 +396,7 @@ describe('persistence scaffold', () => {
           )
         ).toBe(false);
         expect(
-          store.reconcileCommandResult(
+          await store.reconcileCommandResult(
             '90022000',
             stored.command_id,
             'OK',
@@ -406,7 +406,7 @@ describe('persistence scaffold', () => {
           )
         ).toBe(false);
         expect(
-          store.reconcileCommandResult(
+          await store.reconcileCommandResult(
             '90011087',
             'sig_missing',
             'ERROR',
@@ -415,18 +415,18 @@ describe('persistence scaffold', () => {
             '2026-04-13T08:04:00.000Z'
           )
         ).toBe(false);
-        expect(store.getOrderResults('90011087')).toHaveLength(1);
-        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'failed' })).toEqual([]);
+        expect(await store.getOrderResults('90011087')).toHaveLength(1);
+        expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'failed' })).toEqual([]);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
 
-    it(`records failed delivered order results with error text in ${testCase.name} storage`, () => {
+    it(`records failed delivered order results with error text in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        const stored = store.saveCommandCandidate('90011087', {
+        const stored = await store.saveCommandCandidate('90011087', {
           command_id: 'sig_order_fail',
           source: 'position_review',
           symbol: 'XAUUSD',
@@ -434,11 +434,11 @@ describe('persistence scaffold', () => {
           ticket: 2002,
           decision_id: 'tpv1_order_fail'
         });
-        store.promoteCommand(stored.command_id);
-        expect(store.pollCommands('90011087')).toHaveLength(1);
+        await store.promoteCommand(stored.command_id);
+        expect(await store.pollCommands('90011087')).toHaveLength(1);
 
         expect(
-          store.reconcileCommandResult(
+          await store.reconcileCommandResult(
             '90011087',
             stored.command_id,
             'REJECTED',
@@ -447,14 +447,14 @@ describe('persistence scaffold', () => {
             '2026-04-13T09:01:00.000Z'
           )
         ).toBe(true);
-        expect(store.getCommand(stored.command_id)).toMatchObject({
+        expect(await store.getCommand(stored.command_id)).toMatchObject({
           status: 'failed',
           result: 'REJECTED',
           ticket: 0,
           failed_at: '2026-04-13T09:01:00.000Z',
           error_text: 'invalid stops'
         });
-        expect(store.getOrderResults('90011087')).toEqual([
+        expect(await store.getOrderResults('90011087')).toEqual([
           {
             account_id: '90011087',
             command_id: stored.command_id,
@@ -464,7 +464,7 @@ describe('persistence scaffold', () => {
             created_at: '2026-04-13T09:01:00.000Z'
           }
         ]);
-        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'failed' })).toEqual([
+        expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'failed' })).toEqual([
           expect.objectContaining({
             decision_id: 'tpv1_order_fail',
             stage: 'order_result',
@@ -482,7 +482,7 @@ describe('persistence scaffold', () => {
           })
         ]);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
@@ -511,10 +511,10 @@ describe('persistence scaffold', () => {
       }
     }
   ]) {
-    it(`records command enqueue and delivery decision events in ${testCase.name} storage`, () => {
+    it(`records command enqueue and delivery decision events in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        const stored = store.saveCommandCandidate('90011087', {
+        const stored = await store.saveCommandCandidate('90011087', {
           command_id: 'sig_timeline',
           source: 'ai_result',
           symbol: 'XAUUSD',
@@ -523,10 +523,10 @@ describe('persistence scaffold', () => {
           decision_id: 'tpv1_timeline'
         });
 
-        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([]);
-        store.promoteCommand(stored.command_id);
+        expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([]);
+        await store.promoteCommand(stored.command_id);
 
-        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+        expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
           expect.objectContaining({
             decision_id: 'tpv1_timeline',
             stage: 'command_enqueued',
@@ -541,10 +541,10 @@ describe('persistence scaffold', () => {
           })
         ]);
 
-        expect(store.pollCommands('90011087')).toHaveLength(1);
-        const deliveredAt = store.getCommand(stored.command_id)?.delivered_at;
+        expect(await store.pollCommands('90011087')).toHaveLength(1);
+        const deliveredAt = (await store.getCommand(stored.command_id))?.delivered_at;
         expect(deliveredAt).toBeDefined();
-        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+        expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
           expect.objectContaining({
             decision_id: 'tpv1_timeline',
             stage: 'command_delivered',
@@ -564,15 +564,15 @@ describe('persistence scaffold', () => {
           })
         ]);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
 
-    it(`uses one delivered_at timestamp for each poll batch in ${testCase.name} storage`, () => {
+    it(`uses one delivered_at timestamp for each poll batch in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        const first = store.saveCommandCandidate('90011087', {
+        const first = await store.saveCommandCandidate('90011087', {
           command_id: 'sig_batch_a',
           source: 'ai_result',
           symbol: 'XAUUSD',
@@ -580,7 +580,7 @@ describe('persistence scaffold', () => {
           strategy: 'ai_signal',
           decision_id: 'tpv1_batch_a'
         });
-        const second = store.saveCommandCandidate('90011087', {
+        const second = await store.saveCommandCandidate('90011087', {
           command_id: 'sig_batch_b',
           source: 'ai_result',
           symbol: 'XAUUSD',
@@ -588,32 +588,32 @@ describe('persistence scaffold', () => {
           strategy: 'ai_signal',
           decision_id: 'tpv1_batch_b'
         });
-        store.promoteCommand(first.command_id);
-        store.promoteCommand(second.command_id);
+        await store.promoteCommand(first.command_id);
+        await store.promoteCommand(second.command_id);
 
-        withAdvancingDate('2026-04-13T08:00:00.000Z', 1000, () => {
-          expect(store.pollCommands('90011087')).toHaveLength(2);
+        await withAdvancingDate('2026-04-13T08:00:00.000Z', 1000, async () => {
+          expect(await store.pollCommands('90011087')).toHaveLength(2);
         });
 
-        const firstDeliveredAt = store.getCommand(first.command_id)?.delivered_at;
-        const secondDeliveredAt = store.getCommand(second.command_id)?.delivered_at;
+        const firstDeliveredAt = (await store.getCommand(first.command_id))?.delivered_at;
+        const secondDeliveredAt = (await store.getCommand(second.command_id))?.delivered_at;
         expect(firstDeliveredAt).toBe('2026-04-13T08:00:00.000Z');
         expect(secondDeliveredAt).toBe(firstDeliveredAt);
-        const deliveredEvents = store
-          .listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'delivered' })
+        const deliveredEvents = (await store
+          .listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'delivered' }))
           .filter((event) => event.stage === 'command_delivered');
         expect(new Set(deliveredEvents.map((event) => event.created_at))).toEqual(new Set([firstDeliveredAt]));
       } finally {
         vi.unstubAllGlobals();
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
 
-    it(`preserves AI approve command source in ${testCase.name} decision events`, () => {
+    it(`preserves AI approve command source in ${testCase.name} decision events`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        const stored = store.saveCommandCandidate('90011087', {
+        const stored = await store.saveCommandCandidate('90011087', {
           command_id: 'ai_pending_90011087_XAUUSD_buy',
           source: 'ai_approve',
           symbol: 'XAUUSD',
@@ -622,12 +622,12 @@ describe('persistence scaffold', () => {
           decision_id: 'tpv1_ai_approve'
         });
 
-        store.promoteCommand(stored.command_id);
+        await store.promoteCommand(stored.command_id);
 
-        expect(store.getCommand(stored.command_id)).toMatchObject({
+        expect(await store.getCommand(stored.command_id)).toMatchObject({
           source: 'ai_approve'
         });
-        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+        expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
           expect.objectContaining({
             decision_id: 'tpv1_ai_approve',
             stage: 'command_enqueued',
@@ -637,16 +637,16 @@ describe('persistence scaffold', () => {
           })
         ]);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
 
-    it(`detects active AI approve pending commands in ${testCase.name} storage`, () => {
+    it(`detects active AI approve pending commands in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
         const nowIso = '2026-04-13T08:00:00.000Z';
-        const active = store.saveCommandCandidate('90011087', {
+        const active = await store.saveCommandCandidate('90011087', {
           command_id: 'ai_pending_90011087_XAUUSD_active',
           source: 'ai_approve',
           symbol: 'XAUUSD',
@@ -655,17 +655,17 @@ describe('persistence scaffold', () => {
           expiration: 1776081600
         });
 
-        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(false);
-        store.promoteCommand(active.command_id);
-        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(true);
-        expect(store.hasActiveAIApprovePending('other-account', 'XAUUSD', 'buy', nowIso)).toBe(false);
-        expect(store.hasActiveAIApprovePending('90011087', 'GBPJPY', 'buy', nowIso)).toBe(false);
-        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'sell', nowIso)).toBe(false);
+        expect(await store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(false);
+        await store.promoteCommand(active.command_id);
+        expect(await store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(true);
+        expect(await store.hasActiveAIApprovePending('other-account', 'XAUUSD', 'buy', nowIso)).toBe(false);
+        expect(await store.hasActiveAIApprovePending('90011087', 'GBPJPY', 'buy', nowIso)).toBe(false);
+        expect(await store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'sell', nowIso)).toBe(false);
 
-        store.pollCommands('90011087');
-        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(false);
+        await store.pollCommands('90011087');
+        expect(await store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(false);
 
-        const expired = store.saveCommandCandidate('90011087', {
+        const expired = await store.saveCommandCandidate('90011087', {
           command_id: 'ai_pending_90011087_XAUUSD_expired',
           source: 'ai_approve',
           symbol: 'XAUUSD',
@@ -673,10 +673,10 @@ describe('persistence scaffold', () => {
           action: 'SIGNAL',
           expiration: 1776067199
         });
-        store.promoteCommand(expired.command_id);
-        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'sell', nowIso)).toBe(false);
+        await store.promoteCommand(expired.command_id);
+        expect(await store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'sell', nowIso)).toBe(false);
 
-        const otherSource = store.saveCommandCandidate('90011087', {
+        const otherSource = await store.saveCommandCandidate('90011087', {
           command_id: 'ai_result_90011087_XAUUSD_buy',
           source: 'ai_result',
           symbol: 'XAUUSD',
@@ -684,19 +684,19 @@ describe('persistence scaffold', () => {
           action: 'SIGNAL',
           expiration: 1776081600
         });
-        store.promoteCommand(otherSource.command_id);
-        expect(store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(false);
+        await store.promoteCommand(otherSource.command_id);
+        expect(await store.hasActiveAIApprovePending('90011087', 'XAUUSD', 'buy', nowIso)).toBe(false);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
   }
 
-  it('stores and reloads the latest shadow runtime snapshot by account, symbol, and source', () => {
+  it('stores and reloads the latest shadow runtime snapshot by account, symbol, and source', async () => {
     const store = createInMemoryEaStore();
 
-    store.saveShadowSnapshot({
+    await store.saveShadowSnapshot({
       account_id: '90011087',
       symbol: 'XAUUSD',
       source: 'ea_analysis',
@@ -705,7 +705,7 @@ describe('persistence scaffold', () => {
       created_at: '2026-07-03T00:00:00.000Z'
     });
 
-    expect(store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ea_analysis')).toEqual({
+    expect(await store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ea_analysis')).toEqual({
       account_id: '90011087',
       symbol: 'XAUUSD',
       source: 'ea_analysis',
@@ -715,10 +715,10 @@ describe('persistence scaffold', () => {
     });
   });
 
-  it('filters and summarizes shadow comparisons for qualification checks', () => {
+  it('filters and summarizes shadow comparisons for qualification checks', async () => {
     const store = createInMemoryEaStore();
 
-    store.recordShadowComparison({
+    await store.recordShadowComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       protocol_ok: true,
@@ -728,7 +728,7 @@ describe('persistence scaffold', () => {
       source: 'ea_analysis',
       created_at: '2026-07-03T00:00:00.000Z'
     });
-    store.recordShadowComparison({
+    await store.recordShadowComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       protocol_ok: false,
@@ -738,7 +738,7 @@ describe('persistence scaffold', () => {
       source: 'ea_analysis',
       created_at: '2026-07-03T00:10:00.000Z'
     });
-    store.recordShadowComparison({
+    await store.recordShadowComparison({
       account_id: '90022098',
       symbol: 'GBPJPY',
       protocol_ok: true,
@@ -749,7 +749,7 @@ describe('persistence scaffold', () => {
       created_at: '2026-07-03T00:20:00.000Z'
     });
 
-    expect(store.listShadowComparisons({ account_id: '90011087', signal_drift: true })).toEqual([
+    expect(await store.listShadowComparisons({ account_id: '90011087', signal_drift: true })).toEqual([
       {
         account_id: '90011087',
         symbol: 'XAUUSD',
@@ -761,7 +761,7 @@ describe('persistence scaffold', () => {
         created_at: '2026-07-03T00:10:00.000Z'
       }
     ]);
-    expect(store.summarizeShadowComparisons({ account_id: '90011087', source: 'ea_analysis' })).toEqual({
+    expect(await store.summarizeShadowComparisons({ account_id: '90011087', source: 'ea_analysis' })).toEqual({
       comparisons: 2,
       protocol_errors: 1,
       signal_drifts: 1,
@@ -772,10 +772,10 @@ describe('persistence scaffold', () => {
     });
   });
 
-  it('stores decision events newest-first with account, symbol, status, and limit filters', () => {
+  it('stores decision events newest-first with account, symbol, status, and limit filters', async () => {
     const store = createInMemoryEaStore();
 
-    store.recordDecisionEvent({
+    await store.recordDecisionEvent({
       decision_id: 'tpv1_old',
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -786,7 +786,7 @@ describe('persistence scaffold', () => {
       related_command_id: '',
       created_at: '2026-04-13T07:59:00.000Z'
     });
-    store.recordDecisionEvent({
+    await store.recordDecisionEvent({
       decision_id: 'tpv1_rejected',
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -797,7 +797,7 @@ describe('persistence scaffold', () => {
       related_command_id: 'sig_rejected',
       created_at: '2026-04-13T08:01:00.000Z'
     });
-    store.recordDecisionEvent({
+    await store.recordDecisionEvent({
       decision_id: 'tpv1_other_symbol',
       account_id: '90011087',
       symbol: 'GBPJPY',
@@ -808,7 +808,7 @@ describe('persistence scaffold', () => {
       related_command_id: 'sig_other',
       created_at: '2026-04-13T08:02:00.000Z'
     });
-    store.recordDecisionEvent({
+    await store.recordDecisionEvent({
       decision_id: 'tpv1_other_account',
       account_id: '90022098',
       symbol: 'XAUUSD',
@@ -820,13 +820,13 @@ describe('persistence scaffold', () => {
       created_at: '2026-04-13T08:03:00.000Z'
     });
 
-    expect(store.listDecisionEvents({ account_id: '90011087' }).map((event) => event.decision_id)).toEqual([
+    expect((await store.listDecisionEvents({ account_id: '90011087' })).map((event) => event.decision_id)).toEqual([
       'tpv1_other_symbol',
       'tpv1_rejected',
       'tpv1_old'
     ]);
     expect(
-      store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'rejected', limit: 1 })
+      await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'rejected', limit: 1 })
     ).toEqual([
       {
         id: 2,
@@ -843,7 +843,7 @@ describe('persistence scaffold', () => {
     ]);
   });
 
-  it('lists account symbols and explicitly stored pending signals', () => {
+  it('lists account symbols and explicitly stored pending signals', async () => {
     const store = createInMemoryEaStore();
     const pendingSignal = {
       account_id: '90011087',
@@ -854,31 +854,31 @@ describe('persistence scaffold', () => {
       status: 'pending'
     };
 
-    store.saveRegistration({
+    await store.saveRegistration({
       account_id: '90011087',
       ai_symbols: ['XAUUSD', 'GBPJPY']
     });
-    store.saveTick({
+    await store.saveTick({
       account_id: '90011087',
       symbol: 'US100Cash',
       bid: 18000,
       ask: 18002
     });
-    store.savePendingSignal(pendingSignal);
+    await store.savePendingSignal(pendingSignal);
 
-    expect(store.listAccountIds()).toEqual(['90011087']);
-    expect(store.listSymbols('90011087')).toEqual(['US100Cash']);
-    expect(store.listAISymbols('90011087')).toEqual(['XAUUSD', 'GBPJPY']);
-    expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([expect.objectContaining({ ...pendingSignal, id: 1 })]);
-    expect(store.getPendingSignals('90011087', 'GBPJPY')).toEqual([]);
+    expect(await store.listAccountIds()).toEqual(['90011087']);
+    expect(await store.listSymbols('90011087')).toEqual(['US100Cash']);
+    expect(await store.listAISymbols('90011087')).toEqual(['XAUUSD', 'GBPJPY']);
+    expect(await store.getPendingSignals('90011087', 'XAUUSD')).toEqual([expect.objectContaining({ ...pendingSignal, id: 1 })]);
+    expect(await store.getPendingSignals('90011087', 'GBPJPY')).toEqual([]);
   });
 
-  it('does not create account ids from symbol-scoped AI results', () => {
+  it('does not create account ids from symbol-scoped AI results', async () => {
     const store = createInMemoryEaStore();
 
-    store.saveAIResult('90011087', 'XAUUSD', { confidence: 80 });
+    await store.saveAIResult('90011087', 'XAUUSD', { confidence: 80 });
 
-    expect(store.listAccountIds()).toEqual(['90011087']);
+    expect(await store.listAccountIds()).toEqual(['90011087']);
   });
 
   for (const testCase of [
@@ -904,10 +904,10 @@ describe('persistence scaffold', () => {
       }
     }
   ]) {
-    it(`records candidate_signal decision events for pending signals in ${testCase.name} storage`, () => {
+    it(`records candidate_signal decision events for pending signals in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        store.savePendingSignal({
+        await store.savePendingSignal({
           account_id: '90011087',
           symbol: 'XAUUSD',
           side: 'buy',
@@ -918,7 +918,7 @@ describe('persistence scaffold', () => {
           expires_at: '2026-04-13T08:01:00.000Z'
         });
 
-        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+        expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
           expect.objectContaining({
             decision_id: 'candidate_90011087_XAUUSD_1',
             stage: 'candidate_signal',
@@ -936,15 +936,15 @@ describe('persistence scaffold', () => {
           })
         ]);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
 
-    it(`updates explicit pending signal ids without inserting or duplicating decisions in ${testCase.name} storage`, () => {
+    it(`updates explicit pending signal ids without inserting or duplicating decisions in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        store.savePendingSignal({
+        await store.savePendingSignal({
           account_id: '90011087',
           symbol: 'XAUUSD',
           side: 'buy',
@@ -954,7 +954,7 @@ describe('persistence scaffold', () => {
           created_at: '2026-04-13T08:00:00.000Z',
           expires_at: '2026-04-13T08:01:00.000Z'
         });
-        store.savePendingSignal({
+        await store.savePendingSignal({
           id: 1,
           account_id: '90011087',
           symbol: 'XAUUSD',
@@ -965,7 +965,7 @@ describe('persistence scaffold', () => {
           created_at: '2026-04-13T08:00:15.000Z',
           expires_at: '2026-04-13T08:02:00.000Z'
         });
-        store.savePendingSignal({
+        await store.savePendingSignal({
           id: 99,
           account_id: '90011087',
           symbol: 'GBPJPY',
@@ -977,21 +977,21 @@ describe('persistence scaffold', () => {
           expires_at: '2026-04-13T08:02:00.000Z'
         });
 
-        expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([
+        expect(await store.getPendingSignals('90011087', 'XAUUSD')).toEqual([
           expect.objectContaining({ id: 1, score: 91, expires_at: '2026-04-13T08:02:00.000Z' })
         ]);
-        expect(store.getPendingSignals('90011087', 'GBPJPY')).toEqual([]);
-        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toHaveLength(1);
+        expect(await store.getPendingSignals('90011087', 'GBPJPY')).toEqual([]);
+        expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toHaveLength(1);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
 
-    it(`allocates pending signal ids before recording candidate decisions in ${testCase.name} storage`, () => {
+    it(`allocates pending signal ids before recording candidate decisions in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        store.savePendingSignal({
+        await store.savePendingSignal({
           account_id: '90011087',
           symbol: 'XAUUSD',
           side: 'buy',
@@ -1002,10 +1002,10 @@ describe('persistence scaffold', () => {
           expires_at: '2026-04-13T08:01:00.000Z'
         });
 
-        expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([
+        expect(await store.getPendingSignals('90011087', 'XAUUSD')).toEqual([
           expect.objectContaining({ id: 1, strategy: 'momentum_scalp' })
         ]);
-        expect(store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
+        expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toEqual([
           expect.objectContaining({
             decision_id: 'candidate_90011087_XAUUSD_1',
             stage: 'candidate_signal',
@@ -1013,15 +1013,15 @@ describe('persistence scaffold', () => {
           })
         ]);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
 
-    it(`expires pending signals using UTC-normalized timestamps in ${testCase.name} storage`, () => {
+    it(`expires pending signals using UTC-normalized timestamps in ${testCase.name} storage`, async () => {
       const { store, cleanup } = testCase.create();
       try {
-        store.savePendingSignal({
+        await store.savePendingSignal({
           account_id: '90011087',
           symbol: 'XAUUSD',
           side: 'buy',
@@ -1031,7 +1031,7 @@ describe('persistence scaffold', () => {
           created_at: '2026-04-13T07:59:00.000Z',
           expires_at: '2026-04-13T16:00:00+08:00'
         });
-        store.savePendingSignal({
+        await store.savePendingSignal({
           account_id: '90011087',
           symbol: 'XAUUSD',
           side: 'sell',
@@ -1042,20 +1042,20 @@ describe('persistence scaffold', () => {
           expires_at: '2026-04-13T16:02:00+08:00'
         });
 
-        expect(store.expirePendingSignals('2026-04-13T08:00:01.000Z')).toBe(1);
-        expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([
+        expect(await store.expirePendingSignals('2026-04-13T08:00:01.000Z')).toBe(1);
+        expect(await store.getPendingSignals('90011087', 'XAUUSD')).toEqual([
           expect.objectContaining({ id: 2, status: 'pending' })
         ]);
       } finally {
-        store.close?.();
+        await store.close?.();
         cleanup();
       }
     });
   }
 
-  it('updates and expires pending signal arbitration state', () => {
+  it('updates and expires pending signal arbitration state', async () => {
     const store = createInMemoryEaStore();
-    store.savePendingSignal({
+    await store.savePendingSignal({
       account_id: '90011087',
       symbol: 'XAUUSD',
       side: 'buy',
@@ -1067,7 +1067,7 @@ describe('persistence scaffold', () => {
       arbitration_result: '',
       arbitration_reason: ''
     });
-    store.savePendingSignal({
+    await store.savePendingSignal({
       account_id: '90011087',
       symbol: 'XAUUSD',
       side: 'sell',
@@ -1080,17 +1080,17 @@ describe('persistence scaffold', () => {
       arbitration_reason: ''
     });
 
-    expect(store.updatePendingSignalArbitration(1, 'approved', 'manual ok')).toBe(true);
-    expect(store.getPendingSignals('90011087', 'XAUUSD').map((signal) => signal.id)).toEqual([2]);
-    expect(store.expirePendingSignals('2026-04-13T08:03:00.000Z')).toBe(1);
-    expect(store.getPendingSignals('90011087', 'XAUUSD')).toEqual([]);
-    expect(store.updatePendingSignalArbitration(999, 'approved', 'missing')).toBe(false);
+    expect(await store.updatePendingSignalArbitration(1, 'approved', 'manual ok')).toBe(true);
+    expect((await store.getPendingSignals('90011087', 'XAUUSD')).map((signal) => signal.id)).toEqual([2]);
+    expect(await store.expirePendingSignals('2026-04-13T08:03:00.000Z')).toBe(1);
+    expect(await store.getPendingSignals('90011087', 'XAUUSD')).toEqual([]);
+    expect(await store.updatePendingSignalArbitration(999, 'approved', 'missing')).toBe(false);
   });
 
-  it('stores and deletes API token records', () => {
+  it('stores and deletes API token records', async () => {
     const store = createInMemoryEaStore();
 
-    store.saveApiToken({
+    await store.saveApiToken({
       token: 'user-token',
       name: 'Desk',
       accounts: ['90011087', '90022000'],
@@ -1098,7 +1098,7 @@ describe('persistence scaffold', () => {
       created_at: '2026-04-13T08:00:00.000Z'
     });
 
-    expect(store.listApiTokens()).toEqual([
+    expect(await store.listApiTokens()).toEqual([
       {
         token: 'user-token',
         name: 'Desk',
@@ -1107,11 +1107,11 @@ describe('persistence scaffold', () => {
         created_at: '2026-04-13T08:00:00.000Z'
       }
     ]);
-    expect(store.deleteApiToken('user-token')).toBe(true);
-    expect(store.listApiTokens()).toEqual([]);
+    expect(await store.deleteApiToken('user-token')).toBe(true);
+    expect(await store.listApiTokens()).toEqual([]);
   });
 
-  it('persists EA lifecycle snapshots and queued commands in SQLite', () => {
+  it('persists EA lifecycle snapshots and queued commands in SQLite', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gold-bot-persistence-'));
     const dbPath = join(dir, 'ea.sqlite');
     const command: EaCommand = {
@@ -1128,19 +1128,19 @@ describe('persistence scaffold', () => {
 
     try {
       const store = createSqliteEaStore(dbPath);
-      store.saveRegistration({ account_id: '90011087', broker: 'Demo Broker', ai_symbols: ['XAUUSD', 'GBPJPY'] });
-      store.saveHeartbeat({ account_id: '90011087', equity: 1100.25, ai_symbols: ['XAUUSD', 'GBPJPY'] });
-      store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.55, ask: 3335.75 });
-      store.saveBars({
+      await store.saveRegistration({ account_id: '90011087', broker: 'Demo Broker', ai_symbols: ['XAUUSD', 'GBPJPY'] });
+      await store.saveHeartbeat({ account_id: '90011087', equity: 1100.25, ai_symbols: ['XAUUSD', 'GBPJPY'] });
+      await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.55, ask: 3335.75 });
+      await store.saveBars({
         account_id: '90011087',
         symbol: 'XAUUSD',
         timeframe: 'H1',
         bars: [{ time: '2026.04.13 07:00', open: 3331.25, high: 3337.1, low: 3330.9, close: 3335.75 }]
       });
-      store.savePositions({ account_id: '90011087', positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY' }] });
-      store.savePendingSignal({ account_id: '90011087', symbol: 'XAUUSD', strategy: 'pullback', side: 'buy' });
-      store.saveAIResult('90011087', 'XAUUSD', { confidence: 82 });
-      store.saveShadowSnapshot({
+      await store.savePositions({ account_id: '90011087', positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY' }] });
+      await store.savePendingSignal({ account_id: '90011087', symbol: 'XAUUSD', strategy: 'pullback', side: 'buy' });
+      await store.saveAIResult('90011087', 'XAUUSD', { confidence: 82 });
+      await store.saveShadowSnapshot({
         account_id: '90011087',
         symbol: 'XAUUSD',
         source: 'ea_analysis',
@@ -1148,7 +1148,7 @@ describe('persistence scaffold', () => {
         command: { action: 'SIGNAL', tp1: 3358 },
         created_at: '2026-07-03T00:00:00.000Z'
       });
-      store.recordShadowComparison({
+      await store.recordShadowComparison({
         account_id: '90011087',
         symbol: 'XAUUSD',
         protocol_ok: true,
@@ -1158,7 +1158,7 @@ describe('persistence scaffold', () => {
         source: 'ea_analysis',
         created_at: '2026-07-03T00:00:00.000Z'
       });
-      store.recordShadowComparison({
+      await store.recordShadowComparison({
         account_id: '90011087',
         symbol: 'GBPJPY',
         protocol_ok: false,
@@ -1168,7 +1168,7 @@ describe('persistence scaffold', () => {
         source: 'ai_result',
         created_at: '2026-07-03T00:05:00.000Z'
       });
-      store.recordDecisionEvent({
+      await store.recordDecisionEvent({
         decision_id: 'tpv1_persisted',
         account_id: '90011087',
         symbol: 'XAUUSD',
@@ -1179,16 +1179,16 @@ describe('persistence scaffold', () => {
         related_command_id: 'sig_persisted',
         created_at: '2026-07-03T00:06:00.000Z'
       });
-      store.saveApiToken({
+      await store.saveApiToken({
         token: 'user-token',
         name: 'Desk',
         accounts: ['90011087', '90022000'],
         is_admin: false,
         created_at: '2026-07-03T00:07:00.000Z'
       });
-      store.enqueueCommand('90011087', command);
-      store.setRuntimeMode('90011087', 'cutover');
-      const candidate = store.saveCommandCandidate('90011087', {
+      await store.enqueueCommand('90011087', command);
+      await store.setRuntimeMode('90011087', 'cutover');
+      const candidate = await store.saveCommandCandidate('90011087', {
         command_id: 'candidate_1',
         source: 'ai_result',
         symbol: 'XAUUSD',
@@ -1196,27 +1196,27 @@ describe('persistence scaffold', () => {
         strategy: 'pullback',
         mode: 'approve'
       });
-      store.promoteCommand(candidate.command_id);
-      expect(store.pollCommands('90011087')).toEqual(expect.arrayContaining([
+      await store.promoteCommand(candidate.command_id);
+      expect(await store.pollCommands('90011087')).toEqual(expect.arrayContaining([
         expect.objectContaining({ command_id: command.command_id }),
         expect.objectContaining({ command_id: candidate.command_id })
       ]));
-      store.reconcileCommandResult('90011087', candidate.command_id, 'OK', 999001);
-      store.close();
+      await store.reconcileCommandResult('90011087', candidate.command_id, 'OK', 999001);
+      await store.close();
 
       const reopened = createSqliteEaStore(dbPath);
-      expect(reopened.getRegistration('90011087')).toMatchObject({ broker: 'Demo Broker' });
-      expect(reopened.getHeartbeat('90011087')).toMatchObject({ equity: 1100.25 });
-      expect(reopened.getLatestTick('90011087', 'XAUUSD')).toMatchObject({ ask: 3335.75 });
-      expect(reopened.getBars('90011087', 'XAUUSD', 'H1')).toHaveLength(1);
-      expect(reopened.getPositions('90011087')).toHaveLength(1);
-      expect(reopened.getPendingSignals('90011087', 'XAUUSD')).toHaveLength(1);
-      expect(reopened.updatePendingSignalArbitration(1, 'rejected', 'manual reject')).toBe(true);
-      expect(reopened.getPendingSignals('90011087', 'XAUUSD')).toEqual([]);
-      expect(reopened.getAIResults('90011087')).toHaveLength(1);
-      expect(reopened.listSymbols('90011087')).toEqual(['XAUUSD']);
-      expect(reopened.getRuntimeMode('90011087')).toBe('cutover');
-      expect(reopened.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ea_analysis')).toEqual({
+      expect(await reopened.getRegistration('90011087')).toMatchObject({ broker: 'Demo Broker' });
+      expect(await reopened.getHeartbeat('90011087')).toMatchObject({ equity: 1100.25 });
+      expect(await reopened.getLatestTick('90011087', 'XAUUSD')).toMatchObject({ ask: 3335.75 });
+      expect(await reopened.getBars('90011087', 'XAUUSD', 'H1')).toHaveLength(1);
+      expect(await reopened.getPositions('90011087')).toHaveLength(1);
+      expect(await reopened.getPendingSignals('90011087', 'XAUUSD')).toHaveLength(1);
+      expect(await reopened.updatePendingSignalArbitration(1, 'rejected', 'manual reject')).toBe(true);
+      expect(await reopened.getPendingSignals('90011087', 'XAUUSD')).toEqual([]);
+      expect(await reopened.getAIResults('90011087')).toHaveLength(1);
+      expect(await reopened.listSymbols('90011087')).toEqual(['XAUUSD']);
+      expect(await reopened.getRuntimeMode('90011087')).toBe('cutover');
+      expect(await reopened.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ea_analysis')).toEqual({
         account_id: '90011087',
         symbol: 'XAUUSD',
         source: 'ea_analysis',
@@ -1224,7 +1224,7 @@ describe('persistence scaffold', () => {
         command: { action: 'SIGNAL', tp1: 3358 },
         created_at: '2026-07-03T00:00:00.000Z'
       });
-      expect(reopened.listShadowComparisons({ source: 'ai_result' })).toEqual([
+      expect(await reopened.listShadowComparisons({ source: 'ai_result' })).toEqual([
         {
           account_id: '90011087',
           symbol: 'GBPJPY',
@@ -1236,7 +1236,7 @@ describe('persistence scaffold', () => {
           created_at: '2026-07-03T00:05:00.000Z'
         }
       ]);
-      expect(reopened.summarizeShadowComparisons({ account_id: '90011087' })).toEqual({
+      expect(await reopened.summarizeShadowComparisons({ account_id: '90011087' })).toEqual({
         comparisons: 2,
         protocol_errors: 1,
         signal_drifts: 1,
@@ -1245,7 +1245,7 @@ describe('persistence scaffold', () => {
         first_created_at: '2026-07-03T00:00:00.000Z',
         last_created_at: '2026-07-03T00:05:00.000Z'
       });
-      expect(reopened.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'rejected' })).toEqual([
+      expect(await reopened.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD', status: 'rejected' })).toEqual([
         expect.objectContaining({
           decision_id: 'tpv1_persisted',
           account_id: '90011087',
@@ -1258,7 +1258,7 @@ describe('persistence scaffold', () => {
           created_at: '2026-07-03T00:06:00.000Z'
         })
       ]);
-      expect(reopened.listApiTokens()).toEqual([
+      expect(await reopened.listApiTokens()).toEqual([
         {
           token: 'user-token',
           name: 'Desk',
@@ -1267,13 +1267,13 @@ describe('persistence scaffold', () => {
           created_at: '2026-07-03T00:07:00.000Z'
         }
       ]);
-      expect(reopened.getCommand('candidate_1')).toMatchObject({
+      expect(await reopened.getCommand('candidate_1')).toMatchObject({
         status: 'acked',
         result: 'OK',
         ticket: 999001
       });
-      expect(reopened.pollCommands('90011087')).toEqual([]);
-      reopened.close();
+      expect(await reopened.pollCommands('90011087')).toEqual([]);
+      await reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

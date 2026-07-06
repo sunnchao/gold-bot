@@ -4,11 +4,11 @@ import type { EaRecord, EaStore, PositionStateRecord } from '@gold-bot/persisten
 export class AnalysisService {
   constructor(private readonly store: EaStore, private readonly nowIso: () => string) {}
 
-  analyzeAccountSymbol(accountId: string, symbol: string) {
-    const latestTick = this.store.getLatestTick(accountId, symbol) ?? {};
-    const positions = filterPositionsForSymbol(symbol, this.store.getPositions(accountId, symbol));
-    const latestAIResult = this.store.getAIResults(accountId).find((result) => result.symbol === symbol);
-    const h1Bars = this.store.getBars(accountId, symbol, 'H1');
+  async analyzeAccountSymbol(accountId: string, symbol: string) {
+    const latestTick = (await this.store.getLatestTick(accountId, symbol)) ?? {};
+    const positions = filterPositionsForSymbol(symbol, await this.store.getPositions(accountId, symbol));
+    const latestAIResult = (await this.store.getAIResults(accountId)).find((result) => result.symbol === symbol);
+    const h1Bars = await this.store.getBars(accountId, symbol, 'H1');
     return {
       replay: runReplay({
         account_id: accountId,
@@ -17,15 +17,15 @@ export class AnalysisService {
         current_price: currentPriceForReplay(currentPriceFromTick(latestTick), h1Bars),
         bars: {
           H1: h1Bars,
-          H4: this.store.getBars(accountId, symbol, 'H4'),
-          M30: this.store.getBars(accountId, symbol, 'M30'),
-          M15: this.store.getBars(accountId, symbol, 'M15'),
-          M5: this.store.getBars(accountId, symbol, 'M5'),
-          M1: this.store.getBars(accountId, symbol, 'M1'),
-          D1: this.store.getBars(accountId, symbol, 'D1')
+          H4: await this.store.getBars(accountId, symbol, 'H4'),
+          M30: await this.store.getBars(accountId, symbol, 'M30'),
+          M15: await this.store.getBars(accountId, symbol, 'M15'),
+          M5: await this.store.getBars(accountId, symbol, 'M5'),
+          M1: await this.store.getBars(accountId, symbol, 'M1'),
+          D1: await this.store.getBars(accountId, symbol, 'D1')
         },
         positions,
-        position_states: this.store.loadPositionStates(accountId, symbol),
+        position_states: await this.store.loadPositionStates(accountId, symbol),
         ai_result: replayAIResult(latestAIResult)
       }),
       positionSummary: summarizePositions({
@@ -36,14 +36,14 @@ export class AnalysisService {
     };
   }
 
-  persistPositionStates(accountId: string, symbol: string, states: PositionManagerState[] | null): void {
+  async persistPositionStates(accountId: string, symbol: string, states: PositionManagerState[] | null): Promise<void> {
     if (states == null) {
       return;
     }
     for (const state of states) {
-      this.store.savePositionState(accountId, symbol, toPositionStateRecord(state, this.nowIso()));
+      await this.store.savePositionState(accountId, symbol, toPositionStateRecord(state, this.nowIso()));
     }
-    this.store.deleteStalePositionStates(accountId, symbol, states.map((state) => state.ticket));
+    await this.store.deleteStalePositionStates(accountId, symbol, states.map((state) => state.ticket));
   }
 }
 

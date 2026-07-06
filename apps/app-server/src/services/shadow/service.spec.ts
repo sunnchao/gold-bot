@@ -3,10 +3,10 @@ import { createInMemoryEaStore } from '@gold-bot/persistence';
 import { ShadowService } from './service.js';
 
 describe('ShadowService', () => {
-  it('returns placeholder metrics when no shadow comparisons exist', () => {
+  it('returns placeholder metrics when no shadow comparisons exist', async () => {
     const service = new ShadowService(createInMemoryEaStore(), () => '2026-07-03T00:00:00.000Z');
 
-    expect(service.metrics()).toEqual({
+    expect(await service.metrics()).toEqual({
       status: 'OK',
       generated_at: '2026-07-03T00:00:00.000Z',
       report: {
@@ -46,9 +46,9 @@ describe('ShadowService', () => {
     });
   });
 
-  it('aggregates persisted shadow comparison metrics', () => {
+  it('aggregates persisted shadow comparison metrics', async () => {
     const store = createInMemoryEaStore();
-    store.recordShadowComparison({
+    await store.recordShadowComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       protocol_ok: true,
@@ -58,7 +58,7 @@ describe('ShadowService', () => {
       source: 'ai_result',
       created_at: '2026-07-03T00:00:00.000Z'
     });
-    store.recordShadowComparison({
+    await store.recordShadowComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       protocol_ok: false,
@@ -71,7 +71,7 @@ describe('ShadowService', () => {
 
     const service = new ShadowService(store, () => '2026-07-03T00:10:00.000Z');
 
-    expect(service.metrics()).toEqual({
+    expect(await service.metrics()).toEqual({
       status: 'OK',
       generated_at: '2026-07-03T00:10:00.000Z',
       report: {
@@ -111,11 +111,11 @@ describe('ShadowService', () => {
     });
   });
 
-  it('records oracle-backed comparison rows and computes drift flags', () => {
+  it('records oracle-backed comparison rows and computes drift flags', async () => {
     const store = createInMemoryEaStore();
     const service = new ShadowService(store, () => '2026-07-03T00:10:00.000Z');
 
-    const comparison = service.recordOracleComparison({
+    const comparison = await service.recordOracleComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       source: 'ea_analysis',
@@ -139,14 +139,14 @@ describe('ShadowService', () => {
       source: 'ea_analysis',
       created_at: '2026-07-03T00:10:00.000Z'
     });
-    expect(store.listShadowComparisons()).toEqual([comparison]);
+    expect(await store.listShadowComparisons()).toEqual([comparison]);
   });
 
-  it('records runtime snapshots and can compare against oracle payloads later', () => {
+  it('records runtime snapshots and can compare against oracle payloads later', async () => {
     const store = createInMemoryEaStore();
     const service = new ShadowService(store, () => '2026-07-03T00:10:00.000Z');
 
-    const snapshot = service.recordRuntimeSnapshot({
+    await service.recordRuntimeSnapshot({
       account_id: '90011087',
       symbol: 'XAUUSD',
       source: 'ea_analysis',
@@ -154,16 +154,7 @@ describe('ShadowService', () => {
       command: { action: 'SIGNAL', strategy: 'pullback', tp1: 3345 }
     });
 
-    expect(snapshot).toEqual({
-      account_id: '90011087',
-      symbol: 'XAUUSD',
-      source: 'ea_analysis',
-      signal: { strategy: 'pullback', side: 'BUY', entry: 3335.7 },
-      command: { action: 'SIGNAL', strategy: 'pullback', tp1: 3345 },
-      created_at: '2026-07-03T00:10:00.000Z'
-    });
-
-    const comparison = service.recordOracleComparison({
+    const comparison = await service.recordOracleComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       source: 'ea_analysis',
@@ -185,9 +176,9 @@ describe('ShadowService', () => {
     });
   });
 
-  it('builds a cutover-style qualification payload from the current metrics', () => {
+  it('builds a cutover-style qualification payload from the current metrics', async () => {
     const store = createInMemoryEaStore();
-    store.recordShadowComparison({
+    await store.recordShadowComparison({
       account_id: '90011087',
       symbol: 'XAUUSD',
       protocol_ok: true,
@@ -199,7 +190,7 @@ describe('ShadowService', () => {
     });
 
     const service = new ShadowService(store, () => '2026-07-03T00:10:00.000Z');
-    const qualification = service.qualification();
+    const qualification = await service.qualification();
 
     expect(qualification.status).toBe('OK');
     expect(qualification.report.ready).toBe(true);

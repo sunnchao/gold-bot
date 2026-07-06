@@ -43,8 +43,8 @@ export function createAIApproveCooldown(): AIApproveCooldown {
   };
 }
 
-export function evaluateAIApprovePendingGate(input: AIApprovePendingGateInput): AIApprovePendingGateResult {
-  const tick = input.store.getLatestTick(input.accountId, input.symbol) ?? {};
+export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateInput): Promise<AIApprovePendingGateResult> {
+  const tick = (await input.store.getLatestTick(input.accountId, input.symbol)) ?? {};
   const currentPrice = currentPriceFromTick(tick);
   if (currentPrice <= 0) {
     return reject('current_price.missing');
@@ -61,11 +61,11 @@ export function evaluateAIApprovePendingGate(input: AIApprovePendingGateInput): 
   }
 
   const trend = buildAIApproveTrendContext({
-    D1: input.store.getBars(input.accountId, input.symbol, 'D1'),
-    H4: input.store.getBars(input.accountId, input.symbol, 'H4'),
-    H1: input.store.getBars(input.accountId, input.symbol, 'H1'),
-    M30: input.store.getBars(input.accountId, input.symbol, 'M30'),
-    M15: input.store.getBars(input.accountId, input.symbol, 'M15')
+    D1: await input.store.getBars(input.accountId, input.symbol, 'D1'),
+    H4: await input.store.getBars(input.accountId, input.symbol, 'H4'),
+    H1: await input.store.getBars(input.accountId, input.symbol, 'H1'),
+    M30: await input.store.getBars(input.accountId, input.symbol, 'M30'),
+    M15: await input.store.getBars(input.accountId, input.symbol, 'M15')
   });
   const signalDirection = stringField(input.tradePlan, 'side') === 'SELL' ? 'BEAR' : 'BULL';
   if (trend.consensusDirection !== 'NEUTRAL' && trend.consensusDirection !== signalDirection && numberField(input.tradePlan, 'confidence') < 75) {
@@ -78,7 +78,7 @@ export function evaluateAIApprovePendingGate(input: AIApprovePendingGateInput): 
     }
   }
 
-  const positions = input.store.getPositions(input.accountId, input.symbol);
+  const positions = await input.store.getPositions(input.accountId, input.symbol);
   const side = stringField(input.tradePlan, 'side');
   if (hasOpenPositionOnSide(positions, input.symbol, side, 'ai_signal')) {
     if (booleanField(input.tradePlan, 'add_on') !== true) {
@@ -88,7 +88,7 @@ export function evaluateAIApprovePendingGate(input: AIApprovePendingGateInput): 
     if (averagePrice <= 0) {
       return reject('position.average_entry_missing');
     }
-    const m30Atr = latestAtr(input.store.getBars(input.accountId, input.symbol, 'M30'));
+    const m30Atr = latestAtr(await input.store.getBars(input.accountId, input.symbol, 'M30'));
     if (m30Atr <= 0) {
       return reject('position.m30_atr_missing');
     }
@@ -97,7 +97,7 @@ export function evaluateAIApprovePendingGate(input: AIApprovePendingGateInput): 
     }
   }
 
-  if (input.store.hasActiveAIApprovePending(input.accountId, input.symbol, side, input.nowIso)) {
+  if (await input.store.hasActiveAIApprovePending(input.accountId, input.symbol, side, input.nowIso)) {
     return reject('pending.duplicate');
   }
 
@@ -105,7 +105,7 @@ export function evaluateAIApprovePendingGate(input: AIApprovePendingGateInput): 
     return reject('cooldown.active');
   }
 
-  const h1Atr = latestAtr(input.store.getBars(input.accountId, input.symbol, 'H1'));
+  const h1Atr = latestAtr(await input.store.getBars(input.accountId, input.symbol, 'H1'));
   if (h1Atr > 0 && Math.abs(currentPrice - entry) > h1Atr * 3) {
     return reject('entry.too_far_from_market');
   }

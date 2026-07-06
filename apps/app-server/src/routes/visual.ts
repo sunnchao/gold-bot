@@ -22,7 +22,7 @@ export type VisualRouteDeps = {
   alerts: IndicatorAlertCache;
 };
 
-export function handleVisualRoute(request: VisualRouteRequest, deps: VisualRouteDeps): JsonResponse {
+export async function handleVisualRoute(request: VisualRouteRequest, deps: VisualRouteDeps): Promise<JsonResponse> {
   if (request.path !== '/visual/poll') {
     return error(404, 'not found');
   }
@@ -57,8 +57,8 @@ export function handleVisualRoute(request: VisualRouteRequest, deps: VisualRoute
       symbol,
       timeframe,
       server_time: deps.nowIso(),
-      tick: visualTick(deps.store.getLatestTick(accountId, symbol), symbol),
-      ai: visualAI(deps.store.getAIResults(accountId), symbol),
+      tick: visualTick(await deps.store.getLatestTick(accountId, symbol), symbol),
+      ai: visualAI(await deps.store.getAIResults(accountId), symbol),
       alerts,
       count: alerts.length
     }
