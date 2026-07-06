@@ -1525,7 +1525,7 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
       balance: numberField(heartbeat, 'balance'),
       broker: stringFieldOrEmpty(registration, 'broker'),
       connected: accountConnected(heartbeat),
-      currency: stringFieldOrEmpty(registration, 'currency'),
+      currency: stringFieldOrEmpty(registration, 'currency') || 'USD',
       equity: numberField(heartbeat, 'equity'),
       free_margin: numberField(heartbeat, 'free_margin'),
       leverage: numberField(registration, 'leverage'),
@@ -1595,13 +1595,26 @@ function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timesta
   return { marketOpen, isTradeAllowed };
 }
 
+function flattenBarRecords(records: EaRecord[]): EaRecord[] {
+  const out: EaRecord[] = [];
+  for (const record of records) {
+    const inner = record.bars;
+    if (Array.isArray(inner)) {
+      out.push(...inner);
+    } else {
+      out.push(record);
+    }
+  }
+  return out;
+}
+
 function analysisBarsByTimeframe(store: EaStore, accountId: string, symbol: string): Promise<Record<string, EaRecord[]>> {
   return (async () => {
   return {
-    M15: await store.getBars(accountId, symbol, 'M15'),
-    M30: await store.getBars(accountId, symbol, 'M30'),
-    H1: await store.getBars(accountId, symbol, 'H1'),
-    H4: await store.getBars(accountId, symbol, 'H4')
+    M15: flattenBarRecords(await store.getBars(accountId, symbol, 'M15')),
+    M30: flattenBarRecords(await store.getBars(accountId, symbol, 'M30')),
+    H1: flattenBarRecords(await store.getBars(accountId, symbol, 'H1')),
+    H4: flattenBarRecords(await store.getBars(accountId, symbol, 'H4'))
   };
   })();
 }
