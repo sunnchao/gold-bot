@@ -9,7 +9,7 @@ export type Migration = {
 };
 
 export function loadMigrations(): Migration[] {
-  const migrationsDir = join(__dirname, 'migrations');
+  const migrationsDir = join(import.meta.dirname, 'migrations');
   const files = readdirSync(migrationsDir)
     .filter((file) => file.endsWith('.sql'))
     .sort();
