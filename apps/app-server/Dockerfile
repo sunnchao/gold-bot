@@ -7,6 +7,11 @@ COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json .
 COPY apps/app-server/package.json apps/app-server/tsconfig.json apps/app-server/vitest.config.ts ./apps/app-server/
 COPY apps/app-server/src ./apps/app-server/src
 
+COPY apps/app-web/package.json apps/app-web/tsconfig.json apps/app-web/next.config.ts apps/app-web/postcss.config.cjs apps/app-web/tailwind.config.ts ./apps/app-web/
+COPY apps/app-web/app ./apps/app-web/app
+COPY apps/app-web/components ./apps/app-web/components
+COPY apps/app-web/lib ./apps/app-web/lib
+
 COPY packages/config/package.json packages/config/tsconfig.json ./packages/config/
 COPY packages/config/src ./packages/config/src
 
@@ -28,7 +33,7 @@ COPY packages/trading-core/src ./packages/trading-core/src
 COPY apps/app-mt/mt4_ea ./apps/app-mt/mt4_ea
 COPY apps/app-mt/mt5_ea ./apps/app-mt/mt5_ea
 
-RUN corepack enable && pnpm install --frozen-lockfile && pnpm --filter "app-server..." build
+RUN corepack enable && pnpm install --frozen-lockfile && pnpm --filter app-web build && test -f /workspace/apps/app-web/dist/index.html && pnpm --filter "app-server..." build
 
 FROM node:24-bookworm-slim AS runtime
 
