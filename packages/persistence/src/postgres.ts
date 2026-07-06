@@ -819,7 +819,7 @@ export async function createPostgresEaStore(dsn: string): Promise<EaStore | null
     },
 
     async listSymbols(accountIdValue: string): Promise<string[]> {
-      const rows = await queryRows(q, "SELECT DISTINCT symbol FROM ea_snapshots WHERE account_id = $1 AND symbol <> '' AND kind IN ('tick', 'bars', 'positions') ORDER BY id ASC", [accountIdValue]);
+      const rows = await queryRows(q, "SELECT DISTINCT symbol FROM ea_snapshots WHERE account_id = $1 AND symbol <> '' AND kind IN ('tick', 'bars', 'positions') ORDER BY symbol ASC", [accountIdValue]);
       const out: string[] = [];
       for (const row of rows) {
         appendUnique(out, asString(row.symbol));
