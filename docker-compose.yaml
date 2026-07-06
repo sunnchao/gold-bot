@@ -2,16 +2,24 @@ services:
   app:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: gold-bot:local
+      dockerfile: apps/app-server/Dockerfile
+    image: gold-bot-app-server:local
     container_name: gold-bot
     env_file:
       - .env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      GB_APP_ENV: production
+      GB_APP_SERVER_HOST: 0.0.0.0
+      GB_APP_SERVER_PORT: 8880
+      GB_NODE_SHADOW_MODE: "false"
+      GB_EA_STORE_SQLITE_PATH: /workspace/data/gold_bolt.sqlite
     ports:
       - "127.0.0.1:8880:8880"
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - ./logs:/workspace/logs
+      - ./data:/workspace/data
     restart: unless-stopped
     networks:
       - default
@@ -19,8 +27,8 @@ services:
 
   agents:
     build:
-      context: ./agents
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/app-agent/Dockerfile
     image: gold-analysis-agent:local
     container_name: gold-analysis-agent
     env_file:

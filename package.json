@@ -1,0 +1,21 @@
+{
+  "name": "gold-bot-node-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "prepare": "node -e \"process.exit(0)\"",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.19.2",
+    "turbo": "^2.6.3",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.4"
+  }
+}

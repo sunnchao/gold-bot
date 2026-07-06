@@ -12,12 +12,19 @@ coverage.out
 *.test
 gold_bolt.db
 data/*.sqlite*
-web/dashboard/node_modules
-web/dashboard/.next
-web/dashboard/dist
-agents/node_modules
-agents/dist
-agents/data
-agents/.env
-agents/accounts.json
-agents/coverage
+
+# Node monorepo build artifacts (every image rebuilds these from source)
+node_modules
+**/node_modules
+dist
+**/dist
+.next
+**/.next
+.turbo
+**/.turbo
+
+# AI Agents (NestJS)
+apps/app-agent/data
+apps/app-agent/.env
+apps/app-agent/accounts.json
+apps/app-agent/coverage

@@ -1,9 +1,9 @@
 {
-  "project": "gold-bot",
-  "version": "1.4.0",
-  "created": "2026-06-13",
-  "updated": "2026-06-15",
-  "phase": 3,
+  "project": "gold-bot-rewrite",
+  "version": "2.0.0",
+  "created": "2026-07-03",
+  "updated": "2026-07-03",
+  "phase": 1,
   "mode": "normal",
   "granularity": 1,
   "research_agents": true,
@@ -14,8 +14,13 @@
     "workflow_guard": false
   },
   "feature_flags": {
-    "fib_extension_tp": true,
-    "fib_retracement_pullback": true,
-    "ai_signal_pending": false
+    "smc_detection": false,
+    "harmonic_patterns": false,
+    "candlestick_patterns": false,
+    "scale_in_strategy": false,
+    "per_symbol_config": false,
+    "prometheus_metrics": false,
+    "redis_cache": false,
+    "postgresql": false
   }
 }

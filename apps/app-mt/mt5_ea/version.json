@@ -1,0 +1,5 @@
+{
+  "version": "2.8.3",
+  "build": 9,
+  "changelog": "MT5版本: AI信号挂单支持(Magic=20250238)，兼容 tp/tp1 字段名，AI信号使用服务端计算手数(含减半逻辑)，所有品种MaxSpread=80避免挂单被点差拦截，仅支持PostgreSQL"
+}
