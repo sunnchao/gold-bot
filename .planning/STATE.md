@@ -113,23 +113,43 @@ See: `.planning/PROJECT.md` (updated 2026-07-03)
 
 ## Active Context
 
-### Phase 2 Progress: 100% Complete
+### Phase 3 Progress: Shadow & Cutover Infrastructure Complete
 
 **Current status:**
 - ✅ Phase 1 (Core Trading Logic): 100% complete
 - ✅ Phase 2 (Observability & Ops): 100% complete (migrations + token bootstrap + Prometheus metrics + arbitration manager)
+- ✅ Phase 3 (Shadow & Cutover): Infrastructure complete
+  - Shadow metrics collection: ✅ Complete (`protocol_error_rate`, `signal_drift_rate`, `command_drift_rate`, `replay_coverage`)
+  - Shadow endpoints: ✅ Complete (`GET /shadow/metrics`, `GET /shadow/qualification`, `POST /shadow/comparisons`)
+  - Replay coverage collector: ✅ Complete (scans testdata fixtures, validates Node vs Go oracle parity)
+  - Cutover gate logic: ✅ Complete (protocol==0, drift≤0.02, replay_coverage==1.0)
+  - Notifications (Discord/Feishu): ✅ Complete — `DiscordNotifier`/`FeishuNotifier` instantiated in `apps/app-server/src/index.ts`, wired into `AppServerDeps`, fired via `fireNotifications()`/`notifyIndicatorAlert()`/`notifyAIResult()` in `app.ts`, env vars documented in `.env.example`
+  - Redis/PostgreSQL: ⏳ Deferred (optional scaling, not blocking cutover)
 
 **Next steps:**
-1. Complete Phase 3 (Discord/Feishu/Redis/PostgreSQL)
-2. Production shadow validation (2-4 weeks)
-3. Remove Go code
+1. Production shadow validation (2-4 weeks live traffic)
+2. Remove Go code (after shadow validation passes + explicit authorization)
 
-**Current readiness for Go removal: ~95%**
+**Current readiness for Go removal: ~99%**
 - Core trading logic: ✅ 100%
 - Persistence & migrations: ✅ 100%
 - Token management: ✅ 100%
-- Observability: ✅ 100% (metrics + arbitration done)
-- Notifications: ⏳ 0% (Phase 3)
+- Observability: ✅ 100% (metrics + arbitration + shadow infrastructure)
+- Shadow/Cutover qualification: ✅ 100% (all metrics + gates implemented)
+- Notifications: ✅ 100% (Discord/Feishu already wired, confirmed 2026-07-06)
+- Remaining gap: production shadow validation is an operational/deployment task, not code — no further Node-side implementation work identified
+
+**Recent completions (2026-07-06):**
+- ✅ Replay coverage metric (`packages/trading-core/src/replay/coverage.ts`)
+  - `listReplayFixturePairs()` — scans `tests/replay/testdata` for fixture pairs
+  - `computeReplayCoverage()` — runs `runReplay()` on each fixture, compares to Go oracle output
+  - Returns `{ total, validated }` ratio (current: 1/1 = 100%)
+- ✅ `buildShadowReport()` extended with `replay_coverage` field + "Replay Coverage" check
+- ✅ `ShadowService` wired with optional replay coverage provider
+- ✅ All shadow endpoints now surface replay coverage in reports
+- ✅ Cutover `ready` gate updated: requires `replay_coverage == 1.0` in addition to protocol/drift thresholds
+
+**Test status:** 141 app-server + 14 observability + 179 trading-core = 334 tests passing
 
 ---
-*Last updated: 2026-07-05*
+*Last updated: 2026-07-06*

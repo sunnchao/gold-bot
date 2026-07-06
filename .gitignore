@@ -68,6 +68,8 @@ Thumbs.db
 .hermes/
 .superpowers/
 .planning/
+.pnpm-store
+.ruff_cache/
 
 # Task files
 CODEX_TASK*.md
@@ -76,3 +78,12 @@ CODEX_EA_FIX.md
 # CommandCode
 .commandcode*
 .commandcode*.db
+
+# Node monorepo
+node_modules/
+**/node_modules/
+.turbo/
+**/.turbo/
+.cache/
+apps/*/dist/
+packages/*/dist/
