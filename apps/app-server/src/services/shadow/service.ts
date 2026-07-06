@@ -1,4 +1,4 @@
-import { buildShadowReport } from '@gold-bot/observability';
+import { buildShadowReport, type ReplayCoverageSummary } from '@gold-bot/observability';
 import type { EaRecord, EaStore, ShadowComparison, ShadowRuntimeSnapshot } from '@gold-bot/persistence';
 
 export type ShadowMetrics = {
@@ -20,16 +20,18 @@ export type ShadowQualification = ShadowMetrics & {
 export class ShadowService {
   constructor(
     private readonly store: EaStore,
-    private readonly nowIso: () => string
+    private readonly nowIso: () => string,
+    private readonly replayCoverageProvider: (() => ReplayCoverageSummary | null) | null = null
   ) {}
 
   async metrics(): Promise<ShadowMetrics> {
     const comparisons = await this.store.listShadowComparisons();
     const totals = await this.store.summarizeShadowComparisons();
+    const replayCoverage = this.replayCoverageProvider?.() ?? null;
     return {
       status: 'OK',
       generated_at: this.nowIso(),
-      report: buildShadowReport(comparisons),
+      report: buildShadowReport(comparisons, replayCoverage),
       totals: {
         comparisons: totals.comparisons,
         protocol_errors: totals.protocol_errors,

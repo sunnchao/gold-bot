@@ -9,18 +9,30 @@ export type CutoverCheck = {
   tone: CutoverCheckTone;
 };
 
+export type ReplayCoverageSummary = {
+  total: number;
+  validated: number;
+};
+
 export type CutoverReport = {
   ready: boolean;
   protocol_error_rate: number;
   signal_drift_rate: number;
   command_drift_rate: number;
+  replay_coverage: number;
   last_shadow_event_at: string;
   missing_capabilities: string[];
   checks: CutoverCheck[];
 };
 
-export function buildShadowReport(comparisons: ShadowComparison[]): CutoverReport {
+export function buildShadowReport(
+  comparisons: ShadowComparison[],
+  replayCoverage: ReplayCoverageSummary | null = null
+): CutoverReport {
   const lastShadowEventAt = comparisons[comparisons.length - 1]?.created_at ?? '';
+  const replayCoverageRate = replayCoverage == null || replayCoverage.total === 0
+    ? 0
+    : replayCoverage.validated / replayCoverage.total;
 
   if (comparisons.length === 0) {
     return {
@@ -28,14 +40,16 @@ export function buildShadowReport(comparisons: ShadowComparison[]): CutoverRepor
       protocol_error_rate: 0,
       signal_drift_rate: 0,
       command_drift_rate: 0,
+      replay_coverage: replayCoverageRate,
       last_shadow_event_at: lastShadowEventAt,
-      missing_capabilities: ['shadow_traffic'],
+      missing_capabilities: replayCoverage == null ? ['shadow_traffic'] : ['shadow_traffic', 'replay_coverage'],
       checks: buildCutoverChecks({
         hasShadowTraffic: false,
         hasOracleReference: false,
         protocolErrorRate: 0,
         signalDriftRate: 0,
-        commandDriftRate: 0
+        commandDriftRate: 0,
+        replayCoverage: replayCoverage
       })
     };
   }
@@ -47,14 +61,16 @@ export function buildShadowReport(comparisons: ShadowComparison[]): CutoverRepor
       protocol_error_rate: 0,
       signal_drift_rate: 0,
       command_drift_rate: 0,
+      replay_coverage: replayCoverageRate,
       last_shadow_event_at: lastShadowEventAt,
-      missing_capabilities: ['go_oracle_reference'],
+      missing_capabilities: replayCoverage == null ? ['go_oracle_reference'] : ['go_oracle_reference', 'replay_coverage'],
       checks: buildCutoverChecks({
         hasShadowTraffic: true,
         hasOracleReference: false,
         protocolErrorRate: 0,
         signalDriftRate: 0,
-        commandDriftRate: 0
+        commandDriftRate: 0,
+        replayCoverage: replayCoverage
       })
     };
   }
@@ -67,19 +83,22 @@ export function buildShadowReport(comparisons: ShadowComparison[]): CutoverRepor
   const signalDriftRate = signalDrifts / total;
   const commandDriftRate = commandDrifts / total;
 
+  const replayCoverageMissing = replayCoverage == null || replayCoverageRate < 1;
   return {
-    ready: protocolErrorRate === 0 && signalDriftRate <= 0.02 && commandDriftRate <= 0.02,
+    ready: protocolErrorRate === 0 && signalDriftRate <= 0.02 && commandDriftRate <= 0.02 && !replayCoverageMissing,
     protocol_error_rate: protocolErrorRate,
     signal_drift_rate: signalDriftRate,
     command_drift_rate: commandDriftRate,
+    replay_coverage: replayCoverageRate,
     last_shadow_event_at: lastShadowEventAt,
-    missing_capabilities: [],
+    missing_capabilities: replayCoverageMissing ? ['replay_coverage'] : [],
     checks: buildCutoverChecks({
       hasShadowTraffic: true,
       hasOracleReference: true,
       protocolErrorRate,
       signalDriftRate,
-      commandDriftRate
+      commandDriftRate,
+      replayCoverage: replayCoverage
     })
   };
 }
@@ -90,14 +109,62 @@ type CutoverInputs = {
   protocolErrorRate: number;
   signalDriftRate: number;
   commandDriftRate: number;
+  replayCoverage: ReplayCoverageSummary | null;
 };
 
 function buildCutoverChecks(inputs: CutoverInputs): CutoverCheck[] {
   return [
     buildOracleReplayCheck(inputs.hasOracleReference, inputs.hasShadowTraffic),
     buildShadowDriftCheck(inputs.hasShadowTraffic, inputs.signalDriftRate, inputs.commandDriftRate),
-    buildProtocolCheck(inputs.hasShadowTraffic, inputs.protocolErrorRate)
+    buildProtocolCheck(inputs.hasShadowTraffic, inputs.protocolErrorRate),
+    buildReplayCoverageCheck(inputs.replayCoverage)
   ];
+}
+
+function buildReplayCoverageCheck(coverage: ReplayCoverageSummary | null): CutoverCheck {
+  if (coverage == null) {
+    return {
+      label: 'Replay Coverage',
+      value: 'pending',
+      detail: 'Replay fixture set has not been scanned yet',
+      tone: 'amber'
+    };
+  }
+
+  if (coverage.total === 0) {
+    return {
+      label: 'Replay Coverage',
+      value: 'pending',
+      detail: 'No replay fixture pairs have been recorded yet',
+      tone: 'amber'
+    };
+  }
+
+  const rate = coverage.validated / coverage.total;
+  if (rate >= 1) {
+    return {
+      label: 'Replay Coverage',
+      value: '100.00%',
+      detail: `${coverage.validated}/${coverage.total} Go fixtures reproduced by Node replay`,
+      tone: 'green'
+    };
+  }
+
+  if (rate > 0) {
+    return {
+      label: 'Replay Coverage',
+      value: formatRate(rate),
+      detail: `${coverage.validated}/${coverage.total} Go fixtures reproduced (raw pass requires 100%)`,
+      tone: 'amber'
+    };
+  }
+
+  return {
+    label: 'Replay Coverage',
+    value: '0.00%',
+    detail: `${coverage.total} fixture(s) not yet reproduced by Node replay`,
+    tone: 'red'
+  };
 }
 
 function buildOracleReplayCheck(hasOracleReference: boolean, hasShadowTraffic: boolean): CutoverCheck {

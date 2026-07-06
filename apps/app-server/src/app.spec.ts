@@ -1906,8 +1906,9 @@ describe('app-server scaffold', () => {
       protocol_error_rate: 0,
       signal_drift_rate: 0,
       command_drift_rate: 1,
+      replay_coverage: 0,
       last_shadow_event_at: '2026-07-02T12:00:00.000Z',
-      missing_capabilities: [],
+      missing_capabilities: ['replay_coverage'],
       checks: [
         {
           label: 'Oracle Replay',
@@ -1926,6 +1927,12 @@ describe('app-server scaffold', () => {
           value: '0.00%',
           detail: 'No contract mismatches observed in mirrored traffic',
           tone: 'green'
+        },
+        {
+          label: 'Replay Coverage',
+          value: 'pending',
+          detail: 'Replay fixture set has not been scanned yet',
+          tone: 'amber'
         }
       ]
     });
@@ -1990,8 +1997,9 @@ describe('app-server scaffold', () => {
         protocol_error_rate: 0.5,
         signal_drift_rate: 0.5,
         command_drift_rate: 0.5,
+        replay_coverage: 0,
         last_shadow_event_at: '2026-07-03T00:05:00.000Z',
-        missing_capabilities: [],
+        missing_capabilities: ['replay_coverage'],
         checks: [
           {
             label: 'Oracle Replay',
@@ -2010,6 +2018,12 @@ describe('app-server scaffold', () => {
             value: '50.00%',
             detail: 'Legacy contract mismatches detected in mirrored traffic',
             tone: 'red'
+          },
+          {
+            label: 'Replay Coverage',
+            value: 'pending',
+            detail: 'Replay fixture set has not been scanned yet',
+            tone: 'amber'
           }
         ]
       },
@@ -2047,12 +2061,13 @@ describe('app-server scaffold', () => {
       status: 'OK',
       generated_at: '2026-07-03T00:10:00.000Z',
       report: {
-        ready: true,
+        ready: false,
         protocol_error_rate: 0,
         signal_drift_rate: 0,
         command_drift_rate: 0,
+        replay_coverage: 0,
         last_shadow_event_at: '2026-07-03T00:00:00.000Z',
-        missing_capabilities: [],
+        missing_capabilities: ['replay_coverage'],
         checks: [
           {
             label: 'Oracle Replay',
@@ -2071,6 +2086,12 @@ describe('app-server scaffold', () => {
             value: '0.00%',
             detail: 'No contract mismatches observed in mirrored traffic',
             tone: 'green'
+          },
+          {
+            label: 'Replay Coverage',
+            value: 'pending',
+            detail: 'Replay fixture set has not been scanned yet',
+            tone: 'amber'
           }
         ]
       },
@@ -2098,6 +2119,12 @@ describe('app-server scaffold', () => {
           value: '0.00%',
           detail: 'No contract mismatches observed in mirrored traffic',
           tone: 'green'
+        },
+        {
+          label: 'Replay Coverage',
+          value: 'pending',
+          detail: 'Replay fixture set has not been scanned yet',
+          tone: 'amber'
         }
       ]
     });

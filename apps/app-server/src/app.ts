@@ -11,6 +11,7 @@ import {
   buildContext as buildHarmonicContext,
   buildSMCContext,
   calculateFibExtension,
+  computeReplayCoverage,
   detectAllCandlestickPatterns,
   type HarmonicBar,
   ema,
@@ -176,7 +177,15 @@ export async function createAppServer(options: AppServerOptions = {}) {
     events: options.events ?? createSseHub<SseEvent>(),
     aiApproveCooldown: createAIApproveCooldown()
   };
-  const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso);
+  const replayCoverageProvider = () => {
+    try {
+      const fixtureRoot = join(fileURLToPath(import.meta.url), '../../../../../tests/replay/testdata');
+      return computeReplayCoverage(fixtureRoot);
+    } catch {
+      return null;
+    }
+  };
+  const shadow = new ShadowService(baseDeps.store, baseDeps.nowIso, replayCoverageProvider);
   const analysis = new AnalysisService(baseDeps.store, baseDeps.nowIso);
   const commandLifecycle = new CommandLifecycleService(baseDeps.store, options.defaultRuntimeMode ?? 'oracle', shadow);
   const scheduler = new SchedulerService(analysis, commandLifecycle, shadow, baseDeps.store, baseDeps.nowIso);

@@ -14,6 +14,7 @@ describe('ShadowService', () => {
         protocol_error_rate: 0,
         signal_drift_rate: 0,
         command_drift_rate: 0,
+        replay_coverage: 0,
         last_shadow_event_at: '',
         missing_capabilities: ['shadow_traffic'],
         checks: [
@@ -33,6 +34,12 @@ describe('ShadowService', () => {
             label: 'Protocol Errors',
             value: '0.00%',
             detail: 'Live shadow traffic has not started yet',
+            tone: 'amber'
+          },
+          {
+            label: 'Replay Coverage',
+            value: 'pending',
+            detail: 'Replay fixture set has not been scanned yet',
             tone: 'amber'
           }
         ]
@@ -79,8 +86,9 @@ describe('ShadowService', () => {
         protocol_error_rate: 0.5,
         signal_drift_rate: 0.5,
         command_drift_rate: 0.5,
+        replay_coverage: 0,
         last_shadow_event_at: '2026-07-03T00:05:00.000Z',
-        missing_capabilities: [],
+        missing_capabilities: ['replay_coverage'],
         checks: [
           {
             label: 'Oracle Replay',
@@ -99,6 +107,12 @@ describe('ShadowService', () => {
             value: '50.00%',
             detail: 'Legacy contract mismatches detected in mirrored traffic',
             tone: 'red'
+          },
+          {
+            label: 'Replay Coverage',
+            value: 'pending',
+            detail: 'Replay fixture set has not been scanned yet',
+            tone: 'amber'
           }
         ]
       },
@@ -193,8 +207,8 @@ describe('ShadowService', () => {
     const qualification = await service.qualification();
 
     expect(qualification.status).toBe('OK');
-    expect(qualification.report.ready).toBe(true);
-    expect(qualification.summary).toHaveLength(3);
+    expect(qualification.report.ready).toBe(false);
+    expect(qualification.summary).toHaveLength(4);
     expect(qualification.summary[0]).toMatchObject({
       label: 'Oracle Replay',
       value: 'validated'

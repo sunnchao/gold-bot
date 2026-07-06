@@ -29,6 +29,7 @@ describe('observability scaffold', () => {
       protocol_error_rate: 0,
       signal_drift_rate: 0,
       command_drift_rate: 0,
+      replay_coverage: 0,
       last_shadow_event_at: '',
       missing_capabilities: ['shadow_traffic'],
       checks: [
@@ -48,6 +49,12 @@ describe('observability scaffold', () => {
           label: 'Protocol Errors',
           value: '0.00%',
           detail: 'Live shadow traffic has not started yet',
+          tone: 'amber'
+        },
+        {
+          label: 'Replay Coverage',
+          value: 'pending',
+          detail: 'Replay fixture set has not been scanned yet',
           tone: 'amber'
         }
       ]
@@ -73,8 +80,9 @@ describe('observability scaffold', () => {
       protocol_error_rate: 0,
       signal_drift_rate: 0,
       command_drift_rate: 1,
+      replay_coverage: 0,
       last_shadow_event_at: '2026-07-02T12:00:00.000Z',
-      missing_capabilities: [],
+      missing_capabilities: ['replay_coverage'],
       checks: [
         {
           label: 'Oracle Replay',
@@ -93,6 +101,12 @@ describe('observability scaffold', () => {
           value: '0.00%',
           detail: 'No contract mismatches observed in mirrored traffic',
           tone: 'green'
+        },
+        {
+          label: 'Replay Coverage',
+          value: 'pending',
+          detail: 'Replay fixture set has not been scanned yet',
+          tone: 'amber'
         }
       ]
     });
@@ -117,6 +131,7 @@ describe('observability scaffold', () => {
       protocol_error_rate: 0,
       signal_drift_rate: 0,
       command_drift_rate: 0,
+      replay_coverage: 0,
       last_shadow_event_at: '2026-07-03T00:00:00.000Z',
       missing_capabilities: ['go_oracle_reference'],
       checks: [
@@ -137,6 +152,12 @@ describe('observability scaffold', () => {
           value: '0.00%',
           detail: 'No contract mismatches observed in mirrored traffic',
           tone: 'green'
+        },
+        {
+          label: 'Replay Coverage',
+          value: 'pending',
+          detail: 'Replay fixture set has not been scanned yet',
+          tone: 'amber'
         }
       ]
     });
@@ -144,33 +165,37 @@ describe('observability scaffold', () => {
 
   it('marks cutover ready when compared traffic stays within thresholds', () => {
     expect(
-      buildShadowReport([
-        {
-          account_id: '90011087',
-          symbol: 'XAUUSD',
-          protocol_ok: true,
-          signal_drift: false,
-          command_drift: false,
-          oracle_compared: true,
-          source: 'ai_result',
-          created_at: '2026-07-03T01:00:00.000Z'
-        },
-        {
-          account_id: '90011087',
-          symbol: 'XAUUSD',
-          protocol_ok: true,
-          signal_drift: false,
-          command_drift: false,
-          oracle_compared: true,
-          source: 'ai_result',
-          created_at: '2026-07-03T01:05:00.000Z'
-        }
-      ])
+      buildShadowReport(
+        [
+          {
+            account_id: '90011087',
+            symbol: 'XAUUSD',
+            protocol_ok: true,
+            signal_drift: false,
+            command_drift: false,
+            oracle_compared: true,
+            source: 'ai_result',
+            created_at: '2026-07-03T01:00:00.000Z'
+          },
+          {
+            account_id: '90011087',
+            symbol: 'XAUUSD',
+            protocol_ok: true,
+            signal_drift: false,
+            command_drift: false,
+            oracle_compared: true,
+            source: 'ai_result',
+            created_at: '2026-07-03T01:05:00.000Z'
+          }
+        ],
+        { total: 1, validated: 1 }
+      )
     ).toEqual({
       ready: true,
       protocol_error_rate: 0,
       signal_drift_rate: 0,
       command_drift_rate: 0,
+      replay_coverage: 1,
       last_shadow_event_at: '2026-07-03T01:05:00.000Z',
       missing_capabilities: [],
       checks: [
@@ -190,6 +215,12 @@ describe('observability scaffold', () => {
           label: 'Protocol Errors',
           value: '0.00%',
           detail: 'No contract mismatches observed in mirrored traffic',
+          tone: 'green'
+        },
+        {
+          label: 'Replay Coverage',
+          value: '100.00%',
+          detail: '1/1 Go fixtures reproduced by Node replay',
           tone: 'green'
         }
       ]
