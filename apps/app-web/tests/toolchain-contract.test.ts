@@ -8,16 +8,6 @@ type PackageManifest = {
   engines?: Record<string, string>
 }
 
-type LockfileManifest = {
-  packages?: Record<
-    string,
-    {
-      version?: string
-      devDependencies?: Record<string, string>
-    }
-  >
-}
-
 function readJson<T>(relativePath: string): T {
   return JSON.parse(readFileSync(resolve(process.cwd(), relativePath), 'utf8')) as T
 }
@@ -58,31 +48,27 @@ function dockerNodeSatisfiesVite8(versionSpec: string): boolean {
 describe('dashboard toolchain contract', () => {
   it('pins the dashboard build toolchain to Vite 8 while keeping Next.js build output', () => {
     const packageJson = readJson<PackageManifest>('package.json')
-    const packageLock = readJson<LockfileManifest>('package-lock.json')
 
     expect(packageJson.scripts?.build).toBe('next build')
     expect(packageJson.devDependencies?.vite).toBeDefined()
     expect(major(packageJson.devDependencies?.vite)).toBe(8)
     expect(major(packageJson.devDependencies?.vitest)).toBe(4)
     expect(packageJson.engines?.node).toBe('^20.19.0 || >=22.12.0')
-
-    expect(major(packageLock.packages?.['']?.devDependencies?.vite)).toBe(8)
-    expect(major(packageLock.packages?.['']?.devDependencies?.vitest)).toBe(4)
-    expect(major(packageLock.packages?.['node_modules/vite']?.version)).toBe(8)
-    expect(major(packageLock.packages?.['node_modules/vitest']?.version)).toBe(4)
   })
 
   it('uses a Docker Node base image that satisfies the Vite 8 engine floor', () => {
-    const dockerfile = readFileSync(resolve(process.cwd(), '../../Dockerfile'), 'utf8')
+    const dockerfile = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8')
     const builderLine = dockerfile
       .split('\n')
-      .find((line) => line.startsWith('FROM node:') && line.includes('AS dashboard-builder'))
+      .find((line) => line.startsWith('FROM node:') && line.includes('AS base'))
 
     expect(builderLine).toBeDefined()
 
     const versionSpec = builderLine
-      ?.match(/^FROM node:([^\s]+)\s+AS dashboard-builder$/)?.[1]
+      ?.match(/^FROM node:([^\s]+)\s+AS base$/)?.[1]
+      ?.replace(/-alpine$/, '')
       ?.replace(/-bookworm-slim$/, '')
+      ?.replace(/-bookworm$/, '')
 
     expect(versionSpec).toBeDefined()
     expect(dockerNodeSatisfiesVite8(versionSpec!)).toBe(true)

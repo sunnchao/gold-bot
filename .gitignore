@@ -11,17 +11,13 @@ coverage.out
 *.sqlite
 
 # Next.js dashboard
-web/dashboard/node_modules/
-web/dashboard/.next/
-web/dashboard/dist/
+apps/app-web/.next/
 
 # AI Agents (NestJS)
-agents/node_modules/
-agents/dist/
-agents/data/
-agents/.env
-agents/accounts.json
-agents/coverage/
+apps/app-agent/data/
+apps/app-agent/.env
+apps/app-agent/accounts.json
+apps/app-agent/coverage/
 
 # Legacy Python
 __pycache__/

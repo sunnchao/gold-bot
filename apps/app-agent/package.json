@@ -1,6 +1,7 @@
 {
-  "name": "gold-analysis-agent",
+  "name": "app-agent",
   "version": "1.0.0",
+  "private": true,
   "description": "Gold Analysis Agent Platform - LangGraph-based AI trading analysis",
   "type": "module",
   "main": "dist/main.js",
@@ -8,7 +9,9 @@
     "build": "tsc",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "pnpm run typecheck"
   },
   "dependencies": {
     "@langchain/core": "^0.3.40",

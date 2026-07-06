@@ -308,7 +308,7 @@ describe('app-server scaffold', () => {
   it('serves dashboard static files with Go-compatible SPA fallbacks', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gold-bot-dashboard-'));
     try {
-      const dist = join(dir, 'web', 'dashboard', 'dist');
+      const dist = join(dir, 'apps', 'app-web', 'dist');
       mkdirSync(join(dist, 'accounts', '__dynamic__'), { recursive: true });
       writeFileSync(join(dist, 'index.html'), '<main>dashboard shell</main>');
       writeFileSync(join(dist, 'accounts', '__dynamic__', 'index.html'), '<main>account detail</main>');

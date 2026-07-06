@@ -2,7 +2,7 @@ module.exports = {
   apps: [{
     name: 'gold-analysis-agent',
     script: 'dist/main.js',
-    cwd: '/root/gold-bot/agents',
+    cwd: '/root/gold-bot/apps/app-agent',
     autorestart: true,
     max_restarts: 10,
     env: {
@@ -18,7 +18,7 @@ module.exports = {
       LLM_TIMEOUT: process.env.LLM_TIMEOUT || '120000',
       LLM_MAX_RETRIES: process.env.LLM_MAX_RETRIES || '3',
       PORT: '3100',
-      ACCOUNTS_CONFIG_FILE: '/root/gold-bot/agents/accounts.json',
+      ACCOUNTS_CONFIG_FILE: '/root/gold-bot/apps/app-agent/accounts.json',
     }
   }]
 };

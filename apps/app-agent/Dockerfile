@@ -1,39 +1,29 @@
-# ── Stage 1: Build ────────────────────────────────────────────────────────────
+# Build from the repo root: docker build -f apps/app-agent/Dockerfile -t gold-analysis-agent .
 FROM node:20-bookworm AS builder
 
-WORKDIR /app
+WORKDIR /workspace
 
-# Copy package files first for better Docker layer caching
-COPY package.json package-lock.json ./
+COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 
-RUN npm ci
+COPY apps/app-agent/package.json apps/app-agent/tsconfig.json apps/app-agent/vitest.config.ts ./apps/app-agent/
+COPY apps/app-agent/src ./apps/app-agent/src
 
-# Copy source code and build
-COPY tsconfig.json ./
-COPY src/ ./src/
+RUN corepack enable && pnpm install --frozen-lockfile && pnpm --filter app-agent build
 
-RUN npm run build
-
-# ── Stage 2: Production ──────────────────────────────────────────────────────
 FROM node:20-bookworm-slim AS production
 
-WORKDIR /app
+WORKDIR /workspace
 
-# Copy package files and install production dependencies only
-COPY package.json package-lock.json ./
+COPY --from=builder /workspace /workspace
 
-RUN npm ci --omit=dev && npm cache clean --force
-
-# Copy compiled output from builder
-COPY --from=builder /app/dist ./dist
-
-# Create non-root user
-RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
-
-# Create data directory for SQLite
-RUN mkdir -p /app/data && chown -R appuser:appuser /app
+# better-sqlite3 and accounts.json resolve relative to process.cwd(), which
+# must stay the package directory (matching the pre-monorepo `cd agents && npm start`).
+RUN groupadd -r appuser && useradd -r -g appuser -d /workspace -s /sbin/nologin appuser \
+    && mkdir -p /workspace/apps/app-agent/data \
+    && chown -R appuser:appuser /workspace/apps/app-agent
 
 USER appuser
+WORKDIR /workspace/apps/app-agent
 
 EXPOSE 3100
 

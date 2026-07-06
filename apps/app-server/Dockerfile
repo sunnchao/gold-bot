@@ -10,6 +10,9 @@ COPY apps/app-server/src ./apps/app-server/src
 COPY packages/config/package.json packages/config/tsconfig.json ./packages/config/
 COPY packages/config/src ./packages/config/src
 
+COPY packages/notifications/package.json packages/notifications/tsconfig.json ./packages/notifications/
+COPY packages/notifications/src ./packages/notifications/src
+
 COPY packages/shared-contracts/package.json packages/shared-contracts/tsconfig.json ./packages/shared-contracts/
 COPY packages/shared-contracts/src ./packages/shared-contracts/src
 
@@ -25,7 +28,7 @@ COPY packages/trading-core/src ./packages/trading-core/src
 COPY apps/app-mt/mt4_ea ./apps/app-mt/mt4_ea
 COPY apps/app-mt/mt5_ea ./apps/app-mt/mt5_ea
 
-RUN corepack enable && pnpm install --frozen-lockfile && pnpm --filter app-server build
+RUN corepack enable && pnpm install --frozen-lockfile && pnpm --filter "app-server..." build
 
 FROM node:24-bookworm-slim AS runtime
 

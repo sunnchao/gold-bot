@@ -5,15 +5,15 @@
 //| v2.5: 服务器重启自动恢复连接                                        |
 //+------------------------------------------------------------------+
 #property copyright "Gold Bolt"
-#property version   "2.8"
+#property version   "2.9"
 #property strict
 
 // 引入交易库
 #include <Trade/Trade.mqh>
 
 // ============ 版本信息 ============
-#define EA_VERSION  "2.8.2"
-#define EA_BUILD    8
+#define EA_VERSION  "2.8.3"
+#define EA_BUILD    9
 
 CTrade trade;
 
@@ -64,6 +64,12 @@ input bool     MomentumScalpUseFixedLots = true;     // 动量剥头皮使用固
 input double   MomentumScalpFixedLots    = 0.05;     // 动量剥头皮固定手数
 input double   MomentumScalpRiskPercent  = 0.5;      // 动量剥头皮单笔风险 %
 
+input bool     EnableAISignal      = true;     // 🤖 AI 信号挂单策略
+input int      AISignalMagic       = 20250238; // AI 信号 Magic
+
+input bool     EnableScaleIn       = true;     // ➕ 浮亏加仓策略
+input int      ScaleInMagic        = 20250239; // 浮亏加仓 Magic
+
 //+------------------------------------------------------------------+
 //| 原油对冲套利配置                                                   |
 //+------------------------------------------------------------------+
@@ -87,7 +93,7 @@ input int      Slippage            = 3;        // 滑点（点数）
 datetime lastPollTime      = 0;
 datetime lastBarTime       = 0;
 double   dailyStartEquity  = 0;
-int      httpTimeout       = 5000;
+int      httpTimeout       = 2000;
 bool     spreadSymbolsReady = false;  // 原油品种是否可用
 
 // ========== 连接状态跟踪（v2.8 新增） ==========
@@ -97,6 +103,11 @@ int      failCount        = 0;            // 连续失败次数
 datetime lastReconnectTry = 0;            // 上次重连尝试时间
 datetime lastRegisterTry  = 0;            // 上次注册尝试时间（每5秒重试）
 bool     gbRegistered     = false;        // 注册是否成功
+
+// ========== 初始化分批发送（避免 OnInit 同步阻塞图表线程）==========
+// OnInit 只做 RegisterAccount；心跳 / 持仓 / K线 拆分到 OnTick 首批 tick 内逐项发送
+// 0=未开始 1=待发心跳 2=待发持仓 3=待发K线 4=初始数据已全部发送
+int      g_initBatchStep = 0;
 
 //+------------------------------------------------------------------+
 //| 根据策略名称获取对应的 MagicNumber                                  |
@@ -110,6 +121,8 @@ int GetStrategyMagic(string strategy)
    if(strategy == "counter_pullback") return CounterMagic;
    if(strategy == "range") return RangeMagic;
    if(strategy == "momentum_scalp") return MomentumScalpMagic;
+   if(strategy == "ai_signal") return AISignalMagic;
+   if(strategy == "scale_in") return ScaleInMagic;
    return 0;
 }
 
@@ -123,6 +136,8 @@ bool IsStrategyEnabled(string strategy)
    if(strategy == "counter_pullback") return EnableCounter;
    if(strategy == "range") return EnableRange;
    if(strategy == "momentum_scalp") return EnableMomentumScalp;
+   if(strategy == "ai_signal") return EnableAISignal;
+   if(strategy == "scale_in") return EnableScaleIn;
    return false;
 }
 
@@ -150,6 +165,8 @@ bool IsOurMagic(long magic)
    if(magic == RangeMagic) return true;
    if(magic == MomentumScalpMagic) return true;
    if(magic == SpreadMagicNumber) return true;
+   if(magic == AISignalMagic) return true;
+   if(magic == ScaleInMagic) return true;
    return false;
 }
 
@@ -528,7 +545,8 @@ int OnInit()
    Print("策略Magic: 趋势回调=", PullbackMagic, " 突破回踩=", BreakoutMagic,
          " RSI背离=", DivergenceMagic, " 突破加仓=", PyramidMagic,
          " 反向回调=", CounterMagic, " 震荡区间=", RangeMagic,
-         " 动量剥头皮=", MomentumScalpMagic);
+         " 动量剥头皮=", MomentumScalpMagic, " AI信号=", AISignalMagic,
+         " 浮亏加仓=", ScaleInMagic);
    Print("风控：",
          (UseFixedLots ? ("固定手数=" + DoubleToString(FixedLots, 2)) : ("风险=" + DoubleToString(MaxRiskPercent, 1) + "%")),
          " | 持仓上限", MaxPositions,
@@ -587,6 +605,7 @@ int OnInit()
    Print("📊 扫描已有持仓...");
    int pullbackCount = 0, breakoutCount = 0, divergenceCount = 0;
    int pyramidCount = 0, counterCount = 0, rangeCount = 0, momentumScalpCount = 0, spreadCount = 0;
+   int aiSignalCount = 0, scaleInCount = 0;
 
    for(int i = 0; i < PositionsTotal(); i++)
    {
@@ -611,17 +630,22 @@ int OnInit()
       else if(magic == RangeMagic)    { rangeCount++;     Print("   📊 震荡区间: ", info); }
       else if(magic == MomentumScalpMagic){ momentumScalpCount++; Print("   ⚡ 动量剥头皮: ", info); }
       else if(magic == SpreadMagicNumber){ spreadCount++; Print("   🛢️ 原油对冲: ", info); }
+      else if(magic == AISignalMagic){ aiSignalCount++; Print("   🤖 AI信号: ", info); }
+      else if(magic == ScaleInMagic){ scaleInCount++; Print("   ➕ 浮亏加仓: ", info); }
    }
 
    Print("   趋势回调: ", pullbackCount, " 单 | 突破回踩: ", breakoutCount, " 单 | RSI背离: ", divergenceCount, " 单");
    Print("   突破加仓: ", pyramidCount, " 单 | 反向回调: ", counterCount, " 单 | 震荡区间: ", rangeCount, " 单 | 动量剥头皮: ", momentumScalpCount, " 单");
-   Print("   原油对冲: ", spreadCount, " 单");
+   Print("   原油对冲: ", spreadCount, " 单 | AI信号: ", aiSignalCount, " 单 | 浮亏加仓: ", scaleInCount, " 单");
    Print("=============================================");
 
    dailyStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
 
    CheckForUpdate();
 
+   // 注册账户信息（含 broker 信息），失败时由 OnTick 每 5 秒重试
+   // 注意：OnInit 不再同步发送 heartbeat/bars/positions —— 改由 OnTick 首批 tick 内分批发送，
+   // 避免挂载瞬间一次性发起 10+ 个同步 WebRequest 阻塞图表线程。
    if(!RegisterAccount())
    {
       gbRegistered = false;
@@ -629,9 +653,8 @@ int OnInit()
    }
    else
    {
-      SendHeartbeat();
-      SendAllBars();
-      SendPositions();
+      g_initBatchStep = 1;
+      Print("✅ 注册成功，初始数据(心跳/持仓/K线)将由 OnTick 分批发送...");
    }
 
    return INIT_SUCCEEDED;
@@ -649,6 +672,31 @@ void OnTick()
       firstTick = true;
    }
 
+   // ========== 初始化分批发送：每个 tick 推进一步 ==========
+   // step 1 → SendHeartbeat；step 2 → SendPositions；step 3 → SendAllBars；step 4 → 完成
+   // 任意一步失败会在下一个 tick 重试（因为 g_initBatchStep 不会推进到 4）
+   if(gbRegistered && g_initBatchStep > 0 && g_initBatchStep < 4)
+   {
+      if(g_initBatchStep == 1)
+      {
+         SendHeartbeat();
+         g_initBatchStep = 2;
+      }
+      else if(g_initBatchStep == 2)
+      {
+         SendPositions();
+         g_initBatchStep = 3;
+      }
+      else if(g_initBatchStep == 3)
+      {
+         SendAllBars();
+         g_initBatchStep = 4;
+         lastBarTime = now;
+         Print("✅ 初始数据发送完成");
+      }
+      return;
+   }
+
    SendTick();
 
    if(!gbRegistered && now - lastRegisterTry >= 5)
@@ -657,10 +705,8 @@ void OnTick()
       Print("🔄 尝试注册 GB Server...");
       if(RegisterAccount())
       {
-         Print("✅ 注册成功，发送初始数据...");
-         SendHeartbeat();
-         SendAllBars();
-         SendPositions();
+         Print("✅ 注册成功，初始数据(心跳/持仓/K线)将由 OnTick 分批发送...");
+         g_initBatchStep = 1;
       }
    }
 
@@ -759,7 +805,7 @@ void SendHeartbeat()
    bool marketOpen = ((ENUM_SYMBOL_TRADE_MODE)SymbolInfoInteger(Symbol_, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_DISABLED);
 
    int pullbackPos = 0, breakoutPos = 0, divergencePos = 0;
-   int pyramidPos = 0, counterPos = 0, rangePos = 0, momentumScalpPos = 0;
+   int pyramidPos = 0, counterPos = 0, rangePos = 0, momentumScalpPos = 0, scaleInPos = 0;
 
    for(int i = 0; i < PositionsTotal(); i++)
    {
@@ -777,21 +823,22 @@ void SendHeartbeat()
       else if(m == CounterMagic) counterPos++;
       else if(m == RangeMagic) rangePos++;
       else if(m == MomentumScalpMagic) momentumScalpPos++;
+      else if(m == ScaleInMagic) scaleInPos++;
    }
 
    string json = StringFormat(
       "{"
-      "\"account_id\":\"%s\"," 
-      "\"symbol\":\"%s\"," 
-      "\"magic\":%d," 
-      "\"balance\":%.2f," 
-      "\"equity\":%.2f," 
-      "\"margin\":%.2f," 
-      "\"free_margin\":%.2f," 
-      "\"currency\":\"%s\"," 
-      "\"server_time\":\"%s\"," 
-      "\"market_open\":%s," 
-      "\"is_trade_allowed\":%s," 
+      "\"account_id\":\"%s\","
+      "\"symbol\":\"%s\","
+      "\"magic\":%d,"
+      "\"balance\":%.2f,"
+      "\"equity\":%.2f,"
+      "\"margin\":%.2f,"
+      "\"free_margin\":%.2f,"
+      "\"currency\":\"%s\","
+      "\"server_time\":\"%s\","
+      "\"market_open\":%s,"
+      "\"is_trade_allowed\":%s,"
       "\"strategies\":{"
       "\"pullback\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
       "\"breakout_retest\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
@@ -817,7 +864,8 @@ void SendHeartbeat()
       (EnablePyramid ? "true" : "false"), PyramidMagic, pyramidPos,
       (EnableCounter ? "true" : "false"), CounterMagic, counterPos,
       (EnableRange ? "true" : "false"), RangeMagic, rangePos,
-      (EnableMomentumScalp ? "true" : "false"), MomentumScalpMagic, momentumScalpPos
+      (EnableMomentumScalp ? "true" : "false"), MomentumScalpMagic, momentumScalpPos,
+      (EnableScaleIn ? "true" : "false"), ScaleInMagic, scaleInPos
    );
 
    HttpPost("/heartbeat", json);
@@ -1409,6 +1457,12 @@ void ExecuteSignal(string cmd, string cmd_id)
 
    double sl_distance = MathAbs(price - sl);
    double lots = CalcLotsForStrategy(strategy, sl_distance);
+   // AI 信号使用服务端计算的手数（含减半逻辑）
+   if(strategy == "ai_signal")
+   {
+      double cmdLots = GetJsonDouble(cmd, "lots");
+      if(cmdLots > 0) lots = cmdLots;
+   }
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);
 
    PrepareTrade(Symbol_, magicForOrder);
@@ -1753,7 +1807,7 @@ string HttpPost(string path, string data)
       return CharArrayToString(result_data);
    }
 
-   Sleep(500);
+   // 第一次失败，立即重试一次（不再 Sleep，避免阻塞图表线程；若仍失败由调用方下一 tick 再试）
    result_headers = "";
    code = WebRequest("POST", url, headers, timeout, post_data, result_data, result_headers);
 

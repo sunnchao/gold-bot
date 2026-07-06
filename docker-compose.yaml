@@ -27,8 +27,8 @@ services:
 
   agents:
     build:
-      context: ./agents
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/app-agent/Dockerfile
     image: gold-analysis-agent:local
     container_name: gold-analysis-agent
     env_file:

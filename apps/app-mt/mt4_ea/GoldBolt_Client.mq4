@@ -100,7 +100,12 @@ extern int      HarmonicMaxObjects      = 40;
 datetime lastPollTime   = 0;
 datetime lastBarTime    = 0;
 double   dailyStartEquity = 0;
-int      httpTimeout    = 5000;
+int      httpTimeout    = 2000;
+
+// ========== 初始化分批发送（避免 OnInit 同步阻塞图表线程）==========
+// OnInit 只做 RegisterAccount；心跳 / K线 / 持仓 拆分到 OnTick 首批 tick 内逐项发送
+// 0=未开始 1=待发心跳 2=待发持仓 3=待发K线 4=初始数据已全部发送
+int      g_initBatchStep = 0;
 
 // ========== 多品种支持 ==========
 string   g_symbols[];          // 解析后的品种列表
@@ -393,6 +398,8 @@ int OnInit()
    dailyStartEquity = AccountEquity();
 
    // 注册账户信息（含 broker 信息），失败时由 OnTick 每 5 秒重试
+   // 注意：OnInit 不再同步发送 heartbeat/bars/positions —— 改由 OnTick 首批 tick 内分批发送，
+   // 避免挂载瞬间一次性发起 10+ 个同步 WebRequest 阻塞图表线程。
    if(!RegisterAccount())
    {
       gbRegistered = false;
@@ -400,10 +407,9 @@ int OnInit()
    }
    else
    {
-      // 注册成功后再发送初始数据
-      SendHeartbeat();
-      SendAllBars();
-      SendPositions();
+      // 标记进入初始化分批阶段，后续由 OnTick 推进
+      g_initBatchStep = 1;
+      Print("✅ 注册成功，初始数据(心跳/持仓/K线)将由 OnTick 分批发送...");
    }
 
    return INIT_SUCCEEDED;
@@ -413,14 +419,40 @@ int OnInit()
 void OnTick()
 {
    datetime now = TimeCurrent();
-   
+
     // 首次 tick 提示
     static bool firstTick = false;
     if(!firstTick) { Print("📡 首次 Tick 收到"); firstTick = true; }
-    
+
+    // ========== 初始化分批发送：每个 tick 推进一步，避免一次性阻塞图表 ==========
+    // step 1 → SendHeartbeat；step 2 → SendPositions；step 3 → SendAllBars；step 4 → 完成
+    // 任意一步失败会在下一个 tick 重试（因为 g_initBatchStep 不会推进到 4）
+    if(gbRegistered && g_initBatchStep > 0 && g_initBatchStep < 4)
+    {
+       if(g_initBatchStep == 1)
+       {
+          SendHeartbeat();
+          g_initBatchStep = 2;
+       }
+       else if(g_initBatchStep == 2)
+       {
+          SendPositions();
+          g_initBatchStep = 3;
+       }
+       else if(g_initBatchStep == 3)
+       {
+          SendAllBars();
+          g_initBatchStep = 4;
+          lastBarTime = now;   // K 线已发，重置 BarInterval 计时
+          Print("✅ 初始数据发送完成");
+       }
+       // 初次分批期间不再执行后续定时逻辑，让初始化尽快完成
+       return;
+    }
+
     // 每 tick 发送报价（包含多品种价格）
     SendTick();
-    
+
     // ========== v2.8: 注册失败时每 5 秒重试 ==========
     if(!gbRegistered && now - lastRegisterTry >= 5)
     {
@@ -428,11 +460,9 @@ void OnTick()
        Print("🔄 尝试注册 GB Server...");
        if(RegisterAccount())
        {
-          // 注册成功后发送初始数据
-          Print("✅ 注册成功，发送初始数据...");
-          SendHeartbeat();
-          SendAllBars();
-          SendPositions();
+          // 注册成功后进入分批发送流程（与 OnInit 成功路径一致）
+          Print("✅ 注册成功，初始数据(心跳/持仓/K线)将由 OnTick 分批发送...");
+          g_initBatchStep = 1;
        }
     }
 
@@ -1506,8 +1536,7 @@ string HttpPost(string path, string data)
       return CharArrayToString(result_data);
    }
    
-   // 第一次失败，等待后重试
-   Sleep(500);
+   // 第一次失败，立即重试一次（不再 Sleep，避免阻塞图表线程；若仍失败由调用方下一 tick 再试）
    response_headers = "";
    code = WebRequest("POST", url, request_headers, timeout, post_data, result_data, response_headers);
    
