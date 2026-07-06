@@ -67,10 +67,18 @@ curl http://localhost:8880/api/ea/version?platform=mt5
 
 EA development happens in MT4/MT5 MetaEditor:
 
-1. Edit `GoldBolt_Client.mq4` in MetaEditor
+**For MT4:**
+1. Edit `GoldBolt_Client.mq4` in MT4 MetaEditor
 2. Compile to `.ex4`
-3. Deploy to MT4/MT5 `Experts/` directory
-4. Update `version.json` metadata
+3. Deploy to MT4 `Experts/` directory
+4. Update `mt4_ea/version.json` metadata
+5. Copy files to this directory for distribution
+
+**For MT5:**
+1. Edit `GoldBolt_Client.mq5` in MT5 MetaEditor
+2. Compile to `.ex5`
+3. Deploy to MT5 `MQL5/Experts/` directory
+4. Update `mt5_ea/version.json` metadata
 5. Copy files to this directory for distribution
 
 ---
@@ -81,12 +89,17 @@ The Dockerfile copies these files into the image:
 
 ```dockerfile
 COPY apps/app-mt/mt4_ea ./apps/app-mt/mt4_ea
+COPY apps/app-mt/mt5_ea ./apps/app-mt/mt5_ea
 ```
 
-At runtime, app-server resolves the path as:
+At runtime, app-server resolves the path based on the `platform` parameter:
 
 ```typescript
+// MT4 (default)
 join(releaseRoot, 'apps', 'app-mt', 'mt4_ea', 'GoldBolt_Client.mq4')
+
+// MT5 (platform=mt5)
+join(releaseRoot, 'apps', 'app-mt', 'mt5_ea', 'GoldBolt_Client.mq5')
 ```
 
 ---
