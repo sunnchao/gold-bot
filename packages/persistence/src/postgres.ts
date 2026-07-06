@@ -222,11 +222,11 @@ async function selectDecisionEventsPg(
     paramIndex++;
   }
   const limit = filter.limit == null || filter.limit <= 0 || filter.limit > 200 ? 50 : filter.limit;
-  clauses.push(`LIMIT $${paramIndex}`);
+  const limitPlaceholder = `$${paramIndex}`;
   params.push(limit);
   const rows = await queryRows(
     client,
-    `SELECT id, decision_id, account_id, symbol, stage, status, reason_codes_json, summary_json, related_command_id, created_at FROM decision_events WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, id DESC`,
+    `SELECT id, decision_id, account_id, symbol, stage, status, reason_codes_json, summary_json, related_command_id, created_at FROM decision_events WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ${limitPlaceholder}`,
     params
   );
   const events = rows.map(decisionEventFromPgRow);
