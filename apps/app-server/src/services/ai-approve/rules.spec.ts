@@ -66,6 +66,13 @@ describe('AI approve order intent rules', () => {
     )).toEqual({ accepted: false, reason: 'stop_order.disabled' });
 
     expect(resolveAIApproveOrderIntent(
+      tradePlan({ requested_order_type: 'SELL_STOP' }),
+      3335.6,
+      3332,
+      2
+    )).toEqual({ accepted: false, reason: 'stop_order.disabled' });
+
+    expect(resolveAIApproveOrderIntent(
       tradePlan({ execution_type: 'stop' }),
       3335.6,
       3338,
@@ -100,6 +107,33 @@ describe('AI approve order intent rules', () => {
 
     expect(validateAIApproveProtectionDirection(
       tradePlan({ side: 'sell', stop_loss: 3340, take_profit: [3338] }),
+      3335.6
+    )).toEqual({ accepted: false, reason: 'protection.invalid_direction' });
+  });
+
+  it('rejects missing or zero protection values', () => {
+    expect(validateAIApproveProtectionDirection(
+      tradePlan({ stop_loss: undefined, take_profit: [3345] }),
+      3335.6
+    )).toEqual({ accepted: false, reason: 'protection.invalid_direction' });
+
+    expect(validateAIApproveProtectionDirection(
+      tradePlan({ stop_loss: 0, take_profit: [3345] }),
+      3335.6
+    )).toEqual({ accepted: false, reason: 'protection.invalid_direction' });
+
+    expect(validateAIApproveProtectionDirection(
+      tradePlan({ stop_loss: 3330, take_profit: undefined }),
+      3335.6
+    )).toEqual({ accepted: false, reason: 'protection.invalid_direction' });
+
+    expect(validateAIApproveProtectionDirection(
+      tradePlan({ stop_loss: 3330, take_profit: [0] }),
+      3335.6
+    )).toEqual({ accepted: false, reason: 'protection.invalid_direction' });
+
+    expect(validateAIApproveProtectionDirection(
+      tradePlan({ stop_loss: 3330, take_profit: [-1, 0] }),
       3335.6
     )).toEqual({ accepted: false, reason: 'protection.invalid_direction' });
   });
