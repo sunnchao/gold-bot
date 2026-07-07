@@ -109,19 +109,6 @@ export function validateAIApproveProtectionDirection(tradePlan: EaRecord, entry:
   return { accepted: false, reason: 'protection.invalid_direction' };
 }
 
-export function orderTypeForAIApproveSignal(price: number, entry: number, atr: number, side: string): string {
-  if (atr <= 0) {
-    return 'market';
-  }
-  if (Math.abs(price - entry) <= atr * 0.3) {
-    return 'market';
-  }
-  if (side === 'BUY') {
-    return entry <= price ? 'BUY_LIMIT' : 'BUY_STOP';
-  }
-  return entry >= price ? 'SELL_LIMIT' : 'SELL_STOP';
-}
-
 export function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
