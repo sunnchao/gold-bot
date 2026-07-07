@@ -4,11 +4,13 @@ import type { z } from 'zod';
 import type { ComprehensiveAnalysisResult } from '../types/comprehensive.js';
 import type { ChanlunAnalysis, ChanlunBar, ElliottWaveAnalysis, TechnicalAnalysis, WaveAnalystResult, ChanlunAnalystResult, HarmonicAnalysisResult, RiskAssessment, DowTheoryAnalysis, WaveTheoryAnalysis, ChanlunTheoryAnalysis, HarmonicTheoryAnalysis, TradeRecommendation, ArbitrationResult } from '../types/analysis.js';
 import type { GoldbotBar, GoldbotPayload, PendingSignal } from '../types/goldbot.js';
+import { TRADE_ACTION_TOOLS, type TradeAction } from '../types/trade-action.js';
 import { validateArbitrationResult, validateTradeRecommendation } from '../utils/price-validator.js';
 import { getSymbolProfile, detectCrossInstrumentPrice, type SymbolProfile } from '../config/symbol-profile.js';
 import { analyzeChanlun } from '../tools/chanlun-core.js';
 import { analyzeElliottWave } from '../tools/elliott-wave.js';
 import { LlmClientService } from '../tools/llm-client.js';
+import { toolUseToTradeAction } from './trade-action-converter.js';
 import {
   ArbitrationResultSchema,
   ChanlunAnalystResultSchema,
@@ -998,11 +1000,97 @@ function parseMarkdownResponse(raw: string, currentPrice: number, profile: Symbo
   return { technical, wave, chanlun, harmonic, risk, arbitration };
 }
 
+const TRADE_ACTION_DECISION_PROMPT = `You are the final trade execution decision agent.
+
+Given the arbitration decision and trade recommendation from the first phase, you MUST call exactly ONE tool:
+
+1. place_pending_order - when the recommended entry_price DIFFERS from the current market price
+   (e.g., recommendation says "wait for pullback to 4145" and current price is 4174).
+   The pending order will trigger when price reaches 4145.
+
+2. place_market_order - when the recommendation says to open IMMEDIATELY at the current price
+   (e.g., "买入现价" / "market buy now").
+
+3. do_nothing - when confidence is too low (<50), direction is hold, or no clear edge.
+
+CRITICAL RULES:
+- If entry_price in the recommendation differs from current price by > 0.5%, USE place_pending_order
+- Lots must be between 0.01 and 0.5 (typically 0.03-0.10 for XAUUSD intraday)
+- expiry_hours defaults to 4 (intraday), set higher only if explicitly warranted
+- reason MUST be bilingual (Chinese first, English in parentheses)
+- For pending orders, verify entry_price is on the correct side of current:
+  * buy limit: entry < current (waiting for dip)
+  * sell limit: entry > current (waiting for rally)
+  If wrong, call do_nothing instead.`;
+
 @Injectable()
 export class ComprehensiveAnalystService {
   private readonly structureCache = new StructureCache();
 
   constructor(private readonly client: LlmClientService) {}
+
+  private async decideTradeAction(
+    arbitration: ArbitrationResult,
+    payload: GoldbotPayload,
+    profile: SymbolProfile,
+  ): Promise<TradeAction | undefined> {
+    const logger = getLogger();
+    const currentPrice = payload.market.bid || payload.market.ask || 0;
+    const trade = arbitration.trade_recommendation;
+    if (!trade) return undefined;
+
+    if (trade.direction === 'hold' && arbitration.action === 'hold') {
+      return { type: 'do_nothing', reasoning: 'arbitration: hold' };
+    }
+
+    const summary = [
+      '## ARBITRATION DECISION (from first phase)',
+      `- Final Direction: ${arbitration.final_direction}`,
+      `- Action: ${arbitration.action}`,
+      `- Confidence: ${arbitration.confidence}`,
+      `- Current Price: ${currentPrice.toFixed(profile.pricePrecision)}`,
+      '',
+      '## TRADE RECOMMENDATION (from first phase markdown)',
+      `- Direction: ${trade.direction}`,
+      `- Entry Price: ${trade.entry_price}`,
+      `- Stop Loss: ${trade.stop_loss}`,
+      `- Take Profit 1: ${trade.take_profit_1}`,
+      `- Take Profit 2: ${trade.take_profit_2 ?? 'N/A'}`,
+      `- Risk/Reward: ${trade.risk_reward_ratio}`,
+      `- Position Size: ${trade.position_size_lots}`,
+      `- Rationale: ${trade.rationale}`,
+    ].join('\n');
+
+    try {
+      const result = await this.client.streamLayered(
+        [
+          { text: TRADE_ACTION_DECISION_PROMPT, cacheable: true },
+          {
+            text: `Instrument: ${profile.name} (${profile.symbol})\nCurrent price: ${currentPrice.toFixed(profile.pricePrecision)}`,
+            cacheable: true,
+          },
+        ],
+        [{ text: summary, cacheable: false }],
+        {
+          tools: TRADE_ACTION_TOOLS as any,
+          toolChoice: { type: 'any' },
+        },
+      );
+
+      if (!result.toolUse) {
+        logger.warn({ symbol: profile.symbol }, 'trade_action_decision: no tool_use returned');
+        return undefined;
+      }
+
+      return toolUseToTradeAction(result.toolUse, currentPrice, profile);
+    } catch (err) {
+      logger.warn(
+        { symbol: profile.symbol, err: err instanceof Error ? err.message : String(err) },
+        'trade_action_decision: tool_use call failed, falling back to markdown path',
+      );
+      return undefined;
+    }
+  }
 
   async run(
     payload: GoldbotPayload,
@@ -1186,6 +1274,17 @@ export class ComprehensiveAnalystService {
       if (!arbVal.valid && arbVal.fixedArbitration) {
         logger.warn({ symbol }, 'Arbitration result invalid — applying downgrade');
         result.arbitration = arbVal.fixedArbitration;
+      }
+    }
+
+    if (result.arbitration) {
+      const tradeAction = await this.decideTradeAction(result.arbitration, payload, profile);
+      if (tradeAction) {
+        result.tradeAction = tradeAction;
+        logger.info(
+          { symbol, type: tradeAction.type, side: 'side' in tradeAction ? tradeAction.side : undefined },
+          'tradeAction decided',
+        );
       }
     }
 

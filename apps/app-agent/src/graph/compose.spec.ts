@@ -47,6 +47,51 @@ describe('composeFinalSignal AI order intent', () => {
     });
   });
 
+  it('end-to-end: buy limit at 4145 produces BUY_LIMIT trade plan', () => {
+    const state = stateWithTradeAction({
+      type: 'place_pending_order',
+      side: 'buy',
+      entry_price: 4145,
+      stop_loss: 4125,
+      take_profit_1: 4188,
+      take_profit_2: 4205,
+      lots: 0.05,
+      order_type: 'limit',
+      expiry_hours: 4,
+      reason: '等待回调至 4145 (Fib 0.382) 入场',
+    });
+    state.arbitration = {
+      ...state.arbitration!,
+      final_direction: 'buy',
+      action: 'open',
+      confidence: 75,
+    };
+    state.payload = {
+      ...state.payload!,
+      market: {
+        ...state.payload!.market,
+        symbol: 'XAUUSD',
+        bid: 4174,
+        ask: 4174.5,
+      },
+    };
+
+    const signal = composeFinalSignal(state);
+    const plan = signal?.trade_plan;
+
+    expect(plan).toMatchObject({
+      mode: 'approve',
+      side: 'buy',
+      execution_type: 'limit',
+      requested_order_type: 'BUY_LIMIT',
+      entry_zone: { min: 4145, max: 4145 },
+      stop_loss: 4125,
+      take_profit: [4188, 4205],
+      max_lots: 0.05,
+    });
+    expect(new Date(plan!.expires_at).getTime() - Date.now()).toBeGreaterThan(4 * 3600 * 1000 - 1000);
+  });
+
   it('maps sell limit trade actions to SELL_LIMIT intent', () => {
     const signal = composeFinalSignal(stateWithTradeAction({
       type: 'place_pending_order',

@@ -105,6 +105,32 @@ const markdownResponse = `## TECHNICAL
 - Trade Position Size Lots: 0.01
 - Trade Rationale: hold`;
 
+const buySetupMarkdownResponse = markdownResponse
+  .replace('- Bias: neutral', '- Bias: bullish')
+  .replace('- Confidence: 50', '- Confidence: 75')
+  .replace('- Risk Level: medium', '- Risk Level: low')
+  .replace('- Max Position Size: 0.1', '- Max Position Size: 0.05')
+  .replace('- Suggested SL: 2290', '- Suggested SL: 4125')
+  .replace('- Suggested TP: 2410', '- Suggested TP: 4188')
+  .replace('- Final Direction: hold', '- Final Direction: buy')
+  .replace('- Action: hold', '- Action: open')
+  .replace('- Reasoning: 市场整理。波浪和缠论未形成一致突破。风险收益不明确。', '- Reasoning: 多头趋势仍在，等待回调提供更好盈亏比。')
+  .replace('- Trade Direction: hold', '- Trade Direction: buy')
+  .replace('- Trade Entry Price: 0', '- Trade Entry Price: 4145')
+  .replace('- Trade Stop Loss: 0', '- Trade Stop Loss: 4125')
+  .replace('- Trade Take Profit 1: 0', '- Trade Take Profit 1: 4188')
+  .replace('- Trade Take Profit 2: 0', '- Trade Take Profit 2: 4205')
+  .replace('- Trade Risk Reward Ratio: 0', '- Trade Risk Reward Ratio: 2.15')
+  .replace('- Trade Position Size Lots: 0.01', '- Trade Position Size Lots: 0.05')
+  .replace('- Trade Rationale: hold', '- Trade Rationale: 等待回调至 4145 入场 (wait for pullback to 4145)');
+
+const cacheStats = {
+  readTokens: 0,
+  creationTokens: 0,
+  hitTokens: 0,
+  missTokens: 0,
+};
+
 function indicator(close: number) {
   return {
     close,
@@ -259,5 +285,78 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
 
     const [, userLayers] = streamLayered.mock.calls[0];
     expect(userLayers[0].text).not.toContain('2335');
+  });
+
+  it('populates tradeAction from tool_use second-phase call', async () => {
+    const streamLayered = vi.fn()
+      .mockResolvedValueOnce({
+        content: buySetupMarkdownResponse,
+        cacheStats,
+      })
+      .mockResolvedValueOnce({
+        content: '',
+        cacheStats,
+        toolUse: {
+          id: 't1',
+          name: 'place_pending_order',
+          input: {
+            side: 'buy',
+            entry_price: 4145,
+            stop_loss: 4125,
+            take_profit_1: 4188,
+            take_profit_2: 4205,
+            lots: 0.05,
+            order_type: 'limit',
+            reason: '等待回调至 4145 入场 (wait for pullback to 4145)',
+          },
+        },
+      });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = new ComprehensiveAnalystService(client);
+
+    const result = await service.run(payloadWithLastBarClose(4174), 'XAUUSD');
+
+    expect(streamLayered).toHaveBeenCalledTimes(2);
+    expect(streamLayered.mock.calls[1][2]).toMatchObject({
+      toolChoice: { type: 'any' },
+    });
+    expect(result.tradeAction).toEqual({
+      type: 'place_pending_order',
+      side: 'buy',
+      entry_price: 4145,
+      stop_loss: 4125,
+      take_profit_1: 4188,
+      take_profit_2: 4205,
+      lots: 0.05,
+      order_type: 'limit',
+      expiry_hours: 4,
+      reason: '等待回调至 4145 入场 (wait for pullback to 4145)',
+    });
+  });
+
+  it('falls back to undefined when tool_use call fails', async () => {
+    const streamLayered = vi.fn()
+      .mockResolvedValueOnce({
+        content: buySetupMarkdownResponse,
+        cacheStats,
+      })
+      .mockRejectedValueOnce(new Error('timeout'));
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = new ComprehensiveAnalystService(client);
+
+    const result = await service.run(payloadWithLastBarClose(4174), 'XAUUSD');
+
+    expect(streamLayered).toHaveBeenCalledTimes(2);
+    expect(result.tradeAction).toBeUndefined();
   });
 });
