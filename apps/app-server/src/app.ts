@@ -1571,16 +1571,40 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
 function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timestamp: string): { marketOpen: boolean; isTradeAllowed: boolean } {
   let marketOpen = booleanField(heartbeat, 'market_open');
   let isTradeAllowed = booleanField(heartbeat, 'is_trade_allowed');
-  const tickTime = parseDateMillis(stringFieldOrEmpty(latestTick, 'time'));
+  const now = parseDateMillis(timestamp);
+  const tickTime = analysisTickTimeMillis(heartbeat, latestTick, now);
   if (tickTime == null) {
     return { marketOpen: false, isTradeAllowed: false };
   }
-  const now = parseDateMillis(timestamp);
-  if (now != null && now - tickTime > 10 * 60 * 1000) {
-    marketOpen = false;
-    isTradeAllowed = false;
-  }
   return { marketOpen, isTradeAllowed };
+}
+
+const TIME_ONLY_PATTERN = /^\d{1,2}:\d{2}(?::\d{2})?$/;
+const MAX_TICK_AGE_MS = 10 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function analysisTickTimeMillis(heartbeat: EaRecord, latestTick: EaRecord, referenceTime: number | undefined): number | undefined {
+  const tickTimeStr = stringFieldOrEmpty(latestTick, 'time');
+  if (!TIME_ONLY_PATTERN.test(tickTimeStr)) {
+    return parseDateMillis(tickTimeStr);
+  }
+
+  const serverTimeStr = stringFieldOrEmpty(heartbeat, 'server_time');
+  const [datePart] = serverTimeStr.split(' ');
+  if (datePart == null || datePart.length === 0) {
+    return undefined;
+  }
+
+  let tickTime = parseDateMillis(`${datePart} ${tickTimeStr}`);
+  if (tickTime == null) {
+    return undefined;
+  }
+
+  const rolloverReference = referenceTime ?? parseDateMillis(serverTimeStr);
+  if (rolloverReference != null && tickTime - rolloverReference > MAX_TICK_AGE_MS) {
+    tickTime -= DAY_MS;
+  }
+  return tickTime;
 }
 
 function flattenBarRecords(records: EaRecord[]): EaRecord[] {

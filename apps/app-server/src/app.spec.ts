@@ -3840,6 +3840,92 @@ describe('app-server scaffold', () => {
     });
   });
 
+  it('keeps analysis market status tradeable for EA time-only tick timestamps', async () => {
+    const store = createInMemoryEaStore();
+    const server = await createApiServer({ store, nowIso: () => '2026-07-07T02:53:00+08:00' });
+
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      server_time: '2026.07.07 02:44'
+    });
+    await store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 4162.05,
+      ask: 4162.28,
+      spread: 23,
+      time: '02:52:52'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      market_status?: {
+        market_open?: boolean;
+        is_trade_allowed?: boolean;
+        mt4_server_time?: string;
+        tradeable?: boolean;
+      };
+    };
+    expect(body.market_status).toEqual({
+      market_open: true,
+      is_trade_allowed: true,
+      mt4_server_time: '2026.07.07 02:44',
+      tradeable: true
+    });
+  });
+
+  it('rolls time-only analysis tick timestamps over to the previous server date near midnight', async () => {
+    const store = createInMemoryEaStore();
+    const server = await createApiServer({ store, nowIso: () => '2026-07-07T00:12:00+08:00' });
+
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      server_time: '2026.07.07 00:12'
+    });
+    await store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 4162.05,
+      ask: 4162.28,
+      spread: 23,
+      time: '23:59:00'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      market_status?: {
+        market_open?: boolean;
+        is_trade_allowed?: boolean;
+        mt4_server_time?: string;
+        tradeable?: boolean;
+      };
+    };
+    expect(body.market_status).toEqual({
+      market_open: false,
+      is_trade_allowed: false,
+      mt4_server_time: '2026.07.07 00:12',
+      tradeable: false
+    });
+  });
+
   it('serves trading-core analysis from Node snapshots without enqueueing commands', async () => {
     const store = createInMemoryEaStore();
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
