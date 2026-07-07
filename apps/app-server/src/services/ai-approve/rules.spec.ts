@@ -87,6 +87,34 @@ describe('AI approve order intent rules', () => {
       3335.6,
       2
     )).toEqual({ accepted: false, reason: 'order_intent.missing' });
+
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({ execution_type: 'market', requested_order_type: undefined, entry_zone: { min: 3335.5, max: 3335.7 } }),
+      3335.6,
+      3335.6,
+      2
+    )).toEqual({ accepted: false, reason: 'order_intent.missing' });
+
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({ execution_type: undefined, requested_order_type: 'market', entry_zone: { min: 3335.5, max: 3335.7 } }),
+      3335.6,
+      3335.6,
+      2
+    )).toEqual({ accepted: false, reason: 'order_intent.missing' });
+
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({ execution_type: 'limit', requested_order_type: undefined }),
+      3335.6,
+      3332.5,
+      2
+    )).toEqual({ accepted: false, reason: 'order_intent.missing' });
+
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({ execution_type: undefined, requested_order_type: 'BUY_LIMIT' }),
+      3335.6,
+      3332.5,
+      2
+    )).toEqual({ accepted: false, reason: 'order_intent.missing' });
   });
 
   it('rejects contradictory explicit order intent fields', () => {

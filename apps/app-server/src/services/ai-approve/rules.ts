@@ -47,25 +47,26 @@ export function resolveAIApproveOrderIntent(
   const executionType = stringField(tradePlan, 'execution_type').trim().toLowerCase();
   const requestedRaw = stringField(tradePlan, 'requested_order_type').trim().toUpperCase();
   const requestedOrderType = requestedRaw === 'MARKET' ? 'market' : requestedRaw;
-  const hasRequestedOrderType = requestedOrderType !== '';
 
   if (executionType === 'stop' || requestedRaw === 'BUY_STOP' || requestedRaw === 'SELL_STOP') {
     return { accepted: false, reason: 'stop_order.disabled' };
   }
 
-  if (hasRequestedOrderType) {
-    if (
-      (executionType === 'market' && requestedOrderType !== 'market') ||
-      (executionType === 'limit' && requestedOrderType === 'market')
-    ) {
-      return { accepted: false, reason: 'order_intent.mismatch' };
-    }
-    if (requestedOrderType === 'BUY_LIMIT' && side !== 'buy') {
-      return { accepted: false, reason: 'order_intent.mismatch' };
-    }
-    if (requestedOrderType === 'SELL_LIMIT' && side !== 'sell') {
-      return { accepted: false, reason: 'order_intent.mismatch' };
-    }
+  if (executionType === '' || requestedOrderType === '') {
+    return { accepted: false, reason: 'order_intent.missing' };
+  }
+
+  if (
+    (executionType === 'market' && requestedOrderType !== 'market') ||
+    (executionType === 'limit' && requestedOrderType === 'market')
+  ) {
+    return { accepted: false, reason: 'order_intent.mismatch' };
+  }
+  if (requestedOrderType === 'BUY_LIMIT' && side !== 'buy') {
+    return { accepted: false, reason: 'order_intent.mismatch' };
+  }
+  if (requestedOrderType === 'SELL_LIMIT' && side !== 'sell') {
+    return { accepted: false, reason: 'order_intent.mismatch' };
   }
 
   if (executionType === 'market' || requestedOrderType === 'market') {
@@ -76,14 +77,14 @@ export function resolveAIApproveOrderIntent(
     return { accepted: true, orderType: 'market' };
   }
 
-  if (requestedOrderType === 'BUY_LIMIT' || (!hasRequestedOrderType && executionType === 'limit' && side === 'buy')) {
+  if (requestedOrderType === 'BUY_LIMIT') {
     if (side !== 'buy' || entry > currentPrice) {
       return { accepted: false, reason: 'limit_direction_mismatch' };
     }
     return { accepted: true, orderType: 'BUY_LIMIT' };
   }
 
-  if (requestedOrderType === 'SELL_LIMIT' || (!hasRequestedOrderType && executionType === 'limit' && side === 'sell')) {
+  if (requestedOrderType === 'SELL_LIMIT') {
     if (side !== 'sell' || entry < currentPrice) {
       return { accepted: false, reason: 'limit_direction_mismatch' };
     }
