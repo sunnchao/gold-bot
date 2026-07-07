@@ -233,6 +233,8 @@ function dualTradePlanSide(decisionId: string, side: 'buy' | 'sell', entryMin: n
     side,
     confidence: 80,
     entry_zone: { min: entryMin, max: entryMax },
+    execution_type: 'market',
+    requested_order_type: 'market',
     stop_loss: side === 'buy' ? 3330 : 3340,
     take_profit: [side === 'buy' ? 3345 : 3325],
     max_lots: 0.1,
@@ -2976,6 +2978,73 @@ describe('app-server scaffold', () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toMatchObject({
       risk_gate: { status: 'accepted', audit_only: true, canProduceLiveCommands: false }
+    });
+    expect(JSON.parse(response.body)).not.toHaveProperty('command_status');
+    expect(await store.listCommands('90011087')).toEqual([]);
+    expect(await store.pollCommands('90011087')).toEqual([]);
+  });
+
+  it('does not queue AI approve stop order intent in cutover mode', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+
+    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      equity: 10000,
+      free_margin: 9000,
+      market_open: true,
+      is_trade_allowed: true
+    });
+    await store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3335.5,
+      ask: 3335.7,
+      spread: 0.2,
+      time: '2026-04-13T15:59:30+08:00'
+    });
+    for (const timeframe of ['D1', 'H4', 'H1', 'M30', 'M15']) {
+      await store.saveBars({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        timeframe,
+        bars: [{ close: 3336, ema20: 3335, ema50: 3330, adx: 35, atr: 2, rsi: 60 }]
+      });
+    }
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
+      body: {
+        trade_plan: {
+          schema_version: 'trade_plan.v1',
+          decision_id: 'tpv1_stop_disabled',
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          mode: 'approve',
+          side: 'buy',
+          entry_zone: { min: 3338, max: 3338 },
+          execution_type: 'stop',
+          requested_order_type: 'BUY_STOP',
+          stop_loss: 3332,
+          take_profit: [3350],
+          max_lots: 0.1,
+          confidence: 80,
+          expires_at: '2099-06-06T09:15:00Z',
+          reason_codes: ['mode.approve', 'side.buy', 'order.BUY_STOP'],
+          narrative: 'breakout chase disabled'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      status: 'OK',
+      received: true,
+      risk_gate: { status: 'accepted' }
     });
     expect(JSON.parse(response.body)).not.toHaveProperty('command_status');
     expect(await store.listCommands('90011087')).toEqual([]);
