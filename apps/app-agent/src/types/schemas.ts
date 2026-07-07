@@ -200,6 +200,10 @@ export const TradePlanEntryZoneSchema = z.object({
   max: z.number().finite().min(0),
 });
 
+export const TradePlanExecutionTypeSchema = z.enum(['market', 'limit']);
+
+export const TradePlanRequestedOrderTypeSchema = z.enum(['market', 'BUY_LIMIT', 'SELL_LIMIT']);
+
 export const TradePlanSchema = z.object({
   schema_version: z.literal('trade_plan.v1'),
   decision_id: z.string().min(1),
@@ -209,6 +213,8 @@ export const TradePlanSchema = z.object({
   side: TradePlanSideSchema,
   confidence: z.number().int().min(0).max(100),
   entry_zone: TradePlanEntryZoneSchema,
+  execution_type: TradePlanExecutionTypeSchema.optional(),
+  requested_order_type: TradePlanRequestedOrderTypeSchema.optional(),
   stop_loss: z.number().finite().min(0),
   take_profit: z.array(z.number().finite().min(0)),
   max_lots: z.number().finite().min(0),

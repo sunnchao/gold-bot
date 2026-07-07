@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto';
 import type { AnalysisGraphStateType } from './state.js';
-import type { AISignalResult, TradePlan, TradePlanMode, TradePlanSide } from '../types/agent.js';
+import type {
+  AISignalResult,
+  TradePlan,
+  TradePlanExecutionType,
+  TradePlanMode,
+  TradePlanRequestedOrderType,
+  TradePlanSide,
+} from '../types/agent.js';
 import type { ArbitrationResult } from '../types/analysis.js';
 import type { PendingOrderAction, MarketOrderAction } from '../types/trade-action.js';
 
@@ -132,6 +139,15 @@ function buildTradePlanFromTradeAction(
 ): TradePlan | undefined {
   if (!state.arbitration) return undefined;
   const isMarket = action.type === 'place_market_order';
+  if (!isMarket && action.order_type === 'stop') {
+    return undefined;
+  }
+  const executionType: TradePlanExecutionType = isMarket ? 'market' : 'limit';
+  const requestedOrderType: TradePlanRequestedOrderType = isMarket
+    ? 'market'
+    : action.side === 'buy'
+      ? 'BUY_LIMIT'
+      : 'SELL_LIMIT';
   const bid = state.payload?.market.bid ?? 0;
   const ask = state.payload?.market.ask ?? bid;
   const entry = isMarket
@@ -152,11 +168,13 @@ function buildTradePlanFromTradeAction(
     side: action.side,
     confidence: state.arbitration.confidence ?? 70,
     entry_zone: entry,
+    execution_type: executionType,
+    requested_order_type: requestedOrderType,
     stop_loss: action.stop_loss,
     take_profit: tp,
     max_lots: action.lots,
     expires_at: new Date(Date.now() + expiryMs).toISOString(),
-    reason_codes: [`fc.${action.type}`, `side.${action.side}`],
+    reason_codes: [`fc.${action.type}`, `side.${action.side}`, `order.${requestedOrderType}`],
     conflicts: [],
     narrative: action.reason,
     add_on: state.riskAssessment?.addOn ?? false,

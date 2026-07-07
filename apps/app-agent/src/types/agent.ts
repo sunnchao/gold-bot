@@ -29,6 +29,8 @@ import type {
 
 export type TradePlanMode = 'observe' | 'veto' | 'approve' | 'modify' | 'reduce' | 'close';
 export type TradePlanSide = 'buy' | 'sell' | 'dual' | 'none';
+export type TradePlanExecutionType = 'market' | 'limit';
+export type TradePlanRequestedOrderType = 'market' | 'BUY_LIMIT' | 'SELL_LIMIT';
 
 export interface TradePlanEntryZone {
   min: number;
@@ -44,6 +46,8 @@ export interface TradePlan {
   side: TradePlanSide;
   confidence: number;
   entry_zone: TradePlanEntryZone;
+  execution_type?: TradePlanExecutionType;
+  requested_order_type?: TradePlanRequestedOrderType;
   stop_loss: number;
   take_profit: number[];
   max_lots: number;

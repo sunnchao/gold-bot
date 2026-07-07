@@ -1,0 +1,173 @@
+import { describe, expect, it } from 'vitest';
+import { composeFinalSignal } from './compose.js';
+import type { AnalysisGraphStateType } from './state.js';
+import type { TradeAction } from '../types/trade-action.js';
+
+describe('composeFinalSignal AI order intent', () => {
+  it('adds explicit market intent for current-price trade actions', () => {
+    const signal = composeFinalSignal(stateWithTradeAction({
+      type: 'place_market_order',
+      side: 'buy',
+      stop_loss: 3330,
+      take_profit_1: 3345,
+      lots: 0.01,
+      reason: '可以当前价入场 (enter at current price)'
+    }));
+
+    expect(signal?.trade_plan).toMatchObject({
+      mode: 'approve',
+      side: 'buy',
+      entry_zone: { min: 3335.5, max: 3335.7 },
+      execution_type: 'market',
+      requested_order_type: 'market',
+      reason_codes: expect.arrayContaining(['fc.place_market_order', 'order.market'])
+    });
+  });
+
+  it('maps buy limit trade actions to BUY_LIMIT intent', () => {
+    const signal = composeFinalSignal(stateWithTradeAction({
+      type: 'place_pending_order',
+      side: 'buy',
+      entry_price: 3332.5,
+      stop_loss: 3328,
+      take_profit_1: 3344,
+      lots: 0.01,
+      order_type: 'limit',
+      expiry_hours: 4,
+      reason: '回调到价格做多 (buy the pullback)'
+    }));
+
+    expect(signal?.trade_plan).toMatchObject({
+      mode: 'approve',
+      side: 'buy',
+      entry_zone: { min: 3332.5, max: 3332.5 },
+      execution_type: 'limit',
+      requested_order_type: 'BUY_LIMIT',
+      reason_codes: expect.arrayContaining(['fc.place_pending_order', 'order.BUY_LIMIT'])
+    });
+  });
+
+  it('maps sell limit trade actions to SELL_LIMIT intent', () => {
+    const signal = composeFinalSignal(stateWithTradeAction({
+      type: 'place_pending_order',
+      side: 'sell',
+      entry_price: 3338.5,
+      stop_loss: 3344,
+      take_profit_1: 3322,
+      lots: 0.01,
+      order_type: 'limit',
+      expiry_hours: 4,
+      reason: '反弹到价格做空 (sell the rebound)'
+    }));
+
+    expect(signal?.trade_plan).toMatchObject({
+      mode: 'approve',
+      side: 'sell',
+      entry_zone: { min: 3338.5, max: 3338.5 },
+      execution_type: 'limit',
+      requested_order_type: 'SELL_LIMIT',
+      reason_codes: expect.arrayContaining(['fc.place_pending_order', 'order.SELL_LIMIT'])
+    });
+  });
+
+  it('does not publish executable approve plans for pending stop trade actions', () => {
+    const signal = composeFinalSignal(stateWithTradeAction({
+      type: 'place_pending_order',
+      side: 'buy',
+      entry_price: 3342,
+      stop_loss: 3335,
+      take_profit_1: 3358,
+      lots: 0.01,
+      order_type: 'stop',
+      expiry_hours: 4,
+      reason: '突破追多 disabled by design'
+    }));
+
+    expect(signal?.trade_plan).toBeUndefined();
+  });
+});
+
+function stateWithTradeAction(tradeAction: TradeAction): AnalysisGraphStateType {
+  const side = tradeAction.type === 'do_nothing' ? 'hold' : tradeAction.side;
+  return {
+    accountId: '90011087',
+    symbol: 'XAUUSD',
+    timestamp: '2026-04-13T08:00:00.000Z',
+    payload: {
+      account: {
+        account_id: '90011087',
+        equity: 10000,
+        balance: 10000,
+        margin: 100,
+        free_margin: 9900,
+        currency: 'USD',
+        leverage: 500
+      },
+      market: {
+        symbol: 'XAUUSD',
+        bid: 3335.5,
+        ask: 3335.7,
+        spread: 0.2
+      },
+      indicators: {},
+      positions: [],
+      market_status: {
+        market_open: true,
+        is_trade_allowed: true,
+        tradeable: true
+      },
+      strategy_mapping: {}
+    },
+    arbitration: {
+      final_direction: side === 'buy' ? 'buy' : side === 'sell' ? 'sell' : 'hold',
+      confidence: 80,
+      primary_contradiction: 'none',
+      phase: 'markup',
+      action: side === 'buy' || side === 'sell' ? 'open' : 'hold',
+      reasoning: 'AI generated structured order intent',
+      united_front_analysis: 'aligned',
+      dow_theory: {
+        primary_trend: side === 'sell' ? 'bearish' : 'bullish',
+        primary_phase: side === 'sell' ? 'distribution' : 'markup',
+        secondary_trend: side === 'sell' ? 'bearish' : 'bullish',
+        short_term_trend: side === 'sell' ? 'bearish' : 'bullish',
+        multi_tf_confirm: true,
+        rationale: 'trend aligned'
+      },
+      wave_theory: {
+        current_wave: '3',
+        wave_direction: side === 'sell' ? 'impulse_down' : 'impulse_up',
+        wave_count: 'impulse',
+        next_target: 'target',
+        confidence: 80,
+        rationale: 'wave aligned'
+      },
+      chanlun_theory: {
+        trend: side === 'sell' ? 'down' : 'up',
+        bi_direction: side === 'sell' ? 'down' : 'up',
+        duan_direction: side === 'sell' ? 'down' : 'up',
+        zhongshu_state: 'none',
+        buy_sell_point: side === 'sell' ? 'sell_2' : 'buy_2',
+        confidence: 80,
+        rationale: 'chanlun aligned'
+      },
+      harmonic_theory: {
+        pattern: 'none',
+        direction: side === 'sell' ? 'bearish' : 'bullish',
+        confidence: 0,
+        rationale: 'no harmonic conflict'
+      }
+    },
+    riskAssessment: {
+      riskLevel: 'medium',
+      maxPositionSize: 0.01,
+      suggestedSL: 3330,
+      suggestedTP: 3345,
+      warnings: [],
+      addOn: false
+    },
+    tradeAction,
+    logs: [],
+    errors: []
+  } as unknown as AnalysisGraphStateType;
+}
