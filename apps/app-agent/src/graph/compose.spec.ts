@@ -85,6 +85,53 @@ describe('composeFinalSignal AI order intent', () => {
 
     expect(signal?.trade_plan).toBeUndefined();
   });
+
+  it('adds explicit market intent to dual approve trade plans', () => {
+    const baseState = stateWithTradeAction({
+      type: 'do_nothing',
+      reason: 'dual arbitration falls back to dual_trade_plan'
+    });
+    const signal = composeFinalSignal({
+      ...baseState,
+      arbitration: {
+        ...baseState.arbitration,
+        final_direction: 'dual',
+        action: 'open'
+      },
+      technicalAnalysis: {
+        bias: 'neutral',
+        confidence: 80,
+        phase: 'trending',
+        indicators_summary: 'dual setup around current price',
+        support_levels: [
+          { price: 3325, type: 'support', strength: 'strong', timeframe: 'H1', touches: 3 }
+        ],
+        resistance_levels: [
+          { price: 3345, type: 'resistance', strength: 'strong', timeframe: 'H1', touches: 3 }
+        ],
+        recommendation: 'hold',
+        rationale: 'both directions possible after trigger'
+      }
+    } as AnalysisGraphStateType);
+
+    expect(signal?.trade_plan).toBeUndefined();
+    expect(signal?.dual_trade_plan?.buy).toMatchObject({
+      mode: 'approve',
+      side: 'buy',
+      entry_zone: { min: 3335.5, max: 3335.7 },
+      execution_type: 'market',
+      requested_order_type: 'market',
+      reason_codes: expect.arrayContaining(['mode.approve', 'side.buy', 'order.market'])
+    });
+    expect(signal?.dual_trade_plan?.sell).toMatchObject({
+      mode: 'approve',
+      side: 'sell',
+      entry_zone: { min: 3335.5, max: 3335.7 },
+      execution_type: 'market',
+      requested_order_type: 'market',
+      reason_codes: expect.arrayContaining(['mode.approve', 'side.sell', 'order.market'])
+    });
+  });
 });
 
 function stateWithTradeAction(tradeAction: TradeAction): AnalysisGraphStateType {

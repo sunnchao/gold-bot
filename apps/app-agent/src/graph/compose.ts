@@ -210,7 +210,11 @@ function buildTradePlan(state: AnalysisGraphStateType, confidence: number): Trad
     isActiveMode(intendedMode) && !hasCompleteExecutionFields;
   const mode = missingExecutionFields ? 'observe' : intendedMode;
   const side = missingExecutionFields || mode === 'veto' ? 'none' : intendedSide;
-  const extraReasonCodes = missingExecutionFields ? ['execution.incomplete_fields'] : [];
+  const extraReasonCodes = missingExecutionFields
+    ? ['execution.incomplete_fields']
+    : mode === 'approve'
+      ? ['order.market']
+      : [];
 
   if (intendedSide === 'dual') {
     return undefined;  // dual side not supported for single trade plan
@@ -228,6 +232,9 @@ function buildTradePlan(state: AnalysisGraphStateType, confidence: number): Trad
       min: mode === 'observe' || mode === 'veto' ? 0 : entryMin,
       max: mode === 'observe' || mode === 'veto' ? 0 : entryMax,
     },
+    ...(mode === 'approve'
+      ? { execution_type: 'market' as const, requested_order_type: 'market' as const }
+      : {}),
     stop_loss: mode === 'observe' || mode === 'veto' ? 0 : stopLoss,
     take_profit: mode === 'observe' || mode === 'veto' ? [] : takeProfit,
     max_lots: mode === 'observe' || mode === 'veto' ? 0 : maxLots,
@@ -274,7 +281,11 @@ function buildSingleTradePlan(
   const missingExecutionFields =
     isActiveMode(intendedMode) && !hasCompleteExecutionFields;
   const mode = missingExecutionFields ? 'observe' : intendedMode;
-  const extraReasonCodes = missingExecutionFields ? ['execution.incomplete_fields'] : [];
+  const extraReasonCodes = missingExecutionFields
+    ? ['execution.incomplete_fields']
+    : mode === 'approve'
+      ? ['order.market']
+      : [];
 
   return {
     schema_version: TRADE_PLAN_SCHEMA_VERSION,
@@ -288,6 +299,9 @@ function buildSingleTradePlan(
       min: mode === 'observe' || mode === 'veto' ? 0 : entryMin,
       max: mode === 'observe' || mode === 'veto' ? 0 : entryMax,
     },
+    ...(mode === 'approve'
+      ? { execution_type: 'market' as const, requested_order_type: 'market' as const }
+      : {}),
     stop_loss: mode === 'observe' || mode === 'veto' ? 0 : stopLoss,
     take_profit: mode === 'observe' || mode === 'veto' ? [] : takeProfit,
     max_lots: mode === 'observe' || mode === 'veto' ? 0 : maxLots,
