@@ -55,6 +55,7 @@ import { handleVisualRoute as routeVisual } from './routes/visual.js';
 import { AnalysisService } from './services/analysis/service.js';
 import { buildAIApproveCommandCandidate } from './services/ai-approve/command.js';
 import { createAIApproveCooldown, evaluateAIApprovePendingGate, type AIApproveCooldown } from './services/ai-approve/gate.js';
+import type { AIApproveOrderType } from './services/ai-approve/rules.js';
 import { ArbitrationManager, defaultArbitrationConfig } from './services/arbitration/service.js';
 import { CommandLifecycleService } from './services/command-lifecycle/service.js';
 import { SchedulerService } from './services/scheduler/service.js';
@@ -897,7 +898,7 @@ async function queueAIApprovePendingCommands(
     if (!pendingGate.accepted) {
       continue;
     }
-    const candidate = await tradePlanToCommandCandidate(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp);
+    const candidate = await tradePlanToCommandCandidate(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp, pendingGate.orderType);
     const command = await deps.commandLifecycle.acceptCandidate(accountId, candidate);
     firstCommand ??= command;
     if (command.status === 'queued') {
@@ -1467,7 +1468,8 @@ function tradePlanToCommandCandidate(
   symbol: string,
   tradePlan: EaRecord,
   riskGate: EaRecord,
-  nowIso: string
+  nowIso: string,
+  orderType: AIApproveOrderType
 ): Promise<CommandCandidate> {
   return (async () => {
   return buildAIApproveCommandCandidate({
@@ -1477,7 +1479,8 @@ function tradePlanToCommandCandidate(
     riskGate,
     nowIso,
     currentPrice: aiApproveCurrentPrice((await store.getLatestTick(accountId, symbol)) ?? {}),
-    atr: latestH1Atr(await store.getBars(accountId, symbol, 'H1'))
+    atr: latestH1Atr(await store.getBars(accountId, symbol, 'H1')),
+    orderType
   });
   })();
 }

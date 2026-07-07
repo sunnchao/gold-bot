@@ -2,9 +2,9 @@ import type { CommandCandidate, EaRecord } from '@gold-bot/persistence';
 import {
   calcAIApproveLots,
   firstPositiveAIApproveTakeProfit,
-  orderTypeForAIApproveSignal,
   pickAIApproveEntryPrice,
-  round2
+  round2,
+  type AIApproveOrderType
 } from './rules.js';
 
 export type AIApproveCommandInput = {
@@ -15,6 +15,7 @@ export type AIApproveCommandInput = {
   nowIso: string;
   currentPrice: number;
   atr: number;
+  orderType: AIApproveOrderType;
 };
 
 export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): CommandCandidate {
@@ -35,8 +36,8 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
     sl: round2(numberField(input.tradePlan, 'stop_loss')),
     tp: round2(firstPositiveAIApproveTakeProfit(arrayNumberField(input.tradePlan, 'take_profit'))),
     lots: round2(calcAIApproveLots(numberField(input.tradePlan, 'max_lots'))),
-    order_type: orderTypeForAIApproveSignal(input.currentPrice, entry, input.atr, side),
-    expiration: unixSeconds(input.nowIso) + 4 * 60 * 60,
+    order_type: input.orderType,
+    ...(input.orderType === 'market' ? {} : { expiration: unixSeconds(input.nowIso) + 4 * 60 * 60 }),
     score: confidence,
     strategy: 'ai_signal',
     source: 'ai_approve',
