@@ -102,7 +102,12 @@ describe('AI approve pending gate', () => {
       store,
       accountId,
       symbol,
-      tradePlan: tradePlan({ entry_zone: { min: 3332.8, max: 3332.8 }, add_on: true }),
+      tradePlan: tradePlan({
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT',
+        entry_zone: { min: 3332.8, max: 3332.8 },
+        add_on: true
+      }),
       nowIso
     })).resolves.toMatchObject({ accepted: true, entry: 3332.8 });
   });
@@ -130,6 +135,8 @@ describe('AI approve pending gate', () => {
       accountId,
       symbol,
       tradePlan: tradePlan({
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT',
         entry_zone: { min: 3328, max: 3328 },
         stop_loss: 3320
       }),
@@ -185,6 +192,28 @@ describe('AI approve pending gate', () => {
     })).resolves.toMatchObject({ accepted: true, orderType: 'SELL_LIMIT' });
   });
 
+  it('accepts lower-confidence sell limit plans when trend context is bearish', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store, { trend: 'bear' });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        side: 'sell',
+        confidence: 70,
+        execution_type: 'limit',
+        requested_order_type: 'SELL_LIMIT',
+        entry_zone: { min: 3338.5, max: 3338.5 },
+        stop_loss: 3344,
+        take_profit: [3325],
+        reason_codes: ['mode.approve', 'side.sell']
+      }),
+      nowIso
+    })).resolves.toMatchObject({ accepted: true, orderType: 'SELL_LIMIT' });
+  });
+
   it('rejects disabled stops, mismatched market entry, mismatched limit direction, and invalid protection', async () => {
     const store = createInMemoryEaStore();
     await seedStrongTrendState(store);
@@ -228,6 +257,7 @@ describe('AI approve pending gate', () => {
       tradePlan: tradePlan({
         execution_type: 'limit',
         requested_order_type: 'BUY_LIMIT',
+        entry_zone: { min: 3332.5, max: 3332.5 },
         stop_loss: 3338
       }),
       nowIso
@@ -261,8 +291,8 @@ function tradePlan(overrides: EaRecord = {}): EaRecord {
     side: 'buy',
     confidence: 80,
     entry_zone: { min: 3335.5, max: 3335.7 },
-    execution_type: 'limit',
-    requested_order_type: 'BUY_LIMIT',
+    execution_type: 'market',
+    requested_order_type: 'market',
     stop_loss: 3330,
     take_profit: [3345],
     max_lots: 0.2,
@@ -273,7 +303,7 @@ function tradePlan(overrides: EaRecord = {}): EaRecord {
   };
 }
 
-async function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 'neutral' } = {}): Promise<void> {
+async function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 'bear' | 'neutral' } = {}): Promise<void> {
   await store.saveTick({
     account_id: accountId,
     symbol,
@@ -285,7 +315,9 @@ async function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 
   const trend = options.trend ?? 'bull';
   const bar = trend === 'bull'
     ? { close: 3336, ema20: 3335, ema50: 3330, adx: 35, atr: 2, rsi: 60 }
-    : { close: 3335, ema20: 3335, ema50: 3335, adx: 10, atr: 2, rsi: 50 };
+    : trend === 'bear'
+      ? { close: 3334, ema20: 3335, ema50: 3340, adx: 35, atr: 2, rsi: 40 }
+      : { close: 3335, ema20: 3335, ema50: 3335, adx: 10, atr: 2, rsi: 50 };
   for (const timeframe of ['D1', 'H4', 'H1', 'M30', 'M15']) {
     await store.saveBars({
       account_id: accountId,

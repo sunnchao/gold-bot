@@ -85,7 +85,7 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     M30: await input.store.getBars(input.accountId, input.symbol, 'M30'),
     M15: await input.store.getBars(input.accountId, input.symbol, 'M15')
   });
-  const signalDirection = stringField(input.tradePlan, 'side') === 'SELL' ? 'BEAR' : 'BULL';
+  const signalDirection = stringField(input.tradePlan, 'side').trim().toLowerCase() === 'sell' ? 'BEAR' : 'BULL';
   if (trend.consensusDirection !== 'NEUTRAL' && trend.consensusDirection !== signalDirection && numberField(input.tradePlan, 'confidence') < 75) {
     return reject('trend.inverse_confidence');
   }

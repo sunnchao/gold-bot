@@ -23,7 +23,7 @@ describe('AI approve order intent rules', () => {
     )).toEqual({ accepted: false, reason: 'market_entry_mismatch' });
   });
 
-  it('accepts buy limit at or below current price', () => {
+  it('accepts buy limit below current price', () => {
     expect(resolveAIApproveOrderIntent(
       tradePlan({ side: 'buy', execution_type: 'limit', requested_order_type: 'BUY_LIMIT' }),
       3335.6,
@@ -32,7 +32,7 @@ describe('AI approve order intent rules', () => {
     )).toEqual({ accepted: true, orderType: 'BUY_LIMIT' });
   });
 
-  it('accepts sell limit at or above current price', () => {
+  it('accepts sell limit above current price', () => {
     expect(resolveAIApproveOrderIntent(
       tradePlan({ side: 'sell', execution_type: 'limit', requested_order_type: 'SELL_LIMIT' }),
       3335.6,
@@ -53,6 +53,22 @@ describe('AI approve order intent rules', () => {
       tradePlan({ side: 'sell', execution_type: 'limit', requested_order_type: 'SELL_LIMIT' }),
       3335.6,
       3332,
+      2
+    )).toEqual({ accepted: false, reason: 'limit_direction_mismatch' });
+  });
+
+  it('rejects limit orders at current price so current-price entries use market intent', () => {
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({ side: 'buy', execution_type: 'limit', requested_order_type: 'BUY_LIMIT' }),
+      3335.6,
+      3335.6,
+      2
+    )).toEqual({ accepted: false, reason: 'limit_direction_mismatch' });
+
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({ side: 'sell', execution_type: 'limit', requested_order_type: 'SELL_LIMIT' }),
+      3335.6,
+      3335.6,
       2
     )).toEqual({ accepted: false, reason: 'limit_direction_mismatch' });
   });

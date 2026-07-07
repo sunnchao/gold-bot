@@ -83,14 +83,14 @@ export function resolveAIApproveOrderIntent(
   }
 
   if (requestedOrderType === 'BUY_LIMIT') {
-    if (side !== 'buy' || entry > currentPrice) {
+    if (side !== 'buy' || entry >= currentPrice) {
       return { accepted: false, reason: 'limit_direction_mismatch' };
     }
     return { accepted: true, orderType: 'BUY_LIMIT' };
   }
 
   if (requestedOrderType === 'SELL_LIMIT') {
-    if (side !== 'sell' || entry < currentPrice) {
+    if (side !== 'sell' || entry <= currentPrice) {
       return { accepted: false, reason: 'limit_direction_mismatch' };
     }
     return { accepted: true, orderType: 'SELL_LIMIT' };
