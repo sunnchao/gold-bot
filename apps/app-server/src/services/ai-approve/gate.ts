@@ -1,5 +1,11 @@
 import type { EaRecord, EaStore } from '@gold-bot/persistence';
-import { calcAIApproveLots, pickAIApproveEntryPrice } from './rules.js';
+import {
+  calcAIApproveLots,
+  pickAIApproveEntryPrice,
+  resolveAIApproveOrderIntent,
+  validateAIApproveProtectionDirection,
+  type AIApproveOrderType
+} from './rules.js';
 
 export const AI_APPROVE_COOLDOWN_MS = 30 * 60 * 1000;
 
@@ -24,6 +30,7 @@ export type AIApprovePendingGateResult =
       entry: number;
       lots: number;
       h1Atr: number;
+      orderType: AIApproveOrderType;
     }
   | {
       accepted: false;
@@ -60,10 +67,26 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     return reject('lots.too_small');
   }
 
+  const h1Bars = await input.store.getBars(input.accountId, input.symbol, 'H1');
+  const h1Atr = latestAtr(h1Bars);
+  const orderIntent = resolveAIApproveOrderIntent(
+    resolveGateOrderIntentPlan(input.tradePlan, currentPrice, entry, h1Atr),
+    currentPrice,
+    entry,
+    h1Atr
+  );
+  if (!orderIntent.accepted) {
+    return reject(orderIntent.reason);
+  }
+  const protection = validateAIApproveProtectionDirection(input.tradePlan, entry);
+  if (!protection.accepted) {
+    return reject(protection.reason);
+  }
+
   const trend = buildAIApproveTrendContext({
     D1: await input.store.getBars(input.accountId, input.symbol, 'D1'),
     H4: await input.store.getBars(input.accountId, input.symbol, 'H4'),
-    H1: await input.store.getBars(input.accountId, input.symbol, 'H1'),
+    H1: h1Bars,
     M30: await input.store.getBars(input.accountId, input.symbol, 'M30'),
     M15: await input.store.getBars(input.accountId, input.symbol, 'M15')
   });
@@ -105,7 +128,6 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     return reject('cooldown.active');
   }
 
-  const h1Atr = latestAtr(await input.store.getBars(input.accountId, input.symbol, 'H1'));
   if (h1Atr > 0 && Math.abs(currentPrice - entry) > h1Atr * 3) {
     return reject('entry.too_far_from_market');
   }
@@ -115,12 +137,31 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     currentPrice,
     entry,
     lots,
-    h1Atr
+    h1Atr,
+    orderType: orderIntent.orderType
   };
 }
 
 function reject(reason: string): AIApprovePendingGateResult {
   return { accepted: false, reason };
+}
+
+function resolveGateOrderIntentPlan(tradePlan: EaRecord, currentPrice: number, entry: number, h1Atr: number): EaRecord {
+  if (stringField(tradePlan, 'execution_type') !== '' || stringField(tradePlan, 'requested_order_type') !== '') {
+    return tradePlan;
+  }
+  const side = stringField(tradePlan, 'side').trim().toLowerCase();
+  const allowedMarketDistance = h1Atr > 0 ? h1Atr * 0.3 : 0;
+  if (Math.abs(currentPrice - entry) <= allowedMarketDistance) {
+    return { ...tradePlan, execution_type: 'market', requested_order_type: 'market' };
+  }
+  if (side === 'buy') {
+    return { ...tradePlan, execution_type: 'limit', requested_order_type: 'BUY_LIMIT' };
+  }
+  if (side === 'sell') {
+    return { ...tradePlan, execution_type: 'limit', requested_order_type: 'SELL_LIMIT' };
+  }
+  return tradePlan;
 }
 
 function currentPriceFromTick(tick: EaRecord): number {

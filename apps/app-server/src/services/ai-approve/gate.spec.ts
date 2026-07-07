@@ -102,9 +102,9 @@ describe('AI approve pending gate', () => {
       store,
       accountId,
       symbol,
-      tradePlan: tradePlan({ entry_zone: { min: 3338.1, max: 3338.1 }, add_on: true }),
+      tradePlan: tradePlan({ entry_zone: { min: 3332.8, max: 3332.8 }, add_on: true }),
       nowIso
-    })).resolves.toMatchObject({ accepted: true, entry: 3338.1 });
+    })).resolves.toMatchObject({ accepted: true, entry: 3332.8 });
   });
 
   it('rejects cooldown and far H1 ATR entry distance', async () => {
@@ -129,12 +129,109 @@ describe('AI approve pending gate', () => {
       store,
       accountId,
       symbol,
-      tradePlan: tradePlan({ entry_zone: { min: 3350, max: 3350 } }),
+      tradePlan: tradePlan({
+        entry_zone: { min: 3328, max: 3328 },
+        stop_loss: 3320
+      }),
       nowIso
     })).resolves.toEqual({
       accepted: false,
       reason: 'entry.too_far_from_market'
     });
+  });
+
+  it('returns accepted order type for explicit market, buy limit, and sell limit plans', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        execution_type: 'market',
+        requested_order_type: 'market',
+        entry_zone: { min: 3335.5, max: 3335.7 }
+      }),
+      nowIso
+    })).resolves.toMatchObject({ accepted: true, orderType: 'market' });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT',
+        entry_zone: { min: 3332.5, max: 3332.5 }
+      }),
+      nowIso
+    })).resolves.toMatchObject({ accepted: true, orderType: 'BUY_LIMIT' });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        side: 'sell',
+        execution_type: 'limit',
+        requested_order_type: 'SELL_LIMIT',
+        entry_zone: { min: 3338.5, max: 3338.5 },
+        stop_loss: 3344,
+        take_profit: [3325],
+        reason_codes: ['mode.approve', 'side.sell']
+      }),
+      nowIso
+    })).resolves.toMatchObject({ accepted: true, orderType: 'SELL_LIMIT' });
+  });
+
+  it('rejects disabled stops, mismatched market entry, mismatched limit direction, and invalid protection', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({ execution_type: 'stop', requested_order_type: 'BUY_STOP' }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'stop_order.disabled' });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        execution_type: 'market',
+        requested_order_type: 'market',
+        entry_zone: { min: 3332, max: 3332 }
+      }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'market_entry_mismatch' });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT',
+        entry_zone: { min: 3338, max: 3338 }
+      }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'limit_direction_mismatch' });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT',
+        stop_loss: 3338
+      }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'protection.invalid_direction' });
   });
 });
 
@@ -148,6 +245,8 @@ function tradePlan(overrides: EaRecord = {}): EaRecord {
     side: 'buy',
     confidence: 80,
     entry_zone: { min: 3335.5, max: 3335.7 },
+    execution_type: 'limit',
+    requested_order_type: 'BUY_LIMIT',
     stop_loss: 3330,
     take_profit: [3345],
     max_lots: 0.2,
