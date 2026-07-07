@@ -1,5 +1,5 @@
 {
-  "version": "2.8.3",
-  "build": 9,
-  "changelog": "AI信号挂单: 新增 ai_signal 策略支持(Magic=20250238)，修复未知策略拒绝问题；兼容 tp/tp1 字段名；AI信号使用服务端计算手数(含减半逻辑)；所有品种MaxSpread=80避免挂单被点差拦截；SQLite方言移除，仅支持PostgreSQL"
+  "version": "2.9.0",
+  "build": 10,
+  "changelog": "Multi-TP拆单: 收到 tp_split=true 信号时，自动拆分成2个订单(40% lots @ TP1 + 60% lots @ TP2)，服务端条件性设置标志(有TP2时)；总手数严格等于服务端下发；部分失败时报告PARTIAL；向后兼容不带tp_split或TP2=0的信号"
 }

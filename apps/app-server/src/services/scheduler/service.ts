@@ -77,6 +77,10 @@ export class SchedulerService {
     const currentPrice = liveCurrentPrice((await this.store?.getLatestTick(accountId, symbol)) ?? {}, bars);
     const atr = latestAtr(bars.H1) || numberField(signalRecord, 'atr');
     const orderType = orderTypeForSignal(currentPrice, numberField(signalRecord, 'entry'), atr, stringField(signalRecord, 'side'));
+    // Multi-TP split: only enable when signal has a meaningful TP2 (>0 and different from TP1)
+    const tp1Value = numberField(signalRecord, 'tp1');
+    const tp2Value = numberField(signalRecord, 'tp2');
+    const shouldSplitTP = tp2Value > 0 && Math.abs(tp2Value - tp1Value) > 0;
     const candidate: CommandCandidate = {
       command_id: commandId,
       decision_id: commandId,
@@ -87,8 +91,8 @@ export class SchedulerService {
       type: stringField(signalRecord, 'side'),
       entry: numberField(signalRecord, 'entry'),
       sl: numberField(signalRecord, 'stop_loss'),
-      tp1: numberField(signalRecord, 'tp1'),
-      tp2: numberField(signalRecord, 'tp2'),
+      tp1: tp1Value,
+      tp2: tp2Value,
       score: numberField(signalRecord, 'score'),
       atr: numberField(signalRecord, 'atr'),
       scale_in_parent_ticket: numberField(signalRecord, 'scale_in_parent_ticket'),
@@ -97,7 +101,10 @@ export class SchedulerService {
       scale_in_count: numberField(signalRecord, 'scale_in_count'),
       trigger_key: triggerKey,
       analysis_mode: analysisMode,
-      order_type: orderType
+      order_type: orderType,
+      // Multi-TP split flag: true when signal has TP2, instructing EA to split into 2 orders
+      // (40% lots @ TP1 + 60% lots @ TP2). EA handles lot distribution; ensures total ≤ plan lots.
+      tp_split: shouldSplitTP
     };
     if (booleanField(signalRecord, 'fib_enhanced')) {
       candidate.fib_enhanced = true;

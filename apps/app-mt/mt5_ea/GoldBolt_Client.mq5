@@ -1393,6 +1393,122 @@ void ExecuteCloseAll(string cmd, string cmd_id)
 }
 
 // ============================================================
+// Multi-TP 拆单辅助函数（MT5）
+// ============================================================
+
+// 拆分手数：40% 给 TP1，60% 给 TP2
+bool SplitLotsForMultiTP_MT5(double totalLots, double &lotsTP1, double &lotsTP2)
+{
+   if(totalLots <= 0)
+   {
+      lotsTP1 = 0;
+      lotsTP2 = 0;
+      return false;
+   }
+   lotsTP1 = NormalizeVolume(totalLots * 0.4);
+   if(lotsTP1 <= 0) lotsTP1 = NormalizeVolume(0.01);
+   lotsTP2 = NormalizeVolume(totalLots - lotsTP1);
+   if(lotsTP1 + lotsTP2 > totalLots + 0.0001)
+   {
+      lotsTP1 = NormalizeVolume(totalLots * 0.4);
+      lotsTP2 = totalLots - lotsTP1;
+   }
+   return true;
+}
+
+// MT5 单订单开仓 + 设置 TP/SL（拆单模式）
+bool OpenSingleOrderWithTP_MT5(double lots, double price, double sl, double tp,
+                                string comment, int magic, ENUM_POSITION_TYPE posType,
+                                ulong &outTicket)
+{
+   outTicket = 0;
+   lots = NormalizeVolume(lots);
+   if(lots <= 0) return false;
+
+   PrepareTrade(Symbol_, magic);
+   bool result = false;
+   if(posType == POSITION_TYPE_BUY)
+      result = trade.Buy(lots, Symbol_, price, sl, tp, comment);
+   else
+      result = trade.Sell(lots, Symbol_, price, sl, tp, comment);
+
+   if(!TradeOperationSucceeded(result))
+   {
+      Print("❌ 拆单开仓失败: Error#", GetTradeErrorCode());
+      return false;
+   }
+
+   ulong rawTicket = (ulong)trade.ResultOrder();
+   ulong ticket = ResolveLivePositionTicket(rawTicket, Symbol_, magic, posType);
+   if(ticket == 0)
+   {
+      outTicket = rawTicket;
+      Print("⚠️ 拆单成交但无法解析持仓 ticket");
+      return false;
+   }
+
+   Print("✅ 拆单开仓: #", FormatULongValue(ticket), " ", EnumToString(posType),
+         " ", DoubleToString(lots, 2), "手 @ ", DoubleToString(price, _Digits),
+         " | SL=", DoubleToString(sl, _Digits), " TP=", DoubleToString(tp, _Digits),
+         " | Magic=", magic);
+
+   outTicket = ticket;
+   return true;
+}
+
+// MT5 拆单开仓 (40% lots @ TP1, 60% lots @ TP2)
+void ExecuteOpenWithTPSplit_MT5(string cmd, string cmd_id, string type_str, double lots,
+                                double price, double sl, double tp1, double tp2,
+                                string strategy, int score, int magicForOrder,
+                                string commentBase, ENUM_POSITION_TYPE posType)
+{
+   double lotsTP1 = 0, lotsTP2 = 0;
+   if(!SplitLotsForMultiTP_MT5(lots, lotsTP1, lotsTP2))
+   {
+      Print("❌ 拆单失败: 手数无效 totalLots=", DoubleToString(lots, 2));
+      ReportResult(cmd_id, "ERROR", 0, "split_lots_invalid");
+      return;
+   }
+
+   // 订单 A: TP1
+   ulong ticketA = 0;
+   bool okA = OpenSingleOrderWithTP_MT5(lotsTP1, price, sl, tp1,
+                                         commentBase + "_A", magicForOrder, posType, ticketA);
+
+   // 订单 B: TP2
+   ulong ticketB = 0;
+   bool okB = OpenSingleOrderWithTP_MT5(lotsTP2, price, sl, tp2,
+                                         commentBase + "_B", magicForOrder, posType, ticketB);
+
+   if(okA && okB)
+   {
+      Print("✅ 拆单成功: TP1=#", FormatULongValue(ticketA), " (", DoubleToString(lotsTP1, 2), "手) | ",
+            "TP2=#", FormatULongValue(ticketB), " (", DoubleToString(lotsTP2, 2), "手) | ",
+            "合计=", DoubleToString(lotsTP1 + lotsTP2, 2), "手");
+      ReportResult(cmd_id, "OK", (long)ticketA,
+                   "split;A=" + FormatULongValue(ticketA) + "_" + DoubleToString(lotsTP1, 2) +
+                   ";B=" + FormatULongValue(ticketB) + "_" + DoubleToString(lotsTP2, 2));
+   }
+   else if(okA && !okB)
+   {
+      Print("⚠️ 拆单部分成功: A=#", FormatULongValue(ticketA), " (TP1), B 失败");
+      ReportResult(cmd_id, "PARTIAL", (long)ticketA,
+                   "split;A_ok=" + FormatULongValue(ticketA) + ";B_failed_err=" + IntegerToString(GetTradeErrorCode()));
+   }
+   else if(!okA && okB)
+   {
+      Print("⚠️ 拆单部分成功: A 失败, B=#", FormatULongValue(ticketB), " (TP2)");
+      ReportResult(cmd_id, "PARTIAL", (long)ticketB,
+                   "split;A_failed;B_ok=" + FormatULongValue(ticketB));
+   }
+   else
+   {
+      Print("❌ 拆单全部失败");
+      ReportResult(cmd_id, "ERROR", 0, "split_all_failed");
+   }
+}
+
+// ============================================================
 // 执行开仓信号（风控在本地，策略在服务端）
 // ============================================================
 void ExecuteSignal(string cmd, string cmd_id)
@@ -1401,6 +1517,9 @@ void ExecuteSignal(string cmd, string cmd_id)
    string type_str = GetJsonString(cmd, "type");
    double sl       = GetJsonDouble(cmd, "sl");
    double tp1      = GetJsonDouble(cmd, "tp1");
+   if(tp1 == 0.0) tp1 = GetJsonDouble(cmd, "tp"); // 兼容
+   double tp2      = GetJsonDouble(cmd, "tp2");    // Multi-TP 拆单
+   bool   tpSplit  = GetJsonBool(cmd, "tp_split"); // Multi-TP 拆单标志
    int    score    = GetJsonInt(cmd, "score");
    string strategy = GetJsonString(cmd, "strategy");
 
@@ -1464,6 +1583,14 @@ void ExecuteSignal(string cmd, string cmd_id)
       if(cmdLots > 0) lots = cmdLots;
    }
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);
+
+   // Multi-TP 拆单: 检查是否需要拆成两个订单
+   if(tpSplit && tp2 > 0 && MathAbs(tp1 - tp2) > _Point)
+   {
+      ExecuteOpenWithTPSplit_MT5(cmd, cmd_id, type_str, lots, price, sl, tp1, tp2,
+                                  strategy, score, magicForOrder, comment, posType);
+      return; // 拆单模式独立处理
+   }
 
    PrepareTrade(Symbol_, magicForOrder);
 
