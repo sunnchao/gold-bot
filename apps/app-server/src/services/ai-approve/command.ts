@@ -13,8 +13,6 @@ export type AIApproveCommandInput = {
   tradePlan: EaRecord;
   riskGate: EaRecord;
   nowIso: string;
-  currentPrice: number;
-  atr: number;
   orderType: AIApproveOrderType;
 };
 

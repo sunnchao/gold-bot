@@ -7,8 +7,6 @@ describe('AI approve command builder', () => {
       accountId: '90011087',
       symbol: 'XAUUSD',
       nowIso: '2026-04-13T16:00:00+08:00',
-      currentPrice: 3335.6,
-      atr: 2,
       orderType: 'market',
       riskGate: {
         decision_id: 'tpv1_market',
@@ -67,8 +65,6 @@ describe('AI approve command builder', () => {
       accountId: '90011087',
       symbol: 'XAUUSD',
       nowIso: '2026-04-13T08:00:00Z',
-      currentPrice: 3335,
-      atr: 2,
       orderType: 'BUY_LIMIT',
       riskGate: { decision_id: 'tpv1_buy_limit', mode: 'approve', symbol: 'XAUUSD' },
       tradePlan: {
@@ -97,8 +93,6 @@ describe('AI approve command builder', () => {
       accountId: '90011087',
       symbol: 'XAUUSD',
       nowIso: '2026-04-13T08:00:00Z',
-      currentPrice: 3335,
-      atr: 2,
       orderType: 'SELL_LIMIT',
       riskGate: { decision_id: 'tpv1_sell_limit', mode: 'approve', symbol: 'XAUUSD' },
       tradePlan: {

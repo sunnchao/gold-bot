@@ -44,11 +44,10 @@ export function resolveAIApproveOrderIntent(
   h1Atr: number
 ): AIApproveOrderIntentResult {
   const side = stringField(tradePlan, 'side').trim().toLowerCase();
-  const executionType = stringField(tradePlan, 'execution_type').trim().toLowerCase();
-  const requestedRaw = stringField(tradePlan, 'requested_order_type').trim().toUpperCase();
-  const requestedOrderType = requestedRaw === 'MARKET' ? 'market' : requestedRaw;
+  const executionType = stringField(tradePlan, 'execution_type');
+  const requestedOrderType = stringField(tradePlan, 'requested_order_type');
 
-  if (executionType === 'stop' || requestedRaw === 'BUY_STOP' || requestedRaw === 'SELL_STOP') {
+  if (executionType === 'stop' || requestedOrderType === 'BUY_STOP' || requestedOrderType === 'SELL_STOP') {
     return { accepted: false, reason: 'stop_order.disabled' };
   }
 

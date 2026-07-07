@@ -161,6 +161,27 @@ describe('AI approve order intent rules', () => {
       3332.5,
       2
     )).toEqual({ accepted: false, reason: 'order_intent.mismatch' });
+
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({ execution_type: 'MARKET', requested_order_type: 'market', entry_zone: { min: 3335.5, max: 3335.7 } }),
+      3335.6,
+      3335.6,
+      2
+    )).toEqual({ accepted: false, reason: 'order_intent.mismatch' });
+
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({ execution_type: 'Limit', requested_order_type: 'BUY_LIMIT' }),
+      3335.6,
+      3332.5,
+      2
+    )).toEqual({ accepted: false, reason: 'order_intent.mismatch' });
+
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({ execution_type: 'limit', requested_order_type: 'buy_limit' }),
+      3335.6,
+      3332.5,
+      2
+    )).toEqual({ accepted: false, reason: 'order_intent.mismatch' });
   });
 
   it('validates BUY and SELL protection direction', () => {

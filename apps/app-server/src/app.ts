@@ -898,7 +898,7 @@ async function queueAIApprovePendingCommands(
     if (!pendingGate.accepted) {
       continue;
     }
-    const candidate = await tradePlanToCommandCandidate(deps.store, accountId, symbol, tradePlan, riskGate, eventTimestamp, pendingGate.orderType);
+    const candidate = tradePlanToCommandCandidate(accountId, symbol, tradePlan, riskGate, eventTimestamp, pendingGate.orderType);
     const command = await deps.commandLifecycle.acceptCandidate(accountId, candidate);
     firstCommand ??= command;
     if (command.status === 'queued') {
@@ -1463,40 +1463,21 @@ function aiTradePlanRiskGate(store: EaStore, accountId: string, symbol: string, 
 }
 
 function tradePlanToCommandCandidate(
-  store: EaStore,
   accountId: string,
   symbol: string,
   tradePlan: EaRecord,
   riskGate: EaRecord,
   nowIso: string,
   orderType: AIApproveOrderType
-): Promise<CommandCandidate> {
-  return (async () => {
+): CommandCandidate {
   return buildAIApproveCommandCandidate({
     accountId,
     symbol,
     tradePlan,
     riskGate,
     nowIso,
-    currentPrice: aiApproveCurrentPrice((await store.getLatestTick(accountId, symbol)) ?? {}),
-    atr: latestH1Atr(await store.getBars(accountId, symbol, 'H1')),
     orderType
   });
-  })();
-}
-
-function aiApproveCurrentPrice(tick: EaRecord): number {
-  const bid = numberField(tick, 'bid');
-  const ask = numberField(tick, 'ask');
-  if (bid > 0 && ask > 0) {
-    return (bid + ask) / 2;
-  }
-  return ask > 0 ? ask : bid;
-}
-
-function latestH1Atr(bars: EaRecord[]): number {
-  const last = bars[bars.length - 1];
-  return last == null ? 0 : numberField(last, 'atr') || numberField(last, 'ATR');
 }
 
 function riskGateEntryZone(value: EaRecord | undefined): { min?: number; max?: number } | undefined {
