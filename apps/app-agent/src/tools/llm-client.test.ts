@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LLMClient, LlmClientService } from './llm-client.js';
 import type { AppConfigService } from '../config/app-config.service.js';
+import { TRADE_ACTION_TOOLS } from '../types/trade-action.js';
 
 const loggerMock = vi.hoisted(() => ({
   debug: vi.fn(),
@@ -249,6 +250,35 @@ describe('LLMClient', () => {
       creationTokens: 0,
       hitTokens: 300,
       missTokens: 50,
+    });
+  });
+
+  it('parses tool_use from Anthropic stream', async () => {
+    mockAnthropicStream([
+      'event: message_start\ndata: {"message":{"usage":{"input_tokens":100,"cache_read_input_tokens":0}}}\n\n',
+      'event: content_block_start\ndata: {"index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"place_pending_order"}}\n\n',
+      'event: content_block_delta\ndata: {"index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"side\\":\\"buy\\",\\"entry_price\\":4145"}}\n\n',
+      'event: content_block_delta\ndata: {"index":0,"delta":{"type":"input_json_delta","partial_json":",\\"stop_loss\\":4125}"}}\n\n',
+      'event: content_block_stop\ndata: {"index":0}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]);
+
+    const client = new LLMClient({
+      ...defaultConfig,
+      model: 'claude-opus-4-8',
+    });
+    const result = await client.streamLayered(
+      [{ text: 'sys', cacheable: true }],
+      [{ text: 'user', cacheable: true }],
+      { tools: TRADE_ACTION_TOOLS, toolChoice: { type: 'any' } },
+    );
+
+    expect(bodyFromFetchCall().tools).toEqual(TRADE_ACTION_TOOLS);
+    expect(bodyFromFetchCall().tool_choice).toEqual({ type: 'any' });
+    expect(result.toolUse).toEqual({
+      id: 'toolu_01',
+      name: 'place_pending_order',
+      input: { side: 'buy', entry_price: 4145, stop_loss: 4125 },
     });
   });
 

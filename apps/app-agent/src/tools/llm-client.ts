@@ -102,6 +102,28 @@ interface AnthropicStreamResult {
   content: string;
   chunks: number;
   cacheStats: CacheStats;
+  toolUse?: AnthropicToolUse;
+}
+
+export interface AnthropicToolUse {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface InvokeOpts {
+  tools?: ReadonlyArray<{ name: string; description: string; input_schema: unknown }>;
+  toolChoice?: { type: 'auto' | 'any' | 'tool'; name?: string };
+}
+
+interface PendingToolUse {
+  id: string;
+  name: string;
+  inputJson: string;
+}
+
+interface AnthropicSseParseState {
+  pendingToolUse?: PendingToolUse;
 }
 
 /**
@@ -200,6 +222,7 @@ export class LLMClient {
     systemBlocks: SystemBlock[],
     userLayers: UserLayer[],
     stream: boolean,
+    opts?: InvokeOpts,
   ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: this.config.model,
@@ -268,6 +291,11 @@ export class LLMClient {
       }
     }
 
+    if (opts?.tools && opts.tools.length > 0) {
+      body.tools = opts.tools;
+      body.tool_choice = opts.toolChoice ?? { type: 'auto' };
+    }
+
     return body;
   }
 
@@ -275,6 +303,7 @@ export class LLMClient {
     systemBlocks: SystemBlock[],
     userLayers: UserLayer[],
     stream: boolean,
+    opts?: InvokeOpts,
   ): RequestInit {
     return {
       method: 'POST',
@@ -283,7 +312,7 @@ export class LLMClient {
         Authorization: `Bearer ${this.config.apiKey}`,
         'anthropic-version': ANTHROPIC_VERSION,
       },
-      body: JSON.stringify(this.buildLayeredRequestBody(systemBlocks, userLayers, stream)),
+      body: JSON.stringify(this.buildLayeredRequestBody(systemBlocks, userLayers, stream, opts)),
     };
   }
 
@@ -339,6 +368,7 @@ export class LLMClient {
   private processAnthropicSseEvent(
     rawEvent: string,
     result: AnthropicStreamResult,
+    parseState: AnthropicSseParseState,
   ): AnthropicStreamResult {
     const lines = rawEvent.split(/\r?\n/);
     let eventName = '';
@@ -365,14 +395,59 @@ export class LLMClient {
     try {
       const data = JSON.parse(dataStr) as Record<string, unknown>;
 
+      if (eventName === 'content_block_start') {
+        const block = data.content_block as Record<string, unknown> | undefined;
+        if (block?.type === 'tool_use') {
+          const id = typeof block.id === 'string' ? block.id : '';
+          const name = typeof block.name === 'string' ? block.name : '';
+          if (id && name) {
+            parseState.pendingToolUse = { id, name, inputJson: '' };
+          }
+        }
+      }
+
       if (eventName === 'content_block_delta') {
         const delta = data.delta as Record<string, unknown> | undefined;
+        if (
+          parseState.pendingToolUse &&
+          delta?.type === 'input_json_delta' &&
+          typeof delta.partial_json === 'string'
+        ) {
+          parseState.pendingToolUse.inputJson += delta.partial_json;
+          return result;
+        }
         if (delta && typeof delta.text === 'string') {
           return {
             ...result,
             content: result.content + delta.text,
             chunks: result.chunks + 1,
           };
+        }
+      }
+
+      if (eventName === 'content_block_stop' && parseState.pendingToolUse) {
+        const pendingToolUse = parseState.pendingToolUse;
+        parseState.pendingToolUse = undefined;
+        try {
+          const input = JSON.parse(pendingToolUse.inputJson) as unknown;
+          if (input && typeof input === 'object' && !Array.isArray(input)) {
+            return {
+              ...result,
+              toolUse: {
+                id: pendingToolUse.id,
+                name: pendingToolUse.name,
+                input: input as Record<string, unknown>,
+              },
+            };
+          }
+        } catch (err) {
+          getLogger().warn(
+            {
+              err: err instanceof Error ? err.message : String(err),
+              rawJson: pendingToolUse.inputJson,
+            },
+            'tool_use input parse failed',
+          );
         }
       }
 
@@ -412,6 +487,7 @@ export class LLMClient {
         missTokens: 0,
       },
     };
+    const parseState: AnthropicSseParseState = {};
 
     while (true) {
       const { done, value } = await reader.read();
@@ -423,14 +499,14 @@ export class LLMClient {
 
       for (const event of events) {
         if (event.trim()) {
-          result = this.processAnthropicSseEvent(event, result);
+          result = this.processAnthropicSseEvent(event, result, parseState);
         }
       }
     }
 
     buffer += decoder.decode();
     if (buffer.trim()) {
-      result = this.processAnthropicSseEvent(buffer, result);
+      result = this.processAnthropicSseEvent(buffer, result, parseState);
     }
 
     return result;
@@ -517,10 +593,11 @@ export class LLMClient {
   async streamLayered(
     systemBlocks: SystemBlock[],
     userLayers: UserLayer[],
-  ): Promise<{ content: string; cacheStats: CacheStats }> {
+    opts?: InvokeOpts,
+  ): Promise<{ content: string; cacheStats: CacheStats; toolUse?: AnthropicToolUse }> {
     const logger = getLogger();
     const url = this.messagesUrl();
-    const request = this.buildLayeredRequest(systemBlocks, userLayers, true);
+    const request = this.buildLayeredRequest(systemBlocks, userLayers, true, opts);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeout);
@@ -562,10 +639,15 @@ export class LLMClient {
         'streamLayered: complete (Anthropic Messages)',
       );
 
-      return {
+      const responseBody: { content: string; cacheStats: CacheStats; toolUse?: AnthropicToolUse } = {
         content: result.content,
         cacheStats: result.cacheStats,
       };
+      if (result.toolUse) {
+        responseBody.toolUse = result.toolUse;
+      }
+
+      return responseBody;
     } catch (err) {
       const elapsed = Date.now() - startTime;
       logger.warn(
@@ -664,6 +746,7 @@ export class LLMClient {
   async invokeLayered(
     systemMessage: string | SystemBlock[],
     userMessages: string[] | UserLayer[],
+    opts?: InvokeOpts,
   ): Promise<string> {
     const logger = getLogger();
     const url = this.messagesUrl();
@@ -673,7 +756,7 @@ export class LLMClient {
           systemMessage,
           false,
         )
-      : this.buildLayeredRequest(systemMessage, userMessages as UserLayer[], false);
+      : this.buildLayeredRequest(systemMessage, userMessages as UserLayer[], false, opts);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeout);
