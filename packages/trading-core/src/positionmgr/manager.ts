@@ -559,29 +559,9 @@ export function evaluatePositionDynamicTrailing(input: PositionDynamicTrailingIn
 }
 
 export function evaluatePositionMomentumScalpExits(input: PositionMomentumScalpExitInput): PositionMomentumScalpExitResult {
-  const result: PositionMomentumScalpExitResult = { advisories: [], nextStates: [], canProduceLiveCommands: false };
-  if (input.positions.length === 0 || input.currentAtr <= 0 || input.currentPrice <= 0) {
-    return result;
-  }
-
-  const now = input.now == null ? new Date() : new Date(input.now);
-  const states = new Map((input.states ?? []).map((state) => [state.ticket, state]));
-  for (const rawPosition of input.positions) {
-    const position = toOpenPosition(rawPosition);
-    if (position == null || !isMomentumScalpPosition(position)) {
-      continue;
-    }
-
-    const profitAtr = profitInAtr(position, input.currentPrice, input.currentAtr);
-    const state = momentumScalpState(position, states.get(position.ticket), now);
-    const advisory = momentumScalpExitAdvisory(position, state, now, profitAtr, input.m5Bars, input.m1Bars);
-    if (advisory != null) {
-      result.advisories.push(advisory);
-    }
-    result.nextStates.push(state);
-  }
-
-  return result;
+  // NOTE: momentum_scalp strategy disabled for intraday trading focus
+  // Return empty result as this strategy is no longer active
+  return { advisories: [], nextStates: [], canProduceLiveCommands: false };
 }
 
 export function evaluatePositionManagerCommands(input: PositionManagerCommandsInput): PositionManagerCommandsResult {
@@ -617,14 +597,15 @@ export function evaluatePositionManagerCommands(input: PositionManagerCommandsIn
       state.maxProfitAtr = profitAtr;
     }
 
-    if (isMomentumScalpPosition(position)) {
-      const advisory = momentumScalpExitAdvisory(position, state, now, profitAtr, input.m5Bars ?? [], input.m1Bars ?? []);
-      if (advisory != null) {
-        result.advisories.push(advisory);
-        stateByTicket.set(position.ticket, state);
-        continue;
-      }
-    }
+    // NOTE: momentum_scalp strategy disabled for intraday trading focus
+    // if (isMomentumScalpPosition(position)) {
+    //   const advisory = momentumScalpExitAdvisory(position, state, now, profitAtr, input.m5Bars ?? [], input.m1Bars ?? []);
+    //   if (advisory != null) {
+    //     result.advisories.push(advisory);
+    //     stateByTicket.set(position.ticket, state);
+    //     continue;
+    //   }
+    // }
 
     const openTime = new Date(state.openTime ?? state.open_time ?? now);
     const hours = (now.getTime() - openTime.getTime()) / (60 * 60 * 1000);
@@ -1378,7 +1359,9 @@ function toOpenPosition(position: PositionManagerPosition): OpenPosition | null 
 }
 
 function isMomentumScalpPosition(position: OpenPosition): boolean {
-  return position.comment.toLowerCase().includes('momentum_scalp');
+  // NOTE: momentum_scalp strategy disabled for intraday trading focus
+  return false;
+  // return position.comment.toLowerCase().includes('momentum_scalp');
 }
 
 function getStrategySummary(summaries: Map<string, PositionStrategySummary>, strategy: string): PositionStrategySummary {

@@ -98,7 +98,8 @@ export type ReplaySmcContext = {
   h1_fvgs?: ReplayFVG[];
 };
 
-type ReplayStrategyName = 'pullback' | 'breakout_retest' | 'divergence' | 'counter_pullback' | 'breakout_pyramid' | 'momentum_scalp' | 'scale_in';
+type ReplayStrategyName = 'pullback' | 'breakout_retest' | 'divergence' | 'counter_pullback' | 'breakout_pyramid' | 'scale_in';
+// NOTE: 'momentum_scalp' disabled for intraday trading focus
 
 export type ReplaySignal = {
   side: 'BUY' | 'SELL';
@@ -300,7 +301,8 @@ function collectReplayCandidates(
     evaluateDivergenceSignal(h1, price, pricePrecision),
     evaluateCounterPullbackSignal(h1, price, smc, pricePrecision),
     evaluateBreakoutPyramidSignal(h1, price, smc, pricePrecision),
-    evaluateMomentumScalpSignal(m15, m5, m1, price, momentumConfig, pricePrecision)
+    // NOTE: momentum_scalp strategy disabled for intraday trading focus
+    // evaluateMomentumScalpSignal(m15, m5, m1, price, momentumConfig, pricePrecision)
   ].filter((signal): signal is ReplaySignal => signal != null);
 }
 
@@ -311,21 +313,7 @@ function applyH4FilterToCandidates(candidates: ReplaySignal[], h4: EnrichedRepla
 
   const filter = h4FilterDecision(h4);
   if (filter.direction === 'BLOCK') {
-    const momentumCandidates = candidates.filter((candidate) => candidate.strategy === 'momentum_scalp');
-    if (momentumCandidates.length > 0) {
-      return {
-        candidates: momentumCandidates,
-        logs: [
-          {
-            level: 'info',
-            strategy: 'H4过滤',
-            msg:
-              `H4=震荡,保留 ${momentumCandidates.length} 个动量剥头皮信号,` +
-              `过滤 ${candidates.length - momentumCandidates.length} 个传统信号`
-          }
-        ]
-      };
-    }
+    // NOTE: momentum_scalp strategy disabled, no special handling needed
     return {
       candidates: [],
       logs: [
@@ -720,7 +708,7 @@ function buildReplayLogs(
   if (price <= 0) {
     return [];
   }
-  if (h1.length === 0 && rawSignal?.strategy !== 'momentum_scalp') {
+  if (h1.length === 0 /* && rawSignal?.strategy !== 'momentum_scalp' */) {
     return [];
   }
 
@@ -736,7 +724,8 @@ function buildReplayLogs(
       scaleInLog(snapshot.positions ?? [])
     );
   }
-  logs.push(momentumScalpLog(m15, m5, m1, price, rawSignal, momentumConfig));
+  // NOTE: momentum_scalp disabled
+  // logs.push(momentumScalpLog(m15, m5, m1, price, rawSignal, momentumConfig));
   logs.push(...h4FilterLogs);
   logs.push(...positionFilterLogs);
   logs.push(...aiOverrideLogs);
@@ -1523,22 +1512,15 @@ function momentumScalpLog(
   signal: ReplaySignal | null,
   momentumConfig: MomentumScalpConfig
 ): ReplayLog {
+  // NOTE: momentum_scalp strategy disabled for intraday trading focus
+  return { level: 'info', strategy: '动量剥头皮', msg: '动量剥头皮策略已禁用 ⏭' };
+  /*
+  // @ts-expect-error momentum_scalp disabled
   if (signal?.strategy === 'momentum_scalp') {
     return momentumScalpSignalLog(m15, m5, m1, signal.side, momentumConfig);
   }
-  if (m15.length === 0) {
-    return { level: 'info', strategy: '动量剥头皮', msg: 'M15数据不足,跳过 ⏭' };
-  }
-  if (m5.length < 12) {
-    return { level: 'info', strategy: '动量剥头皮', msg: `M5数据不足: ${m5.length}/12 ⏭` };
-  }
-  if (m1.length < 14) {
-    return { level: 'info', strategy: '动量剥头皮', msg: `M1数据不足: ${m1.length}/14 ⏭` };
-  }
-  if (price <= 0) {
-    return { level: 'info', strategy: '动量剥头皮', msg: '动量剥头皮未触发 ⏭' };
-  }
-  return { level: 'info', strategy: '动量剥头皮', msg: '动量剥头皮未触发 ⏭' };
+  ...
+  */
 }
 
 function m15ConfirmationLog(rawSignal: ReplaySignal, finalSignal: ReplaySignal, m15: EnrichedReplayBar[], price: number): ReplayLog {
@@ -2464,10 +2446,12 @@ function buildMomentumScalpSignal(
     tp1: roundToPrecision(entry + direction * atrValue * config.tp1Atr, pricePrecision),
     tp2: roundToPrecision(entry + direction * atrValue * config.tp2Atr, pricePrecision),
     score,
+    // @ts-expect-error momentum_scalp disabled for intraday trading focus
     strategy: 'momentum_scalp',
     atr: roundToSignificantDigits(atrValue, 16),
     all_strategies: [
       {
+        // @ts-expect-error momentum_scalp disabled for intraday trading focus
         strategy: 'momentum_scalp',
         side,
         score,

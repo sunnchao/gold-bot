@@ -267,9 +267,8 @@ function candidateTimestampMs(candidate: CommandCandidate, fallbackNowIso: () =>
 }
 
 function liveDecisionKey(strategy: string, bars: Record<string, EaRecord[]>): string {
-  return strategy === 'momentum_scalp'
-    ? lastLiveBarRef(bars, 'M1', 'M5', 'M15', 'H1')
-    : lastLiveBarRef(bars, 'H1', 'M15', 'M5', 'M30', 'H4', 'M1');
+  // NOTE: momentum_scalp disabled, all strategies use full bar set
+  return lastLiveBarRef(bars, 'H1', 'M15', 'M5', 'M30', 'H4', 'M1');
 }
 
 function lastLiveBarRef(bars: Record<string, EaRecord[]>, ...order: string[]): string {

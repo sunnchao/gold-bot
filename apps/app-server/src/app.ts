@@ -122,7 +122,7 @@ type EaReleaseInfo = {
   changelog: string;
 };
 
-const ALLOWED_STRATEGY_MAPPING_KEYS = ['20250231', '20250232', '20250233', '20250234', '20250235', '20250236', '20250237', '20250238'] as const;
+const ALLOWED_STRATEGY_MAPPING_KEYS = ['20250231', '20250232', '20250233', '20250234', '20250235', '20250236', '20250238'] as const;
 const DEFAULT_RELEASE_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const ANALYSIS_PAYLOAD_BARS_LIMIT = 1000;
 
@@ -133,7 +133,7 @@ const DEFAULT_STRATEGY_MAPPING: EaRecord = {
   '20250234': 'breakout_pyramid',
   '20250235': 'counter_pullback',
   '20250236': 'range',
-  '20250237': 'momentum_scalp',
+  // '20250237': 'momentum_scalp', // NOTE: disabled for intraday trading focus
   '20250238': 'ai_signal'
 };
 
