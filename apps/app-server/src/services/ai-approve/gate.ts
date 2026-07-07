@@ -69,12 +69,7 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
 
   const h1Bars = await input.store.getBars(input.accountId, input.symbol, 'H1');
   const h1Atr = latestAtr(h1Bars);
-  const orderIntent = resolveAIApproveOrderIntent(
-    resolveGateOrderIntentPlan(input.tradePlan, currentPrice, entry, h1Atr),
-    currentPrice,
-    entry,
-    h1Atr
-  );
+  const orderIntent = resolveAIApproveOrderIntent(input.tradePlan, currentPrice, entry, h1Atr);
   if (!orderIntent.accepted) {
     return reject(orderIntent.reason);
   }
@@ -144,24 +139,6 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
 
 function reject(reason: string): AIApprovePendingGateResult {
   return { accepted: false, reason };
-}
-
-function resolveGateOrderIntentPlan(tradePlan: EaRecord, currentPrice: number, entry: number, h1Atr: number): EaRecord {
-  if (stringField(tradePlan, 'execution_type') !== '' || stringField(tradePlan, 'requested_order_type') !== '') {
-    return tradePlan;
-  }
-  const side = stringField(tradePlan, 'side').trim().toLowerCase();
-  const allowedMarketDistance = h1Atr > 0 ? h1Atr * 0.3 : 0;
-  if (Math.abs(currentPrice - entry) <= allowedMarketDistance) {
-    return { ...tradePlan, execution_type: 'market', requested_order_type: 'market' };
-  }
-  if (side === 'buy') {
-    return { ...tradePlan, execution_type: 'limit', requested_order_type: 'BUY_LIMIT' };
-  }
-  if (side === 'sell') {
-    return { ...tradePlan, execution_type: 'limit', requested_order_type: 'SELL_LIMIT' };
-  }
-  return tradePlan;
 }
 
 function currentPriceFromTick(tick: EaRecord): number {

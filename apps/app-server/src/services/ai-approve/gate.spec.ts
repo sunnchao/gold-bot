@@ -233,6 +233,22 @@ describe('AI approve pending gate', () => {
       nowIso
     })).resolves.toEqual({ accepted: false, reason: 'protection.invalid_direction' });
   });
+
+  it('rejects otherwise valid plans that omit explicit order intent', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        execution_type: undefined,
+        requested_order_type: undefined
+      }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'order_intent.missing' });
+  });
 });
 
 function tradePlan(overrides: EaRecord = {}): EaRecord {
