@@ -458,7 +458,7 @@ function scoreCandidate(candidate: PatternCandidate, timeframe: string, przLow: 
   if (xa > 0) przScore = clampFloat(20 - (width / xa) * 40, 0, 20);
 
   const completionScore = 15;
-  const timeframeScores: Record<string, number> = { H4: 10, H1: 8, M30: 6 };
+  const timeframeScores: Record<string, number> = { H4: 8, H1: 8, M30: 6 };
   let timeframeScore = timeframeScores[timeframe] ?? 5;
 
   let score = Math.round(ratioScore + przScore + completionScore + timeframeScore);
