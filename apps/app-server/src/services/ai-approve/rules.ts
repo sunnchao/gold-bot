@@ -56,10 +56,16 @@ export function resolveAIApproveOrderIntent(
     return { accepted: false, reason: 'order_intent.missing' };
   }
 
-  if (
-    (executionType === 'market' && requestedOrderType !== 'market') ||
-    (executionType === 'limit' && requestedOrderType === 'market')
-  ) {
+  if (executionType !== 'market' && executionType !== 'limit') {
+    return { accepted: false, reason: 'order_intent.mismatch' };
+  }
+  if (requestedOrderType !== 'market' && requestedOrderType !== 'BUY_LIMIT' && requestedOrderType !== 'SELL_LIMIT') {
+    return { accepted: false, reason: 'order_intent.mismatch' };
+  }
+  if (executionType === 'market' && requestedOrderType !== 'market') {
+    return { accepted: false, reason: 'order_intent.mismatch' };
+  }
+  if (executionType === 'limit' && requestedOrderType === 'market') {
     return { accepted: false, reason: 'order_intent.mismatch' };
   }
   if (requestedOrderType === 'BUY_LIMIT' && side !== 'buy') {
