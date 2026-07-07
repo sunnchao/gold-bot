@@ -1,5 +1,5 @@
 {
-  "version": "2.9.0",
-  "build": 10,
-  "changelog": "Multi-TP拆单: 收到 tp_split=true 信号时，自动拆分成2个订单(40% lots @ TP1 + 60% lots @ TP2)，服务端条件性设置标志(有TP2时)；总手数严格等于服务端下发；部分失败时报告PARTIAL；向后兼容不带tp_split或TP2=0的信号"
+  "version": "2.9.1",
+  "build": 11,
+  "changelog": "Multi-TP拆单比例调整: TP1(近) 60% / TP2(远) 40% (原 40/60)，适应内日交易风格 - TP1先落袋获小半仓位，TP2保留仓位给大趋势；总手数仍严格等于服务端下发；向后兼容"
 }

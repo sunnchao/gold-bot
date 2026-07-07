@@ -1824,7 +1824,7 @@ bool GetJsonBool(string json, string key)
 // Multi-TP 拆单辅助函数
 // ============================================================
 
-// 拆分手数：40% 给 TP1，60% 给 TP2（减法保证总和严格等于 totalLots）
+// 拆分手数：60% 给 TP1（近目标，先落袋），40% 给 TP2（远目标，剩余）
 // 输入：totalLots - 服务端下发的总手数
 // 输出：通过引用返回 lotsTP1 和 lotsTP2
 // 约束：lotsTP1 + lotsTP2 == totalLots（绝不超过）
@@ -1836,13 +1836,13 @@ bool SplitLotsForMultiTP(string brokerSymbol, double totalLots, double &lotsTP1,
       lotsTP2 = 0;
       return false;
    }
-   lotsTP1 = NormalizeVolume(brokerSymbol, totalLots * 0.4);
+   lotsTP1 = NormalizeVolume(brokerSymbol, totalLots * 0.6);  // TP1 = 60% (近目标，更大概率触发)
    if(lotsTP1 <= 0) lotsTP1 = NormalizeVolume(brokerSymbol, 0.01); // 最小手数兜底
-   lotsTP2 = NormalizeVolume(brokerSymbol, totalLots - lotsTP1);   // 减法避免累积误差
+   lotsTP2 = NormalizeVolume(brokerSymbol, totalLots - lotsTP1);   // TP2 = 剩余 = 40%（减法避免累积误差）
    // 安全检查：确保总和不超过
    if(lotsTP1 + lotsTP2 > totalLots + 0.0001)
    {
-      lotsTP1 = NormalizeVolume(brokerSymbol, totalLots * 0.4);
+      lotsTP1 = NormalizeVolume(brokerSymbol, totalLots * 0.6);
       lotsTP2 = totalLots - lotsTP1;
    }
    return true;

@@ -1396,7 +1396,7 @@ void ExecuteCloseAll(string cmd, string cmd_id)
 // Multi-TP 拆单辅助函数（MT5）
 // ============================================================
 
-// 拆分手数：40% 给 TP1，60% 给 TP2
+// 拆分手数：60% 给 TP1（近目标，先落袋），40% 给 TP2（远目标，剩余）
 bool SplitLotsForMultiTP_MT5(double totalLots, double &lotsTP1, double &lotsTP2)
 {
    if(totalLots <= 0)
@@ -1405,12 +1405,12 @@ bool SplitLotsForMultiTP_MT5(double totalLots, double &lotsTP1, double &lotsTP2)
       lotsTP2 = 0;
       return false;
    }
-   lotsTP1 = NormalizeVolume(totalLots * 0.4);
+   lotsTP1 = NormalizeVolume(totalLots * 0.6);  // TP1 = 60% (近目标，更大概率触发)
    if(lotsTP1 <= 0) lotsTP1 = NormalizeVolume(0.01);
-   lotsTP2 = NormalizeVolume(totalLots - lotsTP1);
+   lotsTP2 = NormalizeVolume(totalLots - lotsTP1);  // TP2 = 剩余 = 40%
    if(lotsTP1 + lotsTP2 > totalLots + 0.0001)
    {
-      lotsTP1 = NormalizeVolume(totalLots * 0.4);
+      lotsTP1 = NormalizeVolume(totalLots * 0.6);
       lotsTP2 = totalLots - lotsTP1;
    }
    return true;
