@@ -7,6 +7,14 @@ import type { AISignalResult } from '../types/agent.js';
 import { GoldbotApiService } from '../tools/goldbot-api.js';
 import { getLogger } from '../utils/logger.js';
 
+const FEISHU_RATE_LIMIT_BACKOFF_MS = [2_000, 5_000, 10_000] as const;
+
+type FeishuWebhookResponse = {
+  code?: number;
+  msg?: string;
+  message?: string;
+};
+
 // ─── Beijing time formatter ─────────────────────────────────────────────────────
 
 function formatBeijingTime(date: Date): string {
@@ -54,6 +62,19 @@ function trExit(v?: string): string {
 function trRisk(v?: string): string {
   const map: Record<string, string> = { low: '🟢 低', medium: '🟡 中', high: '🟠 高', extreme: '🔴 极高' };
   return map[v?.toLowerCase() ?? ''] ?? v ?? 'N/A';
+}
+
+function isFeishuFrequencyLimited(data: FeishuWebhookResponse): boolean {
+  const message = `${data.msg ?? ''} ${data.message ?? ''}`.toLowerCase();
+  return data.code === 11232 || message.includes('frequency limited');
+}
+
+function feishuMessage(data: FeishuWebhookResponse): string | undefined {
+  return data.msg ?? data.message;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ─── Feishu Card Builder ──────────────────────────────────────────────────────
@@ -350,6 +371,8 @@ function buildFeishuCard(
 
 @Injectable()
 export class PublisherService {
+  private static feishuQueue: Promise<void> = Promise.resolve();
+
   constructor(private readonly goldbotApi: GoldbotApiService) {}
 
   async postToGoldbot(
@@ -364,6 +387,18 @@ export class PublisherService {
   }
 
   async sendFeishuCard(
+    accountId: string,
+    symbol: string,
+    result: AISignalResult,
+  ): Promise<void> {
+    const send = PublisherService.feishuQueue.then(() =>
+      this.sendFeishuCardNow(accountId, symbol, result),
+    );
+    PublisherService.feishuQueue = send.catch(() => undefined);
+    return send;
+  }
+
+  private async sendFeishuCardNow(
     accountId: string,
     symbol: string,
     result: AISignalResult,
@@ -393,24 +428,62 @@ export class PublisherService {
 
     logger.info({ accountId, symbol, webhookUrl }, 'Publisher: sending Feishu card');
 
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(card),
-      signal: AbortSignal.timeout(10_000),
-    });
+    for (let attempt = 0; attempt <= FEISHU_RATE_LIMIT_BACKOFF_MS.length; attempt += 1) {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(card),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const body = await response.text().catch(() => '');
+      let data: FeishuWebhookResponse | undefined;
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => 'no body');
-      throw new Error(`Feishu webhook failed: ${response.status} ${body}`);
+      if (body) {
+        try {
+          data = JSON.parse(body) as FeishuWebhookResponse;
+        } catch {
+          data = undefined;
+        }
+      }
+
+      if (
+        data &&
+        isFeishuFrequencyLimited(data) &&
+        attempt < FEISHU_RATE_LIMIT_BACKOFF_MS.length
+      ) {
+        const backoffMs = FEISHU_RATE_LIMIT_BACKOFF_MS[attempt];
+        logger.warn(
+          {
+            accountId,
+            symbol,
+            attempt: attempt + 1,
+            backoffMs,
+            code: data.code,
+            msg: feishuMessage(data),
+          },
+          'Publisher: Feishu frequency limited, retrying',
+        );
+        await sleep(backoffMs);
+        continue;
+      }
+
+      if (!response.ok) {
+        throw new Error(`Feishu webhook failed: ${response.status} ${body || 'no body'}`);
+      }
+
+      if (!data) {
+        throw new Error(`Feishu webhook returned invalid JSON: ${body || 'empty body'}`);
+      }
+
+      if (data.code !== 0) {
+        throw new Error(`Feishu webhook error: code=${data.code}, msg=${feishuMessage(data)}`);
+      }
+
+      logger.info({ accountId, symbol }, 'Publisher: Feishu card sent successfully');
+      return;
     }
 
-    const data = (await response.json()) as { code?: number; msg?: string };
-    if (data.code !== 0) {
-      throw new Error(`Feishu webhook error: code=${data.code}, msg=${data.msg}`);
-    }
-
-    logger.info({ accountId, symbol }, 'Publisher: Feishu card sent successfully');
+    throw new Error('Feishu webhook error: exhausted rate-limit retries');
   }
 
   async publish(

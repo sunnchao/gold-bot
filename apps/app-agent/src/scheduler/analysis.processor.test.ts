@@ -7,7 +7,7 @@ import type { AISignalResult } from '../types/agent.js';
 import type { Queue } from 'bullmq';
 
 describe('AnalysisProcessor', () => {
-  it('runs workflow once per account with all configured symbols and saves final signals', async () => {
+  it('runs workflow once per configured symbol and saves final signals', async () => {
     const finalSignal: AISignalResult = {
       bias: 'bullish',
       confidence: 80,
@@ -39,9 +39,10 @@ describe('AnalysisProcessor', () => {
 
     const result = await processor.process({ id: 'job-1', name: 'scheduled-analysis' } as never);
 
-    expect(workflow.run).toHaveBeenCalledTimes(2);
-    expect(workflow.run).toHaveBeenNthCalledWith(1, 'acc-001', ['XAUUSD', 'XAGUSD']);
-    expect(workflow.run).toHaveBeenNthCalledWith(2, 'acc-002', ['XAUUSD']);
+    expect(workflow.run).toHaveBeenCalledTimes(3);
+    expect(workflow.run).toHaveBeenNthCalledWith(1, 'acc-001', ['XAUUSD']);
+    expect(workflow.run).toHaveBeenNthCalledWith(2, 'acc-001', ['XAGUSD']);
+    expect(workflow.run).toHaveBeenNthCalledWith(3, 'acc-002', ['XAUUSD']);
     expect(store.saveResult).toHaveBeenCalledTimes(3);
     expect(result).toMatchObject({ succeeded: 3, failed: 0, saveFailed: 0, total: 3 });
   });
@@ -113,4 +114,85 @@ describe('AnalysisProcessor', () => {
       total: 2,
     });
   });
+
+  it('saves a fast symbol result before a slower symbol workflow resolves', async () => {
+    const slowSignal: AISignalResult = {
+      bias: 'bullish',
+      confidence: 80,
+      exit_suggestion: 'hold',
+      risk_alert: false,
+    };
+    const fastSignal: AISignalResult = {
+      bias: 'bearish',
+      confidence: 75,
+      exit_suggestion: 'close',
+      risk_alert: true,
+    };
+    const slow = deferred<{
+      finalSignal: AISignalResult;
+      duration: number;
+    }>();
+    const fast = deferred<{
+      finalSignal: AISignalResult;
+      duration: number;
+    }>();
+    const config = {
+      accounts: [{ id: 'acc-001', symbols: ['XAUUSD', 'XAGUSD'] }],
+    } as AppConfigService;
+    const workflow = {
+      run: vi.fn().mockImplementation((_accountId: string, symbols: string[]) => {
+        return symbols[0] === 'XAUUSD' ? slow.promise : fast.promise;
+      }),
+    } as unknown as WorkflowService;
+    const store = {
+      saveResult: vi.fn(),
+    } as unknown as AnalysisStoreService;
+    const queue = {
+      clean: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Queue;
+    const processor = new AnalysisProcessor(config, workflow, store, queue);
+
+    const processing = processor.process({ id: 'job-3', name: 'scheduled-analysis' } as never);
+    let completed = false;
+    processing.then(() => {
+      completed = true;
+    });
+
+    await flushMicrotasks();
+    expect(workflow.run).toHaveBeenCalledTimes(2);
+
+    fast.resolve({ finalSignal: fastSignal, duration: 50 });
+    await flushMicrotasks();
+
+    expect(store.saveResult).toHaveBeenCalledTimes(1);
+    expect(store.saveResult).toHaveBeenCalledWith('acc-001', 'XAGUSD', fastSignal, 50);
+    expect(completed).toBe(false);
+
+    slow.resolve({ finalSignal: slowSignal, duration: 100 });
+    const result = await processing;
+
+    expect(store.saveResult).toHaveBeenCalledTimes(2);
+    expect(store.saveResult).toHaveBeenNthCalledWith(2, 'acc-001', 'XAUUSD', slowSignal, 100);
+    expect(result).toMatchObject({
+      succeeded: 2,
+      failed: 0,
+      saveFailed: 0,
+      total: 2,
+    });
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}

@@ -214,6 +214,29 @@ describe('AI approve pending gate', () => {
     })).resolves.toMatchObject({ accepted: true, orderType: 'SELL_LIMIT' });
   });
 
+  it('does not reject approved plans just because EMA/ADX trend indicators are absent from bars', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store, { trend: 'missing-indicators' });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        side: 'sell',
+        confidence: 68,
+        execution_type: 'limit',
+        requested_order_type: 'SELL_LIMIT',
+        entry_zone: { min: 3338.5, max: 3338.5 },
+        stop_loss: 3344,
+        take_profit: [3325],
+        max_lots: 0.08,
+        reason_codes: ['mode.approve', 'side.sell']
+      }),
+      nowIso
+    })).resolves.toMatchObject({ accepted: true, orderType: 'SELL_LIMIT' });
+  });
+
   it('rejects disabled stops, mismatched market entry, mismatched limit direction, and invalid protection', async () => {
     const store = createInMemoryEaStore();
     await seedStrongTrendState(store);
@@ -248,7 +271,7 @@ describe('AI approve pending gate', () => {
         entry_zone: { min: 3338, max: 3338 }
       }),
       nowIso
-    })).resolves.toEqual({ accepted: false, reason: 'limit_direction_mismatch' });
+    })).resolves.toMatchObject({ accepted: true, orderType: 'market' });
 
     await expect(evaluateAIApprovePendingGate({
       store,
@@ -303,7 +326,7 @@ function tradePlan(overrides: EaRecord = {}): EaRecord {
   };
 }
 
-async function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 'bear' | 'neutral' } = {}): Promise<void> {
+async function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 'bear' | 'neutral' | 'missing-indicators' } = {}): Promise<void> {
   await store.saveTick({
     account_id: accountId,
     symbol,
@@ -317,7 +340,9 @@ async function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 
     ? { close: 3336, ema20: 3335, ema50: 3330, adx: 35, atr: 2, rsi: 60 }
     : trend === 'bear'
       ? { close: 3334, ema20: 3335, ema50: 3340, adx: 35, atr: 2, rsi: 40 }
-      : { close: 3335, ema20: 3335, ema50: 3335, adx: 10, atr: 2, rsi: 50 };
+      : trend === 'missing-indicators'
+        ? { open: 3335, high: 3340, low: 3330, close: 3336, volume: 100, atr: 2 }
+        : { close: 3335, ema20: 3335, ema50: 3335, adx: 10, atr: 2, rsi: 50 };
   for (const timeframe of ['D1', 'H4', 'H1', 'M30', 'M15']) {
     await store.saveBars({
       account_id: accountId,

@@ -85,17 +85,29 @@ export function resolveAIApproveOrderIntent(
   }
 
   if (requestedOrderType === 'BUY_LIMIT') {
-    if (side !== 'buy' || entry >= currentPrice) {
+    if (side !== 'buy') {
       return { accepted: false, reason: 'limit_direction_mismatch' };
     }
-    return { accepted: true, orderType: 'BUY_LIMIT' };
+    if (entry < currentPrice) {
+      return { accepted: true, orderType: 'BUY_LIMIT' };
+    }
+    if (isTriggeredLimitWithinProtection(tradePlan, currentPrice)) {
+      return { accepted: true, orderType: 'market' };
+    }
+    return { accepted: false, reason: 'limit_direction_mismatch' };
   }
 
   if (requestedOrderType === 'SELL_LIMIT') {
-    if (side !== 'sell' || entry <= currentPrice) {
+    if (side !== 'sell') {
       return { accepted: false, reason: 'limit_direction_mismatch' };
     }
-    return { accepted: true, orderType: 'SELL_LIMIT' };
+    if (entry > currentPrice) {
+      return { accepted: true, orderType: 'SELL_LIMIT' };
+    }
+    if (isTriggeredLimitWithinProtection(tradePlan, currentPrice)) {
+      return { accepted: true, orderType: 'market' };
+    }
+    return { accepted: false, reason: 'limit_direction_mismatch' };
   }
 
   return { accepted: false, reason: 'order_intent.missing' };
@@ -115,6 +127,22 @@ export function validateAIApproveProtectionDirection(tradePlan: EaRecord, entry:
     return { accepted: true };
   }
   return { accepted: false, reason: 'protection.invalid_direction' };
+}
+
+function isTriggeredLimitWithinProtection(tradePlan: EaRecord, currentPrice: number): boolean {
+  const side = stringField(tradePlan, 'side').trim().toUpperCase();
+  const stopLoss = numberField(tradePlan, 'stop_loss');
+  const takeProfit = firstPositiveAIApproveTakeProfit(arrayNumberField(tradePlan, 'take_profit'));
+  if (currentPrice <= 0 || stopLoss <= 0 || takeProfit <= 0) {
+    return false;
+  }
+  if (side === 'BUY') {
+    return currentPrice > stopLoss && currentPrice < takeProfit;
+  }
+  if (side === 'SELL') {
+    return currentPrice < stopLoss && currentPrice > takeProfit;
+  }
+  return false;
 }
 
 export function round2(value: number): number {

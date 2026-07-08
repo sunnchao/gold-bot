@@ -53,6 +53,7 @@ export function createAIApproveCooldown(): AIApproveCooldown {
 export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateInput): Promise<AIApprovePendingGateResult> {
   const tick = (await input.store.getLatestTick(input.accountId, input.symbol)) ?? {};
   const currentPrice = currentPriceFromTick(tick);
+  const executionPrice = executionPriceFromTick(tick, stringField(input.tradePlan, 'side'));
   if (currentPrice <= 0) {
     return reject('current_price.missing');
   }
@@ -69,7 +70,7 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
 
   const h1Bars = await input.store.getBars(input.accountId, input.symbol, 'H1');
   const h1Atr = latestAtr(h1Bars);
-  const orderIntent = resolveAIApproveOrderIntent(input.tradePlan, currentPrice, entry, h1Atr);
+  const orderIntent = resolveAIApproveOrderIntent(input.tradePlan, executionPrice, entry, h1Atr);
   if (!orderIntent.accepted) {
     return reject(orderIntent.reason);
   }
@@ -86,13 +87,15 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     M15: await input.store.getBars(input.accountId, input.symbol, 'M15')
   });
   const signalDirection = stringField(input.tradePlan, 'side').trim().toLowerCase() === 'sell' ? 'BEAR' : 'BULL';
-  if (trend.consensusDirection !== 'NEUTRAL' && trend.consensusDirection !== signalDirection && numberField(input.tradePlan, 'confidence') < 75) {
-    return reject('trend.inverse_confidence');
-  }
-  if (trend.consensusStrength < 0.3) {
-    lots /= 2;
-    if (lots < 0.01) {
-      return reject('trend.weak_lots_below_min');
+  if (trend.hasIndicatorContext) {
+    if (trend.consensusDirection !== 'NEUTRAL' && trend.consensusDirection !== signalDirection && numberField(input.tradePlan, 'confidence') < 75) {
+      return reject('trend.inverse_confidence');
+    }
+    if (trend.consensusStrength < 0.3) {
+      lots /= 2;
+      if (lots < 0.01) {
+        return reject('trend.weak_lots_below_min');
+      }
     }
   }
 
@@ -147,12 +150,26 @@ function currentPriceFromTick(tick: EaRecord): number {
   if (bid > 0 && ask > 0) {
     return (bid + ask) / 2;
   }
-  return ask > 0 ? ask : bid;
+  return ask || bid;
+}
+
+function executionPriceFromTick(tick: EaRecord, side: string): number {
+  const normalizedSide = side.trim().toLowerCase();
+  const bid = numberField(tick, 'bid');
+  const ask = numberField(tick, 'ask');
+  if (normalizedSide === 'buy') {
+    return ask || bid;
+  }
+  if (normalizedSide === 'sell') {
+    return bid || ask;
+  }
+  return currentPriceFromTick(tick);
 }
 
 function buildAIApproveTrendContext(barsByTimeframe: Record<'D1' | 'H4' | 'H1' | 'M30' | 'M15', EaRecord[]>): {
   consensusDirection: string;
   consensusStrength: number;
+  hasIndicatorContext: boolean;
 } {
   const d1 = barDirection(barsByTimeframe.D1);
   const h4 = barDirection(barsByTimeframe.H4);
@@ -163,31 +180,40 @@ function buildAIApproveTrendContext(barsByTimeframe: Record<'D1' | 'H4' | 'H1' |
     { ...h4, weight: 0.25 },
     { ...h1, weight: 0.35 },
     { ...m30, weight: 0.35 }
-  ];
+  ].filter((item) => item.hasIndicatorContext);
+  const totalWeight = weights.reduce((sum, item) => sum + item.weight, 0);
+  if (totalWeight <= 0) {
+    return { consensusDirection: 'NEUTRAL', consensusStrength: 0, hasIndicatorContext: false };
+  }
   const bullWeight = weights.filter((item) => item.direction === 'BULL').reduce((sum, item) => sum + item.weight, 0);
   const bearWeight = weights.filter((item) => item.direction === 'BEAR').reduce((sum, item) => sum + item.weight, 0);
   return {
     consensusDirection: bullWeight > bearWeight ? 'BULL' : bearWeight > bullWeight ? 'BEAR' : 'NEUTRAL',
-    consensusStrength: weights.reduce((sum, item) => sum + item.weight * trendConfidence(item.direction, item.adx), 0)
+    consensusStrength: weights.reduce((sum, item) => sum + item.weight * trendConfidence(item.direction, item.adx), 0) / totalWeight,
+    hasIndicatorContext: true
   };
 }
 
-function barDirection(bars: EaRecord[]): { direction: string; adx: number } {
+function barDirection(bars: EaRecord[]): { direction: string; adx: number; hasIndicatorContext: boolean } {
   const last = bars.at(-1);
   if (last == null) {
-    return { direction: 'NEUTRAL', adx: 0 };
+    return { direction: 'NEUTRAL', adx: 0, hasIndicatorContext: false };
   }
   const ema20 = numberField(last, 'ema20') || numberField(last, 'EMA20');
   const ema50 = numberField(last, 'ema50') || numberField(last, 'EMA50');
   const close = numberField(last, 'close') || numberField(last, 'Close');
   const adx = numberField(last, 'adx') || numberField(last, 'ADX');
+  const hasIndicatorContext = ema20 > 0 && ema50 > 0 && close > 0 && adx > 0;
+  if (!hasIndicatorContext) {
+    return { direction: 'NEUTRAL', adx, hasIndicatorContext: false };
+  }
   if (ema20 > ema50 && close > ema20) {
-    return { direction: 'BULL', adx };
+    return { direction: 'BULL', adx, hasIndicatorContext };
   }
   if (ema20 < ema50 && close < ema20) {
-    return { direction: 'BEAR', adx };
+    return { direction: 'BEAR', adx, hasIndicatorContext };
   }
-  return { direction: 'NEUTRAL', adx };
+  return { direction: 'NEUTRAL', adx, hasIndicatorContext };
 }
 
 function trendConfidence(direction: string, adx: number): number {

@@ -896,6 +896,7 @@ async function queueAIApprovePendingCommands(
       cooldown: deps.aiApproveCooldown
     });
     if (!pendingGate.accepted) {
+      await recordAIApprovePendingGateEvent(deps.store, accountId, symbol, tradePlan, pendingGate.reason, eventTimestamp);
       continue;
     }
     const candidate = tradePlanToCommandCandidate(accountId, symbol, tradePlan, riskGate, eventTimestamp, pendingGate.orderType);
@@ -947,6 +948,27 @@ async function recordAIDecisionTimeline(store: EaStore, accountId: string, symbo
       allowed_lots: numberField(riskGate, 'allowed_lots'),
       max_risk_lots: numberField(riskGate, 'max_risk_lots'),
       max_margin_lots: numberField(riskGate, 'max_margin_lots')
+    },
+    related_command_id: '',
+    created_at: createdAt
+  });
+}
+
+async function recordAIApprovePendingGateEvent(store: EaStore, accountId: string, symbol: string, tradePlan: EaRecord, reason: string, createdAt: string): Promise<void> {
+  const decisionId = stringFieldOrEmpty(tradePlan, 'decision_id');
+  await store.recordDecisionEvent({
+    decision_id: decisionId,
+    account_id: accountId,
+    symbol,
+    stage: 'risk_gate',
+    status: 'rejected',
+    reason_codes: [`pending_gate.${reason}`],
+    summary: {
+      decision_id: decisionId,
+      mode: stringFieldOrEmpty(tradePlan, 'mode'),
+      symbol: stringFieldOrEmpty(tradePlan, 'symbol') || symbol,
+      status: 'rejected',
+      pending_gate_reason: reason
     },
     related_command_id: '',
     created_at: createdAt

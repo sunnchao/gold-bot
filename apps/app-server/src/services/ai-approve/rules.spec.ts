@@ -50,35 +50,81 @@ describe('AI approve order intent rules', () => {
     )).toEqual({ accepted: true, orderType: 'SELL_LIMIT' });
   });
 
-  it('rejects limit orders on the wrong side of current price', () => {
+  it('converts limit orders to market after price reaches the entry and remains protected', () => {
     expect(resolveAIApproveOrderIntent(
-      tradePlan({ side: 'buy', execution_type: 'limit', requested_order_type: 'BUY_LIMIT' }),
+      tradePlan({ side: 'buy', execution_type: 'limit', requested_order_type: 'BUY_LIMIT', entry_zone: { min: 3338, max: 3338 } }),
       3335.6,
       3338,
       2
-    )).toEqual({ accepted: false, reason: 'limit_direction_mismatch' });
+    )).toEqual({ accepted: true, orderType: 'market' });
 
     expect(resolveAIApproveOrderIntent(
-      tradePlan({ side: 'sell', execution_type: 'limit', requested_order_type: 'SELL_LIMIT' }),
+      tradePlan({ side: 'sell', execution_type: 'limit', requested_order_type: 'SELL_LIMIT', entry_zone: { min: 3332, max: 3332 }, stop_loss: 3340, take_profit: [3325] }),
       3335.6,
       3332,
       2
-    )).toEqual({ accepted: false, reason: 'limit_direction_mismatch' });
+    )).toEqual({ accepted: true, orderType: 'market' });
   });
 
-  it('rejects limit orders at current price so current-price entries use market intent', () => {
+  it('converts limit orders at current price to market intent', () => {
     expect(resolveAIApproveOrderIntent(
-      tradePlan({ side: 'buy', execution_type: 'limit', requested_order_type: 'BUY_LIMIT' }),
+      tradePlan({ side: 'buy', execution_type: 'limit', requested_order_type: 'BUY_LIMIT', entry_zone: { min: 3335.6, max: 3335.6 } }),
       3335.6,
       3335.6,
       2
-    )).toEqual({ accepted: false, reason: 'limit_direction_mismatch' });
+    )).toEqual({ accepted: true, orderType: 'market' });
 
     expect(resolveAIApproveOrderIntent(
-      tradePlan({ side: 'sell', execution_type: 'limit', requested_order_type: 'SELL_LIMIT' }),
+      tradePlan({ side: 'sell', execution_type: 'limit', requested_order_type: 'SELL_LIMIT', entry_zone: { min: 3335.6, max: 3335.6 }, stop_loss: 3340, take_profit: [3325] }),
       3335.6,
       3335.6,
       2
+    )).toEqual({ accepted: true, orderType: 'market' });
+  });
+
+  it('converts already-triggered limit entries to market while price remains inside protection range', () => {
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({
+        side: 'sell',
+        execution_type: 'limit',
+        requested_order_type: 'SELL_LIMIT',
+        entry_zone: { min: 59.94, max: 59.94 },
+        stop_loss: 60.85,
+        take_profit: [59.15, 58.25]
+      }),
+      60.6,
+      59.94,
+      0.5
+    )).toEqual({ accepted: true, orderType: 'market' });
+
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({
+        side: 'buy',
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT',
+        entry_zone: { min: 3335.6, max: 3335.6 },
+        stop_loss: 3330,
+        take_profit: [3345]
+      }),
+      3332,
+      3335.6,
+      2
+    )).toEqual({ accepted: true, orderType: 'market' });
+  });
+
+  it('rejects triggered limit entries after price crosses beyond the stop loss', () => {
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({
+        side: 'sell',
+        execution_type: 'limit',
+        requested_order_type: 'SELL_LIMIT',
+        entry_zone: { min: 59.94, max: 59.94 },
+        stop_loss: 60.85,
+        take_profit: [59.15]
+      }),
+      60.9,
+      59.94,
+      0.5
     )).toEqual({ accepted: false, reason: 'limit_direction_mismatch' });
   });
 

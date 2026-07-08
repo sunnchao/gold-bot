@@ -44,52 +44,47 @@ export class AnalysisProcessor extends WorkerHost {
     logger.info({ jobId: job.id, name: job.name }, 'Scheduler: processing job');
     let saveFailed = 0;
 
-    const tasks = this.config.accounts.map((account) => ({
-      accountId: account.id,
-      symbols: account.symbols,
-    }));
+    const tasks = this.config.accounts.flatMap((account) =>
+      account.symbols.map((symbol) => ({
+        accountId: account.id,
+        symbol,
+      })),
+    );
 
     const results = await Promise.allSettled(
-      tasks.map(async ({ accountId, symbols }) => {
+      tasks.map(async ({ accountId, symbol }) => {
         const itemStart = Date.now();
         try {
-          const result = await this.workflow.run(accountId, symbols);
+          const result = await this.workflow.run(accountId, [symbol]);
           const durations = result.durations ?? {};
           const finalSignals = result.finalSignals ?? {};
 
-          for (const symbol of symbols) {
-            const duration =
-              durations[symbol] ??
-              (symbols.length === 1 ? result.duration : undefined) ??
-              Date.now() - itemStart;
-            const finalSignal =
-              finalSignals[symbol] ??
-              (symbols.length === 1 ? result.finalSignal : undefined);
-            const bias = finalSignal?.bias ?? 'N/A';
-            const action = finalSignal?.arbitration?.action ?? 'N/A';
+          const duration = durations[symbol] ?? result.duration ?? Date.now() - itemStart;
+          const finalSignal = finalSignals[symbol] ?? result.finalSignal;
+          const bias = finalSignal?.bias ?? 'N/A';
+          const action = finalSignal?.arbitration?.action ?? 'N/A';
 
-            logger.info(
-              { accountId, symbol, duration, bias, action },
-              'Scheduler: analysis completed',
-            );
+          logger.info(
+            { accountId, symbol, duration, bias, action },
+            'Scheduler: analysis completed',
+          );
 
-            if (finalSignal) {
-              try {
-                this.store.saveResult(accountId, symbol, finalSignal, duration);
-                logger.info({ accountId, symbol }, 'Scheduler: result saved to store');
-              } catch (err) {
-                saveFailed += 1;
-                const errMsg = err instanceof Error ? err.message : String(err);
-                logger.error({ err, errMsg, accountId, symbol }, 'Scheduler: saveResult failed');
-              }
+          if (finalSignal) {
+            try {
+              this.store.saveResult(accountId, symbol, finalSignal, duration);
+              logger.info({ accountId, symbol }, 'Scheduler: result saved to store');
+            } catch (err) {
+              saveFailed += 1;
+              const errMsg = err instanceof Error ? err.message : String(err);
+              logger.error({ err, errMsg, accountId, symbol }, 'Scheduler: saveResult failed');
             }
           }
 
-          return { accountId, symbols };
+          return { accountId, symbol };
         } catch (err) {
           const duration = Date.now() - itemStart;
           logger.error(
-            { err, accountId, symbols, duration },
+            { err, accountId, symbol, duration },
             'Scheduler: analysis failed',
           );
           throw err;
@@ -97,15 +92,10 @@ export class AnalysisProcessor extends WorkerHost {
       }),
     );
 
-    const succeeded = results.reduce((count, result, index) => {
-      if (result.status === 'rejected') {
-        return count;
-      }
-      return count + tasks[index].symbols.length;
-    }, 0);
+    const succeeded = results.filter((result) => result.status === 'fulfilled').length;
     const failed = results.filter((result) => result.status === 'rejected').length;
     const totalDuration = Date.now() - jobStart;
-    const total = tasks.reduce((count, task) => count + task.symbols.length, 0);
+    const total = tasks.length;
 
     logger.info(
       { jobId: job.id, succeeded, failed, saveFailed, totalDuration, total },
