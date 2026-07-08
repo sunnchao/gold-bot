@@ -280,12 +280,26 @@ export function createInMemoryEaStore(): EaStore {
     async pollCommands(accountId) {
       const pending = Array.from(state.commands.values()).filter((command) => command.account_id === accountId && command.status === 'queued');
       const deliveredAt = currentTimestamp();
+      const delivered: StoredCommand[] = [];
       for (const command of pending) {
+        if (isRuntimeCommandExpired(command, deliveredAt)) {
+          command.status = 'failed';
+          command.result = 'expired';
+          command.ticket = 0;
+          command.error_text = 'command expired before delivery';
+          command.failed_at = deliveredAt;
+          const event = commandResultDecisionEvent(command, 'expired', 0, 'command expired before delivery', deliveredAt);
+          if (event != null) {
+            state.decisionEvents.push(normalizeDecisionEvent(event, state.nextDecisionEventId++));
+          }
+          continue;
+        }
         command.status = 'delivered';
         command.delivered_at = deliveredAt;
         recordCommandDecisionInMemory(state, command, 'command_delivered', 'delivered', deliveredAt);
+        delivered.push(command);
       }
-      return pending.map(toEaCommand);
+      return delivered.map(toEaCommand);
     },
     async recordShadowComparison(payload) {
       state.shadowComparisons.push(structuredClone(payload));
@@ -624,6 +638,11 @@ export function createSqliteEaStore(path: string): EaStore {
     SET status = 'failed', result = ?, ticket = ?, error_text = ?, failed_at = ?, updated_at = CURRENT_TIMESTAMP
     WHERE command_id = ? AND account_id = ? AND status = 'delivered'
   `);
+  const expireRuntimeCommandBeforeDelivery = db.prepare(`
+    UPDATE runtime_commands
+    SET status = 'failed', result = 'expired', ticket = 0, error_text = 'command expired before delivery', failed_at = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE command_id = ? AND account_id = ? AND status = 'queued'
+  `);
   const selectRuntimeCommand = db.prepare(`
     SELECT account_id, status, source, payload_json, result, ticket, created_at, delivered_at, acked_at, failed_at, error_text
     FROM runtime_commands
@@ -873,6 +892,33 @@ export function createSqliteEaStore(path: string): EaStore {
       const delivered: StoredCommand[] = [];
       const deliveredAt = currentTimestamp();
       for (const row of rows) {
+        const queuedCommand = runtimeCommandFromListRow(row);
+        if (isRuntimeCommandExpired(queuedCommand, deliveredAt)) {
+          expireRuntimeCommandBeforeDelivery.run(deliveredAt, row.command_id, accountId);
+          const expiredCommand = runtimeCommandFromListRow({
+            ...row,
+            status: 'failed',
+            result: 'expired',
+            ticket: 0,
+            error_text: 'command expired before delivery',
+            failed_at: deliveredAt
+          });
+          const event = commandResultDecisionEvent(expiredCommand, 'expired', 0, 'command expired before delivery', deliveredAt);
+          if (event != null) {
+            insertDecisionEvent.run(
+              event.decision_id,
+              event.account_id,
+              event.symbol,
+              event.stage,
+              event.status,
+              toJson(event.reason_codes),
+              toJson(event.summary),
+              event.related_command_id,
+              event.created_at
+            );
+          }
+          continue;
+        }
         updateRuntimeCommandStatus.run('delivered', deliveredAt, deliveredAt, row.command_id);
         const command = runtimeCommandFromListRow({ ...row, status: 'delivered', delivered_at: deliveredAt });
         recordCommandDecisionInSqlite(insertDecisionEvent, command, 'command_delivered', 'delivered', deliveredAt);
@@ -1662,6 +1708,21 @@ function cloneStoredCommand(value: StoredCommand | undefined): StoredCommand | u
 
 function normalizeCommandSource(value: unknown): CommandSource {
   return typeof value === 'string' && isCommandSource(value) ? value : 'ea_analysis';
+}
+
+function isRuntimeCommandExpired(command: StoredCommand, nowIso: string): boolean {
+  const now = unixSeconds(nowIso);
+  const expiration = (command as EaRecord).expiration;
+  if (typeof expiration === 'number' && Number.isFinite(expiration)) {
+    return Math.trunc(expiration) <= now;
+  }
+  if (command.source === 'ai_approve') {
+    const createdAt = timestampMillis(command.created_at);
+    if (createdAt != null) {
+      return Math.floor(createdAt / 1000) + 4 * 60 * 60 <= now;
+    }
+  }
+  return false;
 }
 
 function isAckResult(result: string): boolean {

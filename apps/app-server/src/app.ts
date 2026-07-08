@@ -140,6 +140,7 @@ const DEFAULT_STRATEGY_MAPPING: EaRecord = {
 const VALID_TRADE_PLAN_MODES = new Set(['observe', 'veto', 'approve', 'modify', 'reduce', 'close']);
 const VALID_TRADE_PLAN_SIDES = new Set(['buy', 'sell', 'none']);
 const AI_RISK_EXIT_SUGGESTIONS = new Set(['close_partial', 'close_all', 'close_short']);
+const AI_APPROVE_QUEUE_MIN_CONFIDENCE = 55;
 
 export async function createAppServer(options: AppServerOptions = {}) {
   const nowUnix = options.nowUnix ?? (() => Math.floor(Date.now() / 1000));
@@ -884,7 +885,9 @@ async function queueAIApprovePendingCommands(
 ): Promise<StoredCommand | undefined> {
   let firstCommand: StoredCommand | undefined;
   for (const tradePlan of tradePlans) {
-    if (!shouldQueueAIPending(tradePlan, riskGate)) {
+    const queueSkipReason = aiApproveQueueSkipReason(tradePlan, riskGate);
+    if (queueSkipReason != null) {
+      await recordAIApprovePendingGateEvent(deps.store, accountId, symbol, tradePlan, queueSkipReason, eventTimestamp);
       continue;
     }
     const pendingGate = await evaluateAIApprovePendingGate({
@@ -1121,22 +1124,25 @@ function aiRiskGateAllowsCommand(tradePlan?: EaRecord, riskGate?: EaRecord): boo
   return status === 'accepted' || status === 'clamped';
 }
 
-function shouldQueueAIPending(tradePlan: EaRecord, riskGate: EaRecord): boolean {
+function aiApproveQueueSkipReason(tradePlan: EaRecord, riskGate: EaRecord): string | undefined {
   const mode = stringFieldOrEmpty(tradePlan, 'mode');
   if (mode !== 'approve') {
-    return false;
+    return 'queue_skip.mode_not_approve';
   }
   const side = stringFieldOrEmpty(tradePlan, 'side');
   if (side !== 'buy' && side !== 'sell') {
-    return false;
+    return 'queue_skip.bad_side';
   }
   if (stringFieldOrEmpty(riskGate, 'status') === 'rejected') {
-    return false;
+    return 'queue_skip.risk_rejected';
   }
   if (booleanField(riskGate, 'audit_only')) {
-    return false;
+    return 'queue_skip.audit_only';
   }
-  return numberField(tradePlan, 'confidence') >= 60;
+  if (numberField(tradePlan, 'confidence') < AI_APPROVE_QUEUE_MIN_CONFIDENCE) {
+    return 'queue_skip.confidence_below_min';
+  }
+  return undefined;
 }
 
 function buildAIRiskCommandCandidates(

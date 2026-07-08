@@ -303,6 +303,110 @@ describe('persistence scaffold', () => {
     {
       name: 'sqlite',
       create() {
+        const dir = mkdtempSync(join(tmpdir(), 'gold-bot-expired-command-'));
+        return {
+          store: createSqliteEaStore(join(dir, 'ea.sqlite')),
+          cleanup() {
+            rmSync(dir, { recursive: true, force: true });
+          }
+        };
+      }
+    }
+  ]) {
+    it(`does not deliver expired queued commands in ${testCase.name} storage`, async () => {
+      const { store, cleanup } = testCase.create();
+      try {
+        await withAdvancingDate('2026-04-13T07:30:00.000Z', 4.5 * 60 * 60 * 1000, async () => {
+          const legacy = await store.saveCommandCandidate('90011087', {
+            command_id: 'sig_legacy_no_expiration',
+            source: 'ai_approve',
+            symbol: 'XAUUSD',
+            action: 'SIGNAL',
+            type: 'BUY',
+            strategy: 'ai_signal',
+            decision_id: 'tpv1_legacy_no_expiration'
+          });
+          await store.promoteCommand(legacy.command_id);
+
+          expect(await store.pollCommands('90011087')).toEqual([]);
+          expect(await store.getCommand(legacy.command_id)).toMatchObject({
+            status: 'failed',
+            result: 'expired',
+            error_text: 'command expired before delivery',
+            failed_at: '2026-04-13T12:00:00.000Z'
+          });
+        });
+
+        await withAdvancingDate('2026-04-13T12:00:00.000Z', 0, async () => {
+          const expired = await store.saveCommandCandidate('90011087', {
+            command_id: 'sig_expired_before_delivery',
+            source: 'ai_approve',
+            symbol: 'XAUUSD',
+            action: 'SIGNAL',
+            type: 'BUY',
+            strategy: 'ai_signal',
+            decision_id: 'tpv1_expired_before_delivery',
+            expiration: 1776078000
+          });
+          const active = await store.saveCommandCandidate('90011087', {
+            command_id: 'sig_active_delivery',
+            source: 'ai_approve',
+            symbol: 'XAUUSD',
+            action: 'SIGNAL',
+            type: 'SELL',
+            strategy: 'ai_signal',
+            decision_id: 'tpv1_active_delivery',
+            expiration: 1776085200
+          });
+          await store.promoteCommand(expired.command_id);
+          await store.promoteCommand(active.command_id);
+
+          expect(await store.pollCommands('90011087')).toEqual([
+            expect.objectContaining({ command_id: 'sig_active_delivery' })
+          ]);
+          expect(await store.getCommand(expired.command_id)).toMatchObject({
+            status: 'failed',
+            result: 'expired',
+            error_text: 'command expired before delivery',
+            failed_at: '2026-04-13T12:00:00.000Z'
+          });
+          expect(await store.getCommand(active.command_id)).toMatchObject({
+            status: 'delivered',
+            delivered_at: '2026-04-13T12:00:00.000Z'
+          });
+          expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toContainEqual(
+            expect.objectContaining({
+              decision_id: 'tpv1_expired_before_delivery',
+              stage: 'order_result',
+              status: 'failed',
+              reason_codes: ['command.SIGNAL', 'source.ai_approve'],
+              summary: expect.objectContaining({
+                result: 'expired',
+                error_text: 'command expired before delivery'
+              })
+            })
+          );
+        });
+      } finally {
+        await store.close?.();
+        cleanup();
+      }
+    });
+  }
+
+  for (const testCase of [
+    {
+      name: 'in-memory',
+      create() {
+        return {
+          store: createInMemoryEaStore(),
+          cleanup() {}
+        };
+      }
+    },
+    {
+      name: 'sqlite',
+      create() {
         const dir = mkdtempSync(join(tmpdir(), 'gold-bot-order-result-'));
         return {
           store: createSqliteEaStore(join(dir, 'ea.sqlite')),

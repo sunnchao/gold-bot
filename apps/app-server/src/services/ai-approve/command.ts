@@ -23,6 +23,7 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
   const entryMax = entryZone == null ? 0 : numberField(entryZone, 'max');
   const entry = pickAIApproveEntryPrice(entryZone);
   const confidence = numberField(input.tradePlan, 'confidence');
+  const expiration = unixSeconds(input.nowIso) + 4 * 60 * 60;
   return {
     command_id: `ai_pending_${input.accountId}_${input.symbol}_${unixNanos(input.nowIso)}`,
     action: 'SIGNAL',
@@ -35,7 +36,7 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
     tp: round2(firstPositiveAIApproveTakeProfit(arrayNumberField(input.tradePlan, 'take_profit'))),
     lots: round2(calcAIApproveLots(numberField(input.tradePlan, 'max_lots'))),
     order_type: input.orderType,
-    ...(input.orderType === 'market' ? {} : { expiration: unixSeconds(input.nowIso) + 4 * 60 * 60 }),
+    expiration,
     score: confidence,
     strategy: 'ai_signal',
     source: 'ai_approve',

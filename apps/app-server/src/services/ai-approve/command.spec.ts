@@ -44,6 +44,7 @@ describe('AI approve command builder', () => {
       tp: 3344.88,
       lots: 0.01,
       order_type: 'market',
+      expiration: 1776081600,
       score: 80,
       strategy: 'ai_signal',
       source: 'ai_approve',

@@ -462,11 +462,25 @@ export function isActiveAIApprovePendingCommand(command: StoredCommand, accountI
   if (!equalsFold(stringField(command as EaRecord, 'type'), side)) {
     return false;
   }
-  const expiration = (command as EaRecord).expiration;
-  if (typeof expiration === 'number' && Number.isFinite(expiration) && Math.trunc(expiration) <= unixSeconds(nowIso)) {
+  if (isRuntimeCommandExpired(command, nowIso)) {
     return false;
   }
   return true;
+}
+
+export function isRuntimeCommandExpired(command: StoredCommand, nowIso: string): boolean {
+  const now = unixSeconds(nowIso);
+  const expiration = (command as EaRecord).expiration;
+  if (typeof expiration === 'number' && Number.isFinite(expiration)) {
+    return Math.trunc(expiration) <= now;
+  }
+  if (command.source === 'ai_approve') {
+    const createdAt = timestampMillis(command.created_at);
+    if (createdAt != null) {
+      return Math.floor(createdAt / 1000) + 4 * 60 * 60 <= now;
+    }
+  }
+  return false;
 }
 
 export function equalsFold(left: string, right: string): boolean {

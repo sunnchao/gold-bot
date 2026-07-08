@@ -22,6 +22,7 @@ import {
   isActiveAIApprovePendingCommand,
   isAckResult,
   isPendingSignalExpired,
+  isRuntimeCommandExpired,
   normalizeApiToken,
   normalizeDecisionEvent,
   normalizePendingSignal,
@@ -637,6 +638,23 @@ export async function createPostgresEaStore(dsn: string): Promise<EaStore | null
       const delivered: StoredCommand[] = [];
       for (const row of rows) {
         const commandId = asString(row.command_id);
+        const queuedCommand = rowToStoredCommand(commandId, row);
+        if (isRuntimeCommandExpired(queuedCommand, deliveredAt)) {
+          await q.query(
+            `UPDATE runtime_commands SET status = 'failed', result = 'expired', ticket = 0, error_text = 'command expired before delivery', failed_at = $1, updated_at = CURRENT_TIMESTAMP WHERE command_id = $2 AND account_id = $3 AND status = 'queued'`,
+            [deliveredAt, commandId, accountIdValue]
+          );
+          const expiredCommand = rowToStoredCommand(commandId, {
+            ...row,
+            status: 'failed',
+            result: 'expired',
+            ticket: 0,
+            error_text: 'command expired before delivery',
+            failed_at: deliveredAt
+          });
+          await insertDecisionEventIfPresent(q, commandResultDecisionEvent(expiredCommand, 'expired', 0, 'command expired before delivery', deliveredAt));
+          continue;
+        }
         await q.query(
           `UPDATE runtime_commands SET status = 'delivered', delivered_at = CASE WHEN $1 <> '' THEN $1 ELSE delivered_at END, updated_at = CURRENT_TIMESTAMP WHERE command_id = $2`,
           [deliveredAt, commandId]

@@ -2959,7 +2959,7 @@ describe('app-server scaffold', () => {
     );
   });
 
-  it('queues accepted AI approve plans for cutover accounts', async () => {
+  it('queues confidence 55 accepted AI approve plans for cutover accounts', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
@@ -3000,7 +3000,7 @@ describe('app-server scaffold', () => {
           stop_loss: 3330,
           take_profit: [3345],
           max_lots: 0.1,
-          confidence: 80,
+          confidence: 55,
           expires_at: '2099-06-06T09:15:00Z',
           reason_codes: ['mode.approve', 'side.buy'],
           narrative: 'cutover mode may queue after deterministic and pending gates'
@@ -3019,7 +3019,9 @@ describe('app-server scaffold', () => {
         source: 'ai_approve',
         status: 'queued',
         decision_id: 'tpv1_cutover_mode',
-        type: 'BUY'
+        type: 'BUY',
+        confidence: 55,
+        score: 55
       })
     ]);
     expect(await store.pollCommands('90011087')).toEqual([
@@ -3027,12 +3029,14 @@ describe('app-server scaffold', () => {
         action: 'SIGNAL',
         source: 'ai_approve',
         decision_id: 'tpv1_cutover_mode',
-        type: 'BUY'
+        type: 'BUY',
+        confidence: 55,
+        score: 55
       })
     ]);
   });
 
-  it('does not queue AI approve plans below the cutover confidence threshold', async () => {
+  it('records a queue skip event for confidence 54 accepted AI approve plans', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
@@ -3073,7 +3077,7 @@ describe('app-server scaffold', () => {
           stop_loss: 3330,
           take_profit: [3345],
           max_lots: 0.1,
-          confidence: 59,
+          confidence: 54,
           expires_at: '2099-06-06T09:15:00Z',
           reason_codes: ['mode.approve', 'side.buy'],
           narrative: 'otherwise valid approve below live confidence threshold'
@@ -3088,6 +3092,19 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(response.body)).not.toHaveProperty('command_status');
     expect(await store.listCommands('90011087')).toEqual([]);
     expect(await store.pollCommands('90011087')).toEqual([]);
+    expect(await store.listDecisionEvents({ account_id: '90011087', symbol: 'XAUUSD' })).toContainEqual(
+      expect.objectContaining({
+        decision_id: 'tpv1_low_confidence',
+        stage: 'risk_gate',
+        status: 'rejected',
+        reason_codes: ['pending_gate.queue_skip.confidence_below_min'],
+        summary: expect.objectContaining({
+          pending_gate_reason: 'queue_skip.confidence_below_min',
+          mode: 'approve',
+          symbol: 'XAUUSD'
+        })
+      })
+    );
   });
 
   for (const stopIntent of [
