@@ -306,17 +306,18 @@ function stableHash(parts: unknown[]): string {
   return hash.digest('hex');
 }
 
-function sanitizeHarmonicPattern(pattern: unknown): Record<string, unknown> | undefined {
+/** Fields that change every tick (forming bar influence) — must NOT enter semi-static layer */
+const HARMONIC_VOLATILE_KEYS = new Set(['score', 'completion_pct', 'reason']);
+
+function sanitizeHarmonicPatternStable(pattern: unknown): Record<string, unknown> | undefined {
   if (!isRecord(pattern)) {
     return undefined;
   }
-
   const sanitized: Record<string, unknown> = {};
-  const allowedKeys = [
+  const stableKeys = [
     'type',
     'direction',
     'timeframe',
-    'score',
     'x_price',
     'a_price',
     'b_price',
@@ -326,31 +327,54 @@ function sanitizeHarmonicPattern(pattern: unknown): Record<string, unknown> | un
     'bc_ratio',
     'cd_ratio',
     'xd_ratio',
-    'completion_pct',
-    'reason',
   ];
-
-  for (const key of allowedKeys) {
+  for (const key of stableKeys) {
     if (pattern[key] !== undefined) {
       sanitized[key] = pattern[key];
     }
   }
-
-  return sanitized;
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
 
-function sanitizeHarmonicContext(payload: GoldbotPayload): Record<string, unknown> | null {
+function sanitizeHarmonicPatternVolatile(pattern: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(pattern)) {
+    return undefined;
+  }
+  const sanitized: Record<string, unknown> = {};
+  for (const key of HARMONIC_VOLATILE_KEYS) {
+    if (pattern[key] !== undefined) {
+      sanitized[key] = pattern[key];
+    }
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+/** Stable harmonic context for semi-static layer (no score/completion_pct/reason) */
+function sanitizeHarmonicContextStable(payload: GoldbotPayload): Record<string, unknown> | null {
   const harmonicContext = payload.harmonic_context;
   if (!harmonicContext) {
     return null;
   }
-
   return {
-    h4_patterns: harmonicContext.h4_patterns.map(sanitizeHarmonicPattern).filter(Boolean),
-    h1_patterns: harmonicContext.h1_patterns.map(sanitizeHarmonicPattern).filter(Boolean),
-    m30_patterns: harmonicContext.m30_patterns.map(sanitizeHarmonicPattern).filter(Boolean),
-    active_pattern: sanitizeHarmonicPattern(harmonicContext.active_pattern) ?? null,
+    h4_patterns: harmonicContext.h4_patterns.map(sanitizeHarmonicPatternStable).filter(Boolean),
+    h1_patterns: harmonicContext.h1_patterns.map(sanitizeHarmonicPatternStable).filter(Boolean),
+    m30_patterns: harmonicContext.m30_patterns.map(sanitizeHarmonicPatternStable).filter(Boolean),
+    active_pattern: sanitizeHarmonicPatternStable(harmonicContext.active_pattern) ?? null,
     direction_bias: harmonicContext.direction_bias,
+  };
+}
+
+/** Volatile harmonic context for realtime layer (score/completion_pct/reason only) */
+function sanitizeHarmonicContextVolatile(payload: GoldbotPayload): Record<string, unknown> | null {
+  const harmonicContext = payload.harmonic_context;
+  if (!harmonicContext) {
+    return null;
+  }
+  return {
+    h4_patterns: harmonicContext.h4_patterns.map(sanitizeHarmonicPatternVolatile).filter(Boolean),
+    h1_patterns: harmonicContext.h1_patterns.map(sanitizeHarmonicPatternVolatile).filter(Boolean),
+    m30_patterns: harmonicContext.m30_patterns.map(sanitizeHarmonicPatternVolatile).filter(Boolean),
+    active_pattern: sanitizeHarmonicPatternVolatile(harmonicContext.active_pattern) ?? null,
     score: harmonicContext.score,
     summary: harmonicContext.summary,
   };
@@ -388,7 +412,7 @@ function buildUnavailableChanlunStructure(): ChanlunAnalysis {
 class StructureCache {
   private readonly cache = new Map<string, StructureCacheEntry>();
 
-  getOrBuild(symbol: string, payload: GoldbotPayload): string {
+  getOrBuild(symbol: string, payload: GoldbotPayload): { staticContextText: string; harmonicVolatile: Record<string, unknown> | null } {
     const wavePrices = extractWaveClosedBarPrices(payload);
     const chanlunBars = extractClosedChanlunBars(payload);
     const waveStructure =
@@ -396,19 +420,20 @@ class StructureCache {
     const chanlunStructure =
       chanlunBars.length >= 3 ? analyzeChanlun(chanlunBars) : buildUnavailableChanlunStructure();
     const candlestickPatterns = summarizeCandlestickPatterns(payload);
-    const harmonicCtx = sanitizeHarmonicContext(payload);
-    const hash = stableHash([waveStructure, chanlunStructure, candlestickPatterns, harmonicCtx ?? 'none']);
+    const harmonicCtxStable = sanitizeHarmonicContextStable(payload);
+    const harmonicCtxVolatile = sanitizeHarmonicContextVolatile(payload);
+    const hash = stableHash([waveStructure, chanlunStructure, candlestickPatterns, harmonicCtxStable ?? 'none']);
     const cached = this.cache.get(symbol);
 
     if (cached?.hash === hash) {
-      return cached.staticContextText;
+      return { staticContextText: cached.staticContextText, harmonicVolatile: harmonicCtxVolatile };
     }
 
     const staticContextText = renderStaticContextPrompt(
       waveStructure,
       chanlunStructure,
       candlestickPatterns,
-      harmonicCtx,
+      harmonicCtxStable,
     );
     this.cache.set(symbol, {
       hash,
@@ -416,7 +441,7 @@ class StructureCache {
       timestamp: Date.now(),
     });
 
-    return staticContextText;
+    return { staticContextText, harmonicVolatile: harmonicCtxVolatile };
   }
 }
 
@@ -675,7 +700,7 @@ function buildStaticContextPrompt(
   payload: GoldbotPayload,
   symbol: string,
   structureCache: StructureCache,
-): string {
+): { staticContextText: string; harmonicVolatile: Record<string, unknown> | null } {
   return structureCache.getOrBuild(symbol, payload);
 }
 
@@ -688,6 +713,7 @@ function buildRealtimeDataPrompt(
   pendingSignal: PendingSignal | undefined,
   symbol: string,
   profile: SymbolProfile,
+  harmonicVolatile: Record<string, unknown> | null,
 ): string {
   const currentPrice = payload.market.bid || payload.market.ask || 0;
   const m15 = selectIndicator(payload.indicators, 'M15', 'm15');
@@ -726,6 +752,9 @@ ${stableStringify(payload.positions)}
 - **RSI Divergence:** H1=${h1?.rsi_divergence || 'none'}, M30=${m30?.rsi_divergence || 'none'}
 - **Impact:** Bullish divergence → increase BUY confidence, bearish divergence → increase SELL confidence
 - Strong divergence (price extreme + contra-trend RSI/MACD) must be mentioned in technical.rationale
+
+### Harmonic Realtime (volatile)
+${harmonicVolatile ? stableStringify(harmonicVolatile) : 'none'}
 
 ### Pending Signal (from previous analysis cycle)
 ${pendingSignal ? stableStringify(pendingSignal) : 'none'}
@@ -1117,13 +1146,12 @@ export class ComprehensiveAnalystService {
     ];
 
     // Layer 2: Semi-static context (computed structures) → prompt-cache eligible.
-    const staticContextPrompt = buildStaticContextPrompt(payload, symbol, this.structureCache);
+    const structureResult = buildStaticContextPrompt(payload, symbol, this.structureCache);
 
     // Layer 3: Real-time data (price, positions, indicators) → no cache.
-    const realtimeDataPrompt = buildRealtimeDataPrompt(payload, pendingSignal, symbol, profile);
     const userLayers = [
-      { text: staticContextPrompt, cacheable: true },
-      { text: realtimeDataPrompt, cacheable: false },
+      { text: structureResult.staticContextText, cacheable: true },
+      { text: buildRealtimeDataPrompt(payload, pendingSignal, symbol, profile, structureResult.harmonicVolatile), cacheable: false },
     ];
 
     let raw: string;

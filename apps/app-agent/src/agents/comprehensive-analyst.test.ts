@@ -394,4 +394,75 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(secondCallSystemBlocks[1].text).not.toContain('4174');
     expect(secondCallSystemBlocks[1].text).not.toContain('Current price');
   });
+
+  function payloadWithHarmonicContext(score: number, completionPct: number): GoldbotPayload {
+    const base = payloadWithLastBarClose(2335);
+    return {
+      ...base,
+      harmonic_context: {
+        h4_patterns: [],
+        h1_patterns: [],
+        m30_patterns: [],
+        active_pattern: {
+          type: 'bat',
+          direction: 'bullish',
+          timeframe: 'H1',
+          score: score,
+          completion_pct: completionPct,
+          x_price: 2300,
+          a_price: 2320,
+          b_price: 2310,
+          c_price: 2330,
+          d_price: 2315,
+          ab_ratio: 0.5,
+          bc_ratio: 0.618,
+          cd_ratio: 1.272,
+          xd_ratio: 0.886,
+          reason: 'Bullish bat pattern near D zone',
+        },
+        direction_bias: 'bullish',
+        score: score,
+        summary: `Bullish bat detected, score=${score}`,
+      },
+    };
+  }
+
+  it('keeps harmonic volatile fields (score, completion_pct) out of semi-static layer', async () => {
+    const streamLayered = vi.fn().mockResolvedValue({
+      content: markdownResponse,
+      cacheStats,
+    });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = new ComprehensiveAnalystService(client);
+
+    // Same closed bars, different harmonic score/completion_pct
+    await service.run(payloadWithHarmonicContext(75, 90), 'XAUUSD');
+    await service.run(payloadWithHarmonicContext(82, 95), 'XAUUSD');
+
+    expect(streamLayered).toHaveBeenCalledTimes(2);
+    const [, firstUserLayers] = streamLayered.mock.calls[0];
+    const [, secondUserLayers] = streamLayered.mock.calls[1];
+
+    // Semi-static layer (index 0) should be identical despite score/completion change
+    expect(firstUserLayers[0].text).toBe(secondUserLayers[0].text);
+
+    // Semi-static layer should not contain the volatile score value
+    expect(firstUserLayers[0].text).not.toContain('"score":75');
+    expect(firstUserLayers[0].text).not.toContain('"completion_pct":90');
+    expect(firstUserLayers[0].text).not.toContain('"reason"');
+
+    // Semi-static layer should contain stable fields
+    expect(firstUserLayers[0].text).toContain('"type":"bat"');
+    expect(firstUserLayers[0].text).toContain('"direction":"bullish"');
+    expect(firstUserLayers[0].text).toContain('"x_price":2300');
+
+    // Realtime layer should contain the volatile values
+    expect(firstUserLayers[1].text).toContain('75');
+    expect(secondUserLayers[1].text).toContain('82');
+  });
 });
