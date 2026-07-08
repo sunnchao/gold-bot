@@ -359,4 +359,39 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(streamLayered).toHaveBeenCalledTimes(2);
     expect(result.tradeAction).toBeUndefined();
   });
+
+  it('does not include current price in the second-phase cacheable system block', async () => {
+    const streamLayered = vi.fn()
+      .mockResolvedValueOnce({
+        content: buySetupMarkdownResponse,
+        cacheStats,
+      })
+      .mockResolvedValueOnce({
+        content: '',
+        cacheStats,
+        toolUse: {
+          id: 't1',
+          name: 'do_nothing',
+          input: { reason: 'test' },
+        },
+      });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'anthropic_explicit' as const, ttl: '1h' as const }),
+      getModel: () => 'claude-sonnet-4-20250514',
+    } as unknown as LlmClientService;
+    const service = new ComprehensiveAnalystService(client);
+
+    await service.run(payloadWithLastBarClose(4174), 'XAUUSD');
+
+    // Second call is decideTradeAction
+    const secondCallSystemBlocks = streamLayered.mock.calls[1][0];
+    expect(secondCallSystemBlocks).toHaveLength(2);
+    expect(secondCallSystemBlocks[0]).toMatchObject({ cacheable: true });
+    expect(secondCallSystemBlocks[1]).toMatchObject({ cacheable: true });
+    // Neither cacheable system block should contain the current price
+    expect(secondCallSystemBlocks[1].text).not.toContain('4174');
+    expect(secondCallSystemBlocks[1].text).not.toContain('Current price');
+  });
 });

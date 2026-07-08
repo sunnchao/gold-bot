@@ -1066,7 +1066,7 @@ export class ComprehensiveAnalystService {
         [
           { text: TRADE_ACTION_DECISION_PROMPT, cacheable: true },
           {
-            text: `Instrument: ${profile.name} (${profile.symbol})\nCurrent price: ${currentPrice.toFixed(profile.pricePrecision)}`,
+            text: `Instrument: ${profile.name} (${profile.symbol})`,
             cacheable: true,
           },
         ],
