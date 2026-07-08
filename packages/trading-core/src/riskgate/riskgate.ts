@@ -380,7 +380,7 @@ function isExecutableMode(mode: string): boolean {
 }
 
 function isAuditOnlyMode(mode: string): boolean {
-  return ['approve', 'modify', 'observe', 'veto'].includes(mode);
+  return ['observe', 'veto'].includes(mode);
 }
 
 function metadataFor(symbol: string): SymbolMeta {

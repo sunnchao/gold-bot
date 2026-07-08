@@ -229,7 +229,7 @@
     "mode": "approve",
     "symbol": "XAUUSD",
     "status": "accepted",
-    "audit_only": true,
+    "audit_only": false,
     "reason_codes": ["lots.accepted"],
     "requested_lots": 0.02,
     "allowed_lots": 0.02
@@ -251,7 +251,8 @@
 
 执行边界：
 
-- `approve` / `modify` 永远只返回 `risk_gate.audit_only=true`，不会下发开仓或改仓命令。
+- `approve` / `modify` 在确定性风险门通过后可进入执行链路；仍必须满足 `risk_gate.status != rejected`、confidence gate、pending gate、禁用 stop-order 等保护，且 shadow mode 不会下发 live command。
+- `observe` / `veto` 仍只返回 `risk_gate.audit_only=true`，不会下发开仓或改仓命令。
 - `close` / `reduce` 仍走旧的 `risk_alert + exit_suggestion` 平仓/减仓兼容路径，但有 `trade_plan` 时命令 payload 会附带 `decision_id`、`trade_plan_mode` 和 `risk_gate`。
 - 风险门 `rejected` 时，不会 enqueue EA command；raw AI payload 仍会保存用于审计。
 
@@ -270,8 +271,8 @@
 
 注意：
 
-- `approve` 不是执行命令；它只是给 Go 侧确定性风控门的结构化输入。
-- 本阶段不会因为 `trade_plan.mode=approve` 或 `trade_plan.mode=modify` 自动下发开仓/改仓命令。
+- `approve` / `modify` 是可执行意图；服务端必须先通过确定性风险门和对应 pending gate，才可能创建命令。
+- 本阶段不会因为 `trade_plan.mode=observe` 或 `veto` 自动下发命令。
 - 旧的 `risk_alert + exit_suggestion` 平仓/减仓兼容逻辑保持不变。
 
 ## 3. Admin API v1
@@ -376,7 +377,7 @@
 返回格式：
 
 ```text
-data: {"event_id":"evt_ai_...","event_type":"ai_result","account_id":"90011087","source":"api.ai_result","timestamp":"2026-04-13T08:00:00Z","payload":{"bias":"bullish","trade_plan_summary":{"decision_id":"tpv1_abc123","mode":"approve","symbol":"XAUUSD","confidence":82},"risk_gate":{"status":"accepted","audit_only":true,"reason_codes":["lots.accepted"]}}}
+data: {"event_id":"evt_ai_...","event_type":"ai_result","account_id":"90011087","source":"api.ai_result","timestamp":"2026-04-13T08:00:00Z","payload":{"bias":"bullish","trade_plan_summary":{"decision_id":"tpv1_abc123","mode":"approve","symbol":"XAUUSD","confidence":82},"risk_gate":{"status":"accepted","audit_only":false,"reason_codes":["lots.accepted"]}}}
 ```
 
 事件 envelope 字段：

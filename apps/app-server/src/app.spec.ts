@@ -244,6 +244,17 @@ function dualTradePlanSide(decisionId: string, side: 'buy' | 'sell', entryMin: n
   };
 }
 
+async function seedAIApproveTrendBars(store: ReturnType<typeof createInMemoryEaStore>): Promise<void> {
+  for (const timeframe of ['D1', 'H4', 'H1', 'M30', 'M15']) {
+    await store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe,
+      bars: [{ close: 3336, ema20: 3335, ema50: 3330, adx: 35, atr: 2, rsi: 60 }]
+    });
+  }
+}
+
 describe('app-server scaffold', () => {
   describe('route auth helpers', () => {
     it('prefers X-API-Token over X-API-Key and query token', () => {
@@ -2392,7 +2403,7 @@ describe('app-server scaffold', () => {
     }
   });
 
-  it('serves analysis payloads and stores AI results in audit-only mode', async () => {
+  it('serves analysis payloads and stores AI results with deterministic risk gates', async () => {
     const store = createInMemoryEaStore();
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
@@ -2466,7 +2477,7 @@ describe('app-server scaffold', () => {
         expect(body).toMatchObject(fixture.response.body as Record<string, unknown>);
         expect(body).not.toHaveProperty('command_status');
         expect(body).toMatchObject({
-          risk_gate: { audit_only: true, canProduceLiveCommands: false }
+          risk_gate: { audit_only: false, canProduceLiveCommands: false }
         });
       } else {
         expect(JSON.parse(response.body)).toEqual(fixture.response.body);
@@ -2861,7 +2872,7 @@ describe('app-server scaffold', () => {
     expect(JSON.parse(poll.body)).toMatchObject({ count: 0, commands: [] });
   });
 
-  it('does not create poll commands for audit-only AI approve plans in shadow mode', async () => {
+  it('does not queue live commands for accepted AI approve plans in shadow mode', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'shadow');
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
@@ -2882,6 +2893,7 @@ describe('app-server scaffold', () => {
       spread: 0.2,
       time: '2026-04-13T15:59:30+08:00'
     });
+    await seedAIApproveTrendBars(store);
 
     const response = await server.inject({
       method: 'POST',
@@ -2896,6 +2908,8 @@ describe('app-server scaffold', () => {
           mode: 'approve',
           side: 'buy',
           entry_zone: { min: 3335.5, max: 3335.7 },
+          execution_type: 'market',
+          requested_order_type: 'market',
           stop_loss: 3330,
           take_profit: [3345],
           max_lots: 0.1,
@@ -2908,13 +2922,29 @@ describe('app-server scaffold', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body)).toMatchObject({
-      risk_gate: { status: 'accepted', audit_only: true, canProduceLiveCommands: false }
+    const body = JSON.parse(response.body);
+    expect(body).toMatchObject({
+      command_status: 'shadow_only',
+      risk_gate: { status: 'accepted', audit_only: false, canProduceLiveCommands: false }
     });
-    expect(JSON.parse(response.body)).not.toHaveProperty('command_status');
-    expect(await store.listCommands('90011087')).toEqual([]);
+    expect(await store.listCommands('90011087')).toEqual([
+      expect.objectContaining({
+        action: 'SIGNAL',
+        source: 'ai_approve',
+        status: 'shadow_only',
+        decision_id: 'tpv1_shadow_mode',
+        type: 'BUY'
+      })
+    ]);
     expect(await store.pollCommands('90011087')).toEqual([]);
-    expect(await store.listShadowComparisons()).toEqual([]);
+    expect(await store.listShadowComparisons()).toEqual([
+      expect.objectContaining({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        source: 'ai_result',
+        command_drift: false
+      })
+    ]);
     expect(await store.getLatestShadowSnapshot('90011087', 'XAUUSD', 'ai_result')).toEqual(
       expect.objectContaining({
         account_id: '90011087',
@@ -2922,14 +2952,14 @@ describe('app-server scaffold', () => {
         source: 'ai_result',
         command: expect.objectContaining({
           decision_id: 'tpv1_shadow_mode',
-          mode: 'approve',
-          risk_gate: expect.objectContaining({ audit_only: true, canProduceLiveCommands: false })
+          status: 'shadow_only',
+          risk_gate: expect.objectContaining({ audit_only: false, canProduceLiveCommands: false })
         })
       })
     );
   });
 
-  it('does not queue audit-only AI approve plans for cutover accounts', async () => {
+  it('queues accepted AI approve plans for cutover accounts', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
@@ -2950,6 +2980,7 @@ describe('app-server scaffold', () => {
       spread: 0.2,
       time: '2026-04-13T15:59:30+08:00'
     });
+    await seedAIApproveTrendBars(store);
 
     const response = await server.inject({
       method: 'POST',
@@ -2964,20 +2995,95 @@ describe('app-server scaffold', () => {
           mode: 'approve',
           side: 'buy',
           entry_zone: { min: 3335.5, max: 3335.7 },
+          execution_type: 'market',
+          requested_order_type: 'market',
           stop_loss: 3330,
           take_profit: [3345],
           max_lots: 0.1,
           confidence: 80,
           expires_at: '2099-06-06T09:15:00Z',
           reason_codes: ['mode.approve', 'side.buy'],
-          narrative: 'cutover mode must not override Go audit-only guard'
+          narrative: 'cutover mode may queue after deterministic and pending gates'
         }
       }
     });
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toMatchObject({
-      risk_gate: { status: 'accepted', audit_only: true, canProduceLiveCommands: false }
+      command_status: 'queued',
+      risk_gate: { status: 'accepted', audit_only: false, canProduceLiveCommands: false }
+    });
+    expect(await store.listCommands('90011087')).toEqual([
+      expect.objectContaining({
+        action: 'SIGNAL',
+        source: 'ai_approve',
+        status: 'queued',
+        decision_id: 'tpv1_cutover_mode',
+        type: 'BUY'
+      })
+    ]);
+    expect(await store.pollCommands('90011087')).toEqual([
+      expect.objectContaining({
+        action: 'SIGNAL',
+        source: 'ai_approve',
+        decision_id: 'tpv1_cutover_mode',
+        type: 'BUY'
+      })
+    ]);
+  });
+
+  it('does not queue AI approve plans below the cutover confidence threshold', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+
+    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      equity: 10000,
+      free_margin: 9000,
+      market_open: true,
+      is_trade_allowed: true
+    });
+    await store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3335.5,
+      ask: 3335.7,
+      spread: 0.2,
+      time: '2026-04-13T15:59:30+08:00'
+    });
+    await seedAIApproveTrendBars(store);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v2/ai_result/90011087/XAUUSD',
+      headers: apiUserHeaders,
+      body: {
+        trade_plan: {
+          schema_version: 'trade_plan.v1',
+          decision_id: 'tpv1_low_confidence',
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          mode: 'approve',
+          side: 'buy',
+          entry_zone: { min: 3335.5, max: 3335.7 },
+          execution_type: 'market',
+          requested_order_type: 'market',
+          stop_loss: 3330,
+          take_profit: [3345],
+          max_lots: 0.1,
+          confidence: 59,
+          expires_at: '2099-06-06T09:15:00Z',
+          reason_codes: ['mode.approve', 'side.buy'],
+          narrative: 'otherwise valid approve below live confidence threshold'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      risk_gate: { status: 'accepted', audit_only: false, canProduceLiveCommands: false }
     });
     expect(JSON.parse(response.body)).not.toHaveProperty('command_status');
     expect(await store.listCommands('90011087')).toEqual([]);
@@ -3023,14 +3129,7 @@ describe('app-server scaffold', () => {
         spread: 0.2,
         time: '2026-04-13T15:59:30+08:00'
       });
-      for (const timeframe of ['D1', 'H4', 'H1', 'M30', 'M15']) {
-        await store.saveBars({
-          account_id: '90011087',
-          symbol: 'XAUUSD',
-          timeframe,
-          bars: [{ close: 3336, ema20: 3335, ema50: 3330, adx: 35, atr: 2, rsi: 60 }]
-        });
-      }
+      await seedAIApproveTrendBars(store);
 
       const response = await server.inject({
         method: 'POST',
@@ -3084,14 +3183,7 @@ describe('app-server scaffold', () => {
       spread: 0.2,
       time: '2026-04-13T15:59:30+08:00'
     });
-    for (const timeframe of ['D1', 'H4', 'H1', 'M30', 'M15']) {
-      await store.saveBars({
-        account_id: '90011087',
-        symbol: 'XAUUSD',
-        timeframe,
-        bars: [{ close: 3336, ema20: 3335, ema50: 3330, adx: 35, atr: 2, rsi: 60 }]
-      });
-    }
+    await seedAIApproveTrendBars(store);
 
     const response = await server.inject({
       method: 'POST',
@@ -3134,7 +3226,7 @@ describe('app-server scaffold', () => {
     });
   });
 
-  it('returns audit-only trade plan risk gate rejects without queueing poll commands', async () => {
+  it('returns rejected AI approve risk gates without queueing poll commands', async () => {
     const store = createInMemoryEaStore();
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
@@ -3184,7 +3276,7 @@ describe('app-server scaffold', () => {
       risk_gate?: { audit_only?: boolean; status?: string; reason_codes?: string[]; canProduceLiveCommands?: boolean };
     };
     expect(body.risk_gate).toMatchObject({
-      audit_only: true,
+      audit_only: false,
       status: 'rejected',
       reason_codes: ['market.closed']
     });

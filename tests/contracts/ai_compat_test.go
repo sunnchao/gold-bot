@@ -390,7 +390,7 @@ func TestAIResultAcceptsTradePlanAndPublishesDecisionSummary(t *testing.T) {
 	}
 }
 
-func TestAIResultApproveTradePlanReturnsAuditOnlyRiskGate(t *testing.T) {
+func TestAIResultApproveTradePlanReturnsExecutableRiskGate(t *testing.T) {
 	ts, _ := newAdminServer(t)
 	seedAnalysisFixture(t, ts, "user-token")
 	postJSON(t, ts, "user-token", "/positions", `{
@@ -406,7 +406,7 @@ func TestAIResultApproveTradePlanReturnsAuditOnlyRiskGate(t *testing.T) {
 		"risk_alert":false,
 		"trade_plan":{
 			"schema_version":"trade_plan.v1",
-			"decision_id":"tpv1_audit_only",
+			"decision_id":"tpv1_approve_executable",
 			"account_id":"90011087",
 			"symbol":"XAUUSD",
 			"mode":"approve",
@@ -440,11 +440,11 @@ func TestAIResultApproveTradePlanReturnsAuditOnlyRiskGate(t *testing.T) {
 	if got := response.RiskGate["status"]; got != "accepted" {
 		t.Fatalf("risk_gate.status = %v, want accepted", got)
 	}
-	if got := response.RiskGate["audit_only"]; got != true {
-		t.Fatalf("risk_gate.audit_only = %v, want true", got)
+	if got := response.RiskGate["audit_only"]; got != false {
+		t.Fatalf("risk_gate.audit_only = %v, want false", got)
 	}
-	if got := response.RiskGate["decision_id"]; got != "tpv1_audit_only" {
-		t.Fatalf("risk_gate.decision_id = %v, want tpv1_audit_only", got)
+	if got := response.RiskGate["decision_id"]; got != "tpv1_approve_executable" {
+		t.Fatalf("risk_gate.decision_id = %v, want tpv1_approve_executable", got)
 	}
 
 	pollRec := httptest.NewRecorder()
@@ -460,7 +460,7 @@ func TestAIResultApproveTradePlanReturnsAuditOnlyRiskGate(t *testing.T) {
 		t.Fatalf("Unmarshal poll response returned error: %v", err)
 	}
 	if pollBody.Count != 0 {
-		t.Fatalf("poll count = %d, want 0 for audit-only approve", pollBody.Count)
+		t.Fatalf("poll count = %d, want 0 without pending order intent", pollBody.Count)
 	}
 }
 

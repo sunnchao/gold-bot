@@ -53,7 +53,7 @@
       "received": true,
       "risk_gate": {
         "allowed_lots": 0.02,
-        "audit_only": true,
+        "audit_only": false,
         "canProduceLiveCommands": false,
         "decision_id": "tpv1_abc123",
         "max_margin_lots": 0.74,
@@ -71,6 +71,6 @@
     }
   },
   "normalization": {
-    "risk_gate": "Node evaluates the same audit-only risk gate fields used for AI trade_plan decisions without enqueueing /poll commands."
+    "risk_gate": "Node evaluates deterministic risk gate fields used for AI trade_plan decisions; approve may enqueue only after the pending-command gate accepts."
   }
 }

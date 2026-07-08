@@ -82,7 +82,7 @@ POST /api/ai_result/{account_id}
     -> publish SSE event `ai_result`
 ```
 
-AI 侧 `approve` / `modify` 只进入风险门审计，不会创建 EA 命令。Go 侧风险门会在任何 AI 影响的可执行命令前检查市场状态、tick 新鲜度、spread、计划过期、SL 合理性、手数上限、free margin 和静态 symbol metadata。风险门拒绝时仍保存 raw AI payload，但不会下发命令。
+AI 侧 `approve` / `modify` 在确定性风险门通过后可进入执行链路；服务端仍会继续检查 confidence、pending gate、禁用 stop-order、shadow/cutover 模式等保护。`observe` / `veto` 只进入风险门审计，不会创建 EA 命令。Go 侧风险门会在任何 AI 影响的可执行命令前检查市场状态、tick 新鲜度、spread、计划过期、SL 合理性、手数上限、free margin 和静态 symbol metadata。风险门拒绝时仍保存 raw AI payload，但不会下发命令。
 
 ### 3. 控制台链路
 

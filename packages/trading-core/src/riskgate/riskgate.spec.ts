@@ -57,6 +57,27 @@ describe('riskgate parity slice', () => {
     expect(result.reasonCodes).toContain('plan.absent');
   });
 
+  it.each(['approve', 'modify'])('allows %s past the audit-only guard', (mode) => {
+    const input = validInput();
+    input.plan.mode = mode;
+    input.plan.maxLots = 0.02;
+
+    const result = evaluateRiskGate(input);
+
+    expect(result.status).toBe('accepted');
+    expect(result.auditOnly).toBe(false);
+    expect(result.reasonCodes).toContain('lots.accepted');
+  });
+
+  it.each(['observe', 'veto'])('keeps %s audit-only', (mode) => {
+    const input = validInput();
+    input.plan.mode = mode;
+
+    const result = evaluateRiskGate(input);
+
+    expect(result.auditOnly).toBe(true);
+  });
+
   it.each([
     ['closed market', (input: RiskGateInput) => (input.runtime.marketOpen = false), 'market.closed'],
     ['trade disabled', (input: RiskGateInput) => (input.runtime.isTradeAllowed = false), 'market.trade_not_allowed'],

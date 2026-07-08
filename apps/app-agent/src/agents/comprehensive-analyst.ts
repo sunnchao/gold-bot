@@ -1082,6 +1082,14 @@ export class ComprehensiveAnalystService {
         return undefined;
       }
 
+      // Debug: log second-phase tool_use decision input
+      if (process.env.LOG_LEVEL === 'debug') {
+        logger.info(
+          { symbol: profile.symbol, toolName: result.toolUse.name, toolInput: result.toolUse.input },
+          'comprehensiveAnalysis: second-phase tool_use input',
+        );
+      }
+
       return toolUseToTradeAction(result.toolUse, currentPrice, profile);
     } catch (err) {
       logger.warn(
@@ -1150,6 +1158,13 @@ export class ComprehensiveAnalystService {
     // Dual-format parsing: try Markdown first, fallback to JSON
     const format = detectFormat(raw);
     logger.info({ symbol, format }, 'comprehensiveAnalysis: detected output format');
+    // Debug: log full first-phase LLM markdown + arbitration parsed values
+    if (process.env.LOG_LEVEL === 'debug') {
+      logger.info(
+        { symbol, raw_markdown_length: raw.length, raw_markdown: raw.slice(0, 4000) },
+        'comprehensiveAnalysis: first-phase LLM markdown (truncated to 4000 chars)',
+      );
+    }
 
     let result: ComprehensiveAnalysisResult;
 
