@@ -90,7 +90,6 @@ export interface LLMClientConfig {
   timeout: number;
   maxRetries: number;
   enablePromptCaching: boolean;
-  promptCacheRetention?: 'in_memory' | '24h';
 }
 
 interface AnthropicMessage {
@@ -793,7 +792,6 @@ export class LlmClientService extends LLMClient {
       timeout: config.llm.timeout,
       maxRetries: config.llm.maxRetries,
       enablePromptCaching: config.llm.enablePromptCaching,
-      promptCacheRetention: config.llm.promptCacheRetention,
     });
   }
 }

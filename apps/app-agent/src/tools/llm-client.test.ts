@@ -24,7 +24,6 @@ describe('LLMClient', () => {
     timeout: 120000,
     maxRetries: 3,
     enablePromptCaching: true,
-    promptCacheRetention: 'in_memory' as const,
   };
 
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -344,7 +343,6 @@ describe('LLMClient', () => {
         timeout: defaultConfig.timeout,
         maxRetries: defaultConfig.maxRetries,
         enablePromptCaching: defaultConfig.enablePromptCaching,
-        promptCacheRetention: defaultConfig.promptCacheRetention,
       },
     } as AppConfigService);
 

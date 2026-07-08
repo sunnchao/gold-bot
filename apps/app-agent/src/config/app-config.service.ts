@@ -22,7 +22,6 @@ const AppConfigSchema = z.object({
   llmTimeout: z.coerce.number().int().positive().default(240000),
   llmMaxRetries: z.coerce.number().int().min(0).default(3),
   llmEnablePromptCaching: z.coerce.boolean().default(false),
-  llmPromptCacheRetention: z.enum(['in_memory', '24h']).default('in_memory'),
   scheduleCron: z.string().min(1).default('*/5 * * * *'),
   accounts: z.array(AccountConfigSchema).min(1, 'At least one account is required'),
   logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
@@ -64,7 +63,6 @@ export function validateConfig(env: Record<string, unknown>): AppConfig {
     llmTimeout: env.LLM_TIMEOUT ?? '120000',
     llmMaxRetries: env.LLM_MAX_RETRIES ?? '3',
     llmEnablePromptCaching: env.LLM_ENABLE_PROMPT_CACHING ?? 'false',
-    llmPromptCacheRetention: env.LLM_PROMPT_CACHE_RETENTION ?? 'in_memory',
     scheduleCron: env.SCHEDULE_CRON ?? '*/5 * * * *',
     accounts: parseAccounts(env),
     logLevel: env.LOG_LEVEL ?? 'info',
@@ -115,7 +113,6 @@ export class AppConfigService {
     timeout: number;
     maxRetries: number;
     enablePromptCaching: boolean;
-    promptCacheRetention: 'in_memory' | '24h';
   } {
     return {
       provider: this.config.llmProvider,
@@ -126,7 +123,6 @@ export class AppConfigService {
       timeout: this.config.llmTimeout,
       maxRetries: this.config.llmMaxRetries,
       enablePromptCaching: this.config.llmEnablePromptCaching,
-      promptCacheRetention: this.config.llmPromptCacheRetention,
     };
   }
 
