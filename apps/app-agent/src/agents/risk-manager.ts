@@ -6,6 +6,7 @@ import { Injectable } from '@nestjs/common';
 import type { GoldbotPayload } from '../types/goldbot.js';
 import type { TechnicalAnalysis, RiskAssessment } from '../types/analysis.js';
 import { LlmClientService } from '../tools/llm-client.js';
+import type { SystemBlock, UserLayer } from '../tools/llm-client.js';
 import { getLogger } from '../utils/logger.js';
 import { selectIndicator } from '../utils/goldbot-indicators.js';
 import { RiskAssessmentSchema } from '../types/schemas.js';
@@ -248,22 +249,21 @@ export class RiskManagerService {
     const dynamicData = buildDynamicData(payload, profile);
 
     let raw: string;
+    const systemBlocks: SystemBlock[] = [
+      { text: systemPrompt, cacheable: true },
+    ];
+    const userLayers: UserLayer[] = [
+      { text: semiStaticData, cacheable: true },
+      { text: dynamicData, cacheable: false },
+    ];
     try {
-      const cachingEnabled = this.client.isPromptCachingSupported();
-      if (cachingEnabled && 'streamInvokeLayered' in (this.client as any)) {
-        raw = await (this.client as any).streamInvokeLayered(systemPrompt, [semiStaticData, dynamicData]);
-      } else {
-        raw = await this.client.streamInvoke(`${semiStaticData}\n\n${dynamicData}`, systemPrompt);
-      }
+      const result = await this.client.streamLayered(systemBlocks, userLayers);
+      raw = result.content;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.warn({ err: errMsg, symbol }, 'Risk manager: primary model failed, trying fallback');
       try {
-        if ('invokeLayered' in (this.client as any)) {
-          raw = await (this.client as any).invokeLayered(systemPrompt, [semiStaticData, dynamicData]);
-        } else {
-          raw = await this.client.invoke(`${semiStaticData}\n\n${dynamicData}`, systemPrompt);
-        }
+        raw = await this.client.invokeLayered(systemBlocks, userLayers);
       } catch (fallbackErr) {
         const fallbackErrMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
         logger.error({ err: fallbackErrMsg, symbol }, 'Risk manager: fallback also failed');

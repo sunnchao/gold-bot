@@ -7,6 +7,7 @@ import { Injectable } from "@nestjs/common";
 import type { GoldbotPayload } from "../types/goldbot.js";
 import type { TechnicalAnalysis } from "../types/analysis.js";
 import { LlmClientService } from "../tools/llm-client.js";
+import type { SystemBlock, UserLayer } from "../tools/llm-client.js";
 import { findPsychologicalLevels } from "../tools/sr-calculator.js";
 import { getLogger } from "../utils/logger.js";
 import { selectIndicator } from "../utils/goldbot-indicators.js";
@@ -354,26 +355,22 @@ export class TechnicalAnalystService {
 
     // Try primary model first, fallback on failure
     let raw: string | null = null;
+    const systemBlocks: SystemBlock[] = [
+      { text: systemPrompt, cacheable: true },
+    ];
+    const userLayers: UserLayer[] = [
+      { text: semiStaticPrompt, cacheable: true },
+      { text: dynamicPrompt, cacheable: false },
+    ];
     try {
-      const cachingEnabled = this.client.isPromptCachingSupported();
-      if (cachingEnabled && 'streamInvokeLayered' in this.client) {
-        // Use layered invocation when caching is enabled
-        raw = await (this.client as any).streamInvokeLayered(systemPrompt, [semiStaticPrompt, dynamicPrompt]);
-      } else {
-        // Fallback: concatenate for backward compatibility
-        raw = await this.client.streamInvoke(`${semiStaticPrompt}\n\n${dynamicPrompt}`, systemPrompt);
-      }
+      const result = await this.client.streamLayered(systemBlocks, userLayers);
+      raw = result.content;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.warn({ err: errMsg, symbol }, "Primary LLM model failed, trying fallback model");
 
-      // Try fallback model
       try {
-        if ('invokeLayered' in (this.client as any)) {
-          raw = await (this.client as any).invokeLayered(systemPrompt, [semiStaticPrompt, dynamicPrompt]);
-        } else {
-          raw = await this.client.invoke(`${semiStaticPrompt}\n\n${dynamicPrompt}`, systemPrompt);
-        }
+        raw = await this.client.invokeLayered(systemBlocks, userLayers);
         logger.info({ symbol }, "Fallback model succeeded");
       } catch (fallbackErr) {
         const fallbackErrMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
