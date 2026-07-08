@@ -75,9 +75,11 @@ export function resolveAIApproveOrderIntent(
   }
 
   if (executionType === 'market' || requestedOrderType === 'market') {
-    const allowedDistance = h1Atr > 0 ? h1Atr * 0.3 : 0;
-    if (Math.abs(currentPrice - entry) > allowedDistance) {
-      return { accepted: false, reason: 'market_entry_mismatch' };
+    if (h1Atr > 0) {
+      const allowedDistance = h1Atr * 0.3;
+      if (Math.abs(currentPrice - entry) > allowedDistance) {
+        return { accepted: false, reason: 'market_entry_mismatch' };
+      }
     }
     return { accepted: true, orderType: 'market' };
   }

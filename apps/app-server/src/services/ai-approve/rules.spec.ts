@@ -23,6 +23,15 @@ describe('AI approve order intent rules', () => {
     )).toEqual({ accepted: false, reason: 'market_entry_mismatch' });
   });
 
+  it('accepts market intent when H1 ATR is missing even if entry differs slightly from current price', () => {
+    expect(resolveAIApproveOrderIntent(
+      tradePlan({ execution_type: 'market', requested_order_type: 'market', entry_zone: { min: 4108.83, max: 4108.83 } }),
+      4108.50,
+      4108.83,
+      0
+    )).toEqual({ accepted: true, orderType: 'market' });
+  });
+
   it('accepts buy limit below current price', () => {
     expect(resolveAIApproveOrderIntent(
       tradePlan({ side: 'buy', execution_type: 'limit', requested_order_type: 'BUY_LIMIT' }),
