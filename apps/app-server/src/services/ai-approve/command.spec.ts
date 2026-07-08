@@ -42,7 +42,7 @@ describe('AI approve command builder', () => {
       entry_max: 3335.7,
       sl: 3330.46,
       tp: 3344.88,
-      lots: 0.01,
+      lots: 0.02,
       order_type: 'market',
       expiration: 1776081600,
       score: 80,

@@ -21,7 +21,7 @@ describe('AI approve pending gate', () => {
       accepted: true,
       currentPrice: 3335.6,
       entry: 3335.6,
-      lots: 0.01,
+      lots: 0.02,
       h1Atr: 2
     });
   });

@@ -18,7 +18,7 @@ export function calcAIApproveLots(maxLots: number): number {
     return 0;
   }
   if (lots > 0.01) {
-    return 0.01;
+    return 0.03;
   }
   return lots;
 }
