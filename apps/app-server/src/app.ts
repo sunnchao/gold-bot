@@ -588,7 +588,7 @@ function normalizeRegisterPayload(body: EaRecord): string | null {
 }
 
 function normalizeHeartbeatPayload(body: EaRecord): string | null {
-  if (hasInvalidOptionalNumber(body, ['balance', 'equity', 'margin', 'free_margin'])) {
+  if (hasInvalidOptionalNumber(body, ['balance', 'equity', 'margin', 'free_margin', 'max_spread'])) {
     return 'invalid JSON';
   }
   if (hasInvalidOptionalString(body, ['server_time'])) {
@@ -607,7 +607,7 @@ function normalizeTickPayload(body: EaRecord): string | null {
   if (hasInvalidOptionalString(body, ['symbol', 'time'])) {
     return 'invalid JSON';
   }
-  if (hasInvalidOptionalNumber(body, ['bid', 'ask', 'spread'])) {
+  if (hasInvalidOptionalNumber(body, ['bid', 'ask', 'spread', 'max_spread'])) {
     return 'invalid JSON';
   }
   if (stringFieldOrEmpty(body, 'symbol').trim().length === 0) {
@@ -1449,7 +1449,8 @@ function aiTradePlanRiskGate(store: EaStore, accountId: string, symbol: string, 
         symbol,
         bid: numberField(latestTick, 'bid'),
         ask: numberField(latestTick, 'ask'),
-        spread: numberField(latestTick, 'spread')
+        spread: numberField(latestTick, 'spread'),
+        maxSpread: configuredMaxSpread(latestTick, heartbeat)
       },
       positions: positions.map((position) => ({
         ticket: numberField(position, 'ticket'),
@@ -1557,6 +1558,7 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
       ask: numberField(latestTick, 'ask'),
       bid: numberField(latestTick, 'bid'),
       spread: numberField(latestTick, 'spread'),
+      max_spread: configuredMaxSpread(latestTick, heartbeat),
       symbol,
       time: stringFieldOrEmpty(latestTick, 'time')
     },
@@ -1572,7 +1574,8 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
         state: {
           tick: {
             symbol,
-            spread: numberField(latestTick, 'spread')
+            spread: numberField(latestTick, 'spread'),
+            maxSpread: configuredMaxSpread(latestTick, heartbeat)
           },
           bars: payloadBarsByTimeframe
         }
@@ -1594,6 +1597,15 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
     trend_context: trendContext(trendBarsByTimeframe)
   };
   })();
+}
+
+function configuredMaxSpread(latestTick: EaRecord, heartbeat: EaRecord): number | undefined {
+  const tickMaxSpread = optionalNumberField(latestTick, 'max_spread');
+  if (tickMaxSpread != null && tickMaxSpread > 0) {
+    return tickMaxSpread;
+  }
+  const heartbeatMaxSpread = optionalNumberField(heartbeat, 'max_spread');
+  return heartbeatMaxSpread != null && heartbeatMaxSpread > 0 ? heartbeatMaxSpread : undefined;
 }
 
 function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timestamp: string): { marketOpen: boolean; isTradeAllowed: boolean } {

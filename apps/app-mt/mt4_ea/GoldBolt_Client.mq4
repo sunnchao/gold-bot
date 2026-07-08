@@ -12,8 +12,8 @@
 #include <StdLib.mqh>
 
 // ============ 版本信息 ============
-#define EA_VERSION  "2.8.3"
-#define EA_BUILD    9
+#define EA_VERSION  "2.9.2"
+#define EA_BUILD    12
 
 //+------------------------------------------------------------------+
 //| 服务器连接配置                                                      |
@@ -675,6 +675,7 @@ void SendHeartbeat()
       "\"server_time\":\"%s\","
       "\"market_open\":%s,"
       "\"is_trade_allowed\":%s,"
+      "\"max_spread\":%.2f,"
       "\"strategies\":{"
       "\"pullback\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
       "\"breakout_retest\":{\"enabled\":%s,\"magic\":%d,\"positions\":%d},"
@@ -690,6 +691,7 @@ void SendHeartbeat()
       AccountMargin(), AccountFreeMargin(), AccountCurrency(), serverTime,
       (marketOpen ? "true" : "false"),
       (isTradeAllowed ? "true" : "false"),
+      MaxSpread,
       (EnablePullback ? "true" : "false"), PullbackMagic, pullbackPos,
       (EnableBreakout ? "true" : "false"), BreakoutMagic, breakoutPos,
       (EnableDivergence ? "true" : "false"), DivergenceMagic, divergencePos,
@@ -732,9 +734,10 @@ void SendTick()
          "\"bid\":%.5f,"
          "\"ask\":%.5f,"
          "\"spread\":%.3f,"
+         "\"max_spread\":%.3f,"
          "\"time\":\"%s\""
          "}",
-         AccountID, PullbackMagic, baseSymbol, bid, ask, spread, TimeToStr(TimeCurrent(), TIME_SECONDS)
+         AccountID, PullbackMagic, baseSymbol, bid, ask, spread, MaxSpread, TimeToStr(TimeCurrent(), TIME_SECONDS)
       );
       
       HttpPost("/tick", json);

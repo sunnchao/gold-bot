@@ -19,6 +19,7 @@ export type RiskGateInput = {
       bid?: number;
       ask?: number;
       spread?: number;
+      maxSpread?: number;
     };
     positions: Array<{
       ticket?: number;
@@ -78,6 +79,7 @@ export type MarketFilterInput = {
     tick: {
       symbol?: string;
       spread?: number;
+      maxSpread?: number;
     };
     bars?: Record<string, Array<{ atr?: number; ATR?: number }>>;
   };
@@ -139,7 +141,7 @@ export function evaluateMarketFilters(input: MarketFilterInput): MarketFilterRes
   } else if (now.getTime() - new Date(input.runtime.lastTickAt).getTime() > defaultMaxTickAgeMs) {
     add('tick.stale', 'blocking');
   }
-  if ((input.state.tick.spread ?? 0) > maxSpreadForMarketFilter(symbol)) {
+  if ((input.state.tick.spread ?? 0) > maxSpreadLimit(input.state.tick.maxSpread, maxSpreadForMarketFilter(symbol))) {
     add('spread.too_wide', 'blocking');
   }
   if (isSymbolCloseWindow(now, symbol)) {
@@ -236,7 +238,7 @@ function collectTradeabilityRejects(input: RiskGateInput, now: Date, meta: Symbo
   if ((input.state.tick.bid ?? 0) <= 0 || (input.state.tick.ask ?? 0) <= 0) {
     reasons.push('tick.missing_price');
   }
-  if ((input.state.tick.spread ?? 0) > meta.maxSpread) {
+  if ((input.state.tick.spread ?? 0) > maxSpreadLimit(input.state.tick.maxSpread, meta.maxSpread)) {
     reasons.push('spread.too_wide');
   }
   if (input.plan.expiresAt != null && input.plan.expiresAt.length > 0 && now.getTime() > new Date(input.plan.expiresAt).getTime()) {
@@ -442,6 +444,12 @@ function maxSpreadForMarketFilter(symbol: string): number {
     default:
       return marketFilterMaxSpread;
   }
+}
+
+function maxSpreadLimit(configuredMaxSpread: number | undefined, fallback: number): number {
+  return typeof configuredMaxSpread === 'number' && Number.isFinite(configuredMaxSpread) && configuredMaxSpread > 0
+    ? configuredMaxSpread
+    : fallback;
 }
 
 function isSymbolCloseWindow(now: Date, symbol: string): boolean {

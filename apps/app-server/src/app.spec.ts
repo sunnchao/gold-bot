@@ -354,10 +354,10 @@ describe('app-server scaffold', () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({
       status: 'OK',
-      version: '2.8.3',
-      build: 9,
+      version: '2.9.2',
+      build: 12,
       changelog:
-        'AI信号挂单: 新增 ai_signal 策略支持(Magic=20250238)，修复未知策略拒绝问题；兼容 tp/tp1 字段名；AI信号使用服务端计算手数(含减半逻辑)；所有品种MaxSpread=80避免挂单被点差拦截；SQLite方言移除，仅支持PostgreSQL'
+        '上报 EA 端 MaxSpread 配置：/heartbeat 与 /tick 增加 max_spread 字段，服务端 market_filters 与 riskgate 优先参考 EA 点差阈值'
     });
   });
 
@@ -384,8 +384,8 @@ describe('app-server scaffold', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({
-      latest_version: '2.8.3',
-      latest_build: 9,
+      latest_version: '2.9.2',
+      latest_build: 12,
       force_update: false
     });
   });
@@ -3902,6 +3902,42 @@ describe('app-server scaffold', () => {
       ])
     );
     expect(body.market_filters?.warnings).toEqual(expect.arrayContaining([{ code: 'volatility.atr_expansion', severity: 'warning' }]));
+  });
+
+  it('uses heartbeat max_spread in analysis payload when tick has not reported it yet', async () => {
+    const store = createInMemoryEaStore();
+    const server = await createApiServer({ store, nowIso: () => '2026-06-04T13:00:00.000Z' });
+
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      max_spread: 25
+    });
+    await store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3335.55,
+      ask: 3335.75,
+      spread: 21,
+      time: '2026-06-04T12:59:50.000Z'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      market?: { max_spread?: number };
+      market_filters?: { blocked?: boolean; reason_codes?: string[] };
+    };
+    expect(body.market?.max_spread).toBe(25);
+    expect(body.market_filters?.reason_codes).not.toContain('spread.too_wide');
+    expect(body.market_filters?.blocked).toBe(false);
   });
 
   it('marks analysis market status untradeable when the latest tick is stale', async () => {

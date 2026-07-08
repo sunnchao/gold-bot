@@ -39,6 +39,7 @@ describe('EA lifecycle normalization parity', () => {
         account_id: '90011087',
         balance: 1000.5,
         equity: 1100.25,
+        max_spread: 25,
         server_time: '2026.03.01 08:00:00'
       }
     });
@@ -59,6 +60,7 @@ describe('EA lifecycle normalization parity', () => {
       is_trade_allowed: false,
       balance: 1000.5,
       equity: 1100.25,
+      max_spread: 25,
       mt4_server_time: '2026.03.01 08:00:00',
       last_heartbeat_at: '2026-03-01T00:00:00.000Z',
       updated_at: '2026-03-01T00:00:00.000Z'
@@ -78,7 +80,9 @@ describe('EA lifecycle normalization parity', () => {
       body: {
         account_id: '90011087',
         bid: 3335.55,
-        ask: 3335.75
+        ask: 3335.75,
+        spread: 21,
+        max_spread: 25
       }
     });
     const rejected = await server.inject({
@@ -95,7 +99,9 @@ describe('EA lifecycle normalization parity', () => {
     expect(await store.getLatestTick('90011087', 'XAUUSD')).toMatchObject({
       symbol: 'XAUUSD',
       bid: 3335.55,
-      ask: 3335.75
+      ask: 3335.75,
+      spread: 21,
+      max_spread: 25
     });
     expect(rejected.statusCode).toBe(400);
     expect(JSON.parse(rejected.body)).toEqual({ status: 'ERROR', message: 'invalid JSON' });

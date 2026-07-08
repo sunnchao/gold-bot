@@ -127,8 +127,8 @@ const EA_LIFECYCLE_LOG_PREFIX: Record<EaLifecycleLogKind, string> = {
 
 const EA_LIFECYCLE_LOG_FIELDS: Record<EaLifecycleLogKind, readonly string[]> = {
   register: ['account_id', 'broker', 'server_name', 'account_name', 'account_type', 'currency', 'leverage', 'strategies', 'ai_symbols'],
-  heartbeat: ['account_id', 'balance', 'equity', 'margin', 'free_margin', 'market_open', 'is_trade_allowed', 'server_time', 'ai_symbols'],
-  tick: ['account_id', 'symbol', 'bid', 'ask', 'spread', 'time']
+  heartbeat: ['account_id', 'balance', 'equity', 'margin', 'free_margin', 'market_open', 'is_trade_allowed', 'server_time', 'max_spread', 'ai_symbols'],
+  tick: ['account_id', 'symbol', 'bid', 'ask', 'spread', 'max_spread', 'time']
 };
 
 function logEaLifecycle(log: ((message: string) => void) | undefined, kind: EaLifecycleLogKind, body: EaRecord): void {

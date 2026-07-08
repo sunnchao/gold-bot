@@ -50,8 +50,10 @@ describePostgres('createPostgresEaStore', () => {
       });
       await store.saveHeartbeat({
         account_id: '90011087',
+        symbol: 'US100Cash',
         balance: 1000.5,
         equity: 1100.25,
+        max_spread: 62,
         ai_symbols: ['XAUUSD']
       });
       await store.saveTick({
@@ -78,7 +80,7 @@ describePostgres('createPostgresEaStore', () => {
       });
 
       expect(await store.getRegistration('90011087')).toMatchObject({ broker: 'Demo Broker' });
-      expect(await store.getHeartbeat('90011087')).toMatchObject({ equity: 1100.25 });
+      expect(await store.getHeartbeat('90011087')).toMatchObject({ equity: 1100.25, max_spread: 62 });
       expect(await store.getLatestTick('90011087', 'XAUUSD')).toMatchObject({ ask: 3335.8 });
       expect(await store.getBars('90011087', 'XAUUSD', 'H1')).toHaveLength(1);
       expect(await store.getPositions('90011087')).toHaveLength(1);

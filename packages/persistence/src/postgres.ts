@@ -391,7 +391,11 @@ export async function createPostgresEaStore(dsn: string): Promise<EaStore | null
     },
 
     async getHeartbeat(accountIdValue: string): Promise<EaRecord | undefined> {
-      const row = await queryOne(q, "SELECT payload_json FROM ea_snapshots WHERE kind = 'heartbeat' AND account_id = $1 AND symbol = $2 AND timeframe = ''", [accountIdValue, 'XAUUSD']);
+      const row = await queryOne(
+        q,
+        "SELECT payload_json FROM ea_snapshots WHERE kind = 'heartbeat' AND account_id = $1 AND timeframe = '' ORDER BY updated_at DESC LIMIT 1",
+        [accountIdValue]
+      );
       if (!row) {
         return undefined;
       }

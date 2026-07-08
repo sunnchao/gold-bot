@@ -94,6 +94,22 @@ describe('riskgate parity slice', () => {
     expect(result.reasonCodes).toContain(wantCode);
   });
 
+  it('uses EA configured max spread instead of static server metadata', () => {
+    const input = validInput();
+    input.state.tick.spread = 21;
+    input.state.tick.maxSpread = 20;
+
+    const rejected = evaluateRiskGate(input);
+
+    expect(rejected.status).toBe('rejected');
+    expect(rejected.reasonCodes).toContain('spread.too_wide');
+
+    input.state.tick.maxSpread = 25;
+    const accepted = evaluateRiskGate(input);
+
+    expect(accepted.reasonCodes).not.toContain('spread.too_wide');
+  });
+
   it.each([
     ['missing', 0, 'sl.missing'],
     ['too close', 3335.5, 'sl.too_close'],
@@ -257,8 +273,25 @@ describe('market filter parity slice', () => {
     expect(result).toEqual({
       blocked: false,
       blocking: [],
-      warnings: [],
-      reason_codes: []
+      reason_codes: [],
+      warnings: []
     });
+  });
+
+  it('uses EA configured max spread for market filters', () => {
+    const input = validMarketFilterInput();
+    input.state.tick.spread = 21;
+    input.state.tick.maxSpread = 25;
+
+    const result = evaluateMarketFilters(input);
+
+    expect(result.reason_codes).not.toContain('spread.too_wide');
+    expect(result.blocked).toBe(false);
+
+    input.state.tick.maxSpread = 20;
+    const rejected = evaluateMarketFilters(input);
+
+    expect(rejected.reason_codes).toContain('spread.too_wide');
+    expect(rejected.blocked).toBe(true);
   });
 });
