@@ -59,7 +59,7 @@ export interface ArbitrationResult {
 // --- Harmonic Theory Analysis (arbitration sub-theory) ---
 
 export interface HarmonicTheoryAnalysis {
-  pattern: 'gartley' | 'bat' | 'butterfly' | 'crab' | 'abcd' | 'cypher' | 'shark' | 'none';
+  pattern: 'gartley' | 'bat' | 'butterfly' | 'crab' | 'abcd' | 'cypher' | 'shark' | 'deep_crab' | 'none';
   direction: 'bullish' | 'bearish' | 'neutral';
   confidence: number; // 0-100
   rationale: string;
@@ -226,7 +226,7 @@ export interface ChanlunAnalystResult {
 // --- Harmonic Pattern Analysis ---
 
 export interface HarmonicAnalysisResult {
-  detected_pattern: 'gartley' | 'bat' | 'butterfly' | 'crab' | 'abcd' | 'cypher' | 'shark' | 'none';
+  detected_pattern: 'gartley' | 'bat' | 'butterfly' | 'crab' | 'abcd' | 'cypher' | 'shark' | 'deep_crab' | 'none';
   direction: 'bullish' | 'bearish' | 'neutral';
   timeframe: string;           // e.g. "H4", "H1", "M30"
   completion_pct?: number;     // 0-100% — how close price is to the PRZ (D point)

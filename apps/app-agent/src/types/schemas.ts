@@ -159,7 +159,7 @@ export const ChanlunAnalystResultSchema = z.object({
 });
 
 export const HarmonicAnalysisResultSchema = z.object({
-  detected_pattern: z.enum(['gartley', 'bat', 'butterfly', 'crab', 'abcd', 'cypher', 'shark', 'none']),
+  detected_pattern: z.enum(['gartley', 'bat', 'butterfly', 'crab', 'abcd', 'cypher', 'shark', 'deep_crab', 'none']),
   direction: z.enum(['bullish', 'bearish', 'neutral']),
   timeframe: z.string(),
   completion_pct: z.number().min(0).max(100).optional(),
@@ -177,7 +177,7 @@ export const ComprehensiveAnalysisDataSchema = z.object({
   technical: TechnicalAnalysisSchema,
   wave: WaveAnalystResultSchema,
   chanlun: ChanlunAnalystResultSchema,
-  harmonic: HarmonicAnalysisResultSchema,
+  harmonic: HarmonicAnalysisResultSchema.optional(),
   risk: RiskAssessmentSchema,
   arbitration: ArbitrationResultSchema,
 });
@@ -467,6 +467,15 @@ const HarmonicPatternSchema = z.object({
   completion_pct: z.number().optional(),
   is_active: z.boolean().optional(),
   reason: z.string(),
+  // Trading-core detector output fields
+  prz_low: z.number().optional(),
+  prz_high: z.number().optional(),
+  stop_loss: z.number().optional(),
+  target_1: z.number().optional(),
+  target_2: z.number().optional(),
+  confidence: z.number().optional(),
+  invalidated: z.boolean().optional(),
+  status: z.string().optional(),
 });
 
 const HarmonicContextSchema = z.object({

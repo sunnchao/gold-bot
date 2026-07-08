@@ -172,7 +172,7 @@ export interface GoldbotBar {
 // --- Harmonic Pattern (matches Go harmonic.HarmonicPattern) ---
 
 export interface HarmonicPattern {
-  type: string;         // "gartley"|"bat"|"butterfly"|"crab"|"abcd"|"cypher"|"shark"
+  type: string;         // "gartley"|"bat"|"butterfly"|"crab"|"abcd"|"cypher"|"shark"|"deep_crab"
   direction: string;    // "bullish"|"bearish"
   timeframe: string;    // "H4"|"H1"|"M30"
   score: number;        // 0-100
@@ -188,6 +188,15 @@ export interface HarmonicPattern {
   completion_pct?: number;
   is_active?: boolean;
   reason: string;
+  // Trading-core detector output fields (added for programmatic harmonic detection)
+  prz_low?: number;
+  prz_high?: number;
+  stop_loss?: number;
+  target_1?: number;
+  target_2?: number;
+  confidence?: number;
+  invalidated?: boolean;
+  status?: string;
 }
 
 export interface HarmonicContextPayload {

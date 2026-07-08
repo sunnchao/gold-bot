@@ -49,6 +49,7 @@ const PATTERN_BAT = 'bat';
 const PATTERN_BUTTERFLY = 'butterfly';
 const PATTERN_CRAB = 'crab';
 const PATTERN_ABCD = 'abcd';
+const PATTERN_DEEP_CRAB = 'deep_crab';
 
 const toleranceByRatio: Record<number, number> = {
   0.382: 0.04,
@@ -57,9 +58,13 @@ const toleranceByRatio: Record<number, number> = {
   0.786: 0.04,
   0.886: 0.04,
   1.000: 0.06,
+  1.128: 0.05,
   1.272: 0.08,
   1.618: 0.10,
+  2.240: 0.12,
   2.618: 0.15,
+  3.140: 0.15,
+  3.618: 0.18,
 };
 
 function target(value: number): RatioTarget {
@@ -92,7 +97,14 @@ const patternSpecs: PatternSpec[] = [
     patternType: PATTERN_CRAB,
     abTargets: [target(0.382), target(0.618)],
     xdTargets: [target(1.618)],
-    cdTargets: [target(2.618)],
+    cdTargets: [target(2.618), target(3.140), target(3.618)],
+    abcdTargets: [target(1.0)],
+  },
+  {
+    patternType: PATTERN_DEEP_CRAB,
+    abTargets: [target(0.886)],
+    xdTargets: [target(1.128)],
+    cdTargets: [target(2.240), target(2.618), target(3.618)],
     abcdTargets: [target(1.0)],
   },
   {

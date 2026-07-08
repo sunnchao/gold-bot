@@ -38,7 +38,7 @@ describe('detectPatterns', () => {
     const patterns = detectPatterns(bars, 'H1');
     for (const p of patterns) {
       expect(p.type).toBeDefined();
-      expect(['gartley', 'bat', 'butterfly', 'crab', 'abcd']).toContain(p.type);
+      expect(['gartley', 'bat', 'butterfly', 'crab', 'abcd', 'deep_crab']).toContain(p.type);
       expect(['bullish', 'bearish']).toContain(p.direction);
       expect(p.timeframe).toBe('H1');
       expect(p.score).toBeGreaterThanOrEqual(0);

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import type { z } from 'zod';
 import type { ComprehensiveAnalysisResult } from '../types/comprehensive.js';
 import type { ChanlunAnalysis, ChanlunBar, ElliottWaveAnalysis, TechnicalAnalysis, WaveAnalystResult, ChanlunAnalystResult, HarmonicAnalysisResult, RiskAssessment, DowTheoryAnalysis, WaveTheoryAnalysis, ChanlunTheoryAnalysis, HarmonicTheoryAnalysis, TradeRecommendation, ArbitrationResult } from '../types/analysis.js';
-import type { GoldbotBar, GoldbotPayload, PendingSignal } from '../types/goldbot.js';
+import type { GoldbotBar, GoldbotPayload, PendingSignal, HarmonicContextPayload } from '../types/goldbot.js';
 import { TRADE_ACTION_TOOLS, type TradeAction } from '../types/trade-action.js';
 import { validateArbitrationResult, validateTradeRecommendation } from '../utils/price-validator.js';
 import { getSymbolProfile, detectCrossInstrumentPrice, type SymbolProfile } from '../config/symbol-profile.js';
@@ -327,6 +327,15 @@ function sanitizeHarmonicPatternStable(pattern: unknown): Record<string, unknown
     'bc_ratio',
     'cd_ratio',
     'xd_ratio',
+    // Trading levels: stable once pattern is detected
+    'prz_low',
+    'prz_high',
+    'stop_loss',
+    'target_1',
+    'target_2',
+    'confidence',
+    'invalidated',
+    'status',
   ];
   for (const key of stableKeys) {
     if (pattern[key] !== undefined) {
@@ -472,20 +481,19 @@ function normalizeComprehensive(result: ComprehensiveAnalysisResult): Comprehens
 
 function buildCommonSystemPrompt(): string {
   return `You are a comprehensive market analysis orchestrator.
-Produce a structured MARKDOWN analysis with exactly these 6 sections:
+Produce a structured MARKDOWN analysis with exactly these 5 sections:
 - ## TECHNICAL
 - ## WAVE
 - ## CHANLUN
-- ## HARMONIC
 - ## RISK
 - ## ARBITRATION
 
-ALL 6 sections are REQUIRED on every response. Do not omit any section.
+ALL 5 sections are REQUIRED on every response. Do not omit any section.
 
 ## CRITICAL RULES
 1. Output structured MARKDOWN text using ## SECTION headers and - Key: Value format.
 2. NEVER wrap output in \`\`\`code blocks\`\`\`. Do NOT output JSON.
-3. The output MUST include ALL 6 sections: TECHNICAL, WAVE, CHANLUN, HARMONIC, RISK, ARBITRATION.
+3. The output MUST include ALL 5 sections: TECHNICAL, WAVE, CHANLUN, RISK, ARBITRATION.
 4. All enum values must be EXACTLY as specified (lowercase).
 5. All numeric fields must be valid finite numbers.
 6. **ABSOLUTE PRICE RULE: All SL/TP fields (Suggested SL, Suggested TP, Stop Loss, Take Profit, Trade Stop Loss, Trade Take Profit) MUST be absolute price levels visible on the chart — NOT relative offsets, NOT point distances, NOT ATR values, NOT pip counts.** A stop loss for a buy should be BELOW the current price; a take profit should be ABOVE. These numbers should be in the same order of magnitude as the current price shown above.
@@ -549,19 +557,6 @@ Do NOT mix these up. Keep them separate.
 - Latest Signal: buy | sell | hold
 - Hub State: forming | active | none
 - Confidence: <0-100>
-- Rationale: <bilingual string>
-
-## HARMONIC
-- Detected Pattern: gartley | bat | butterfly | crab | abcd | cypher | shark | none
-- Direction: bullish | bearish | neutral
-- Timeframe: <H4 | H1 | M30 or "N/A" if none>
-- Completion: <0-100%>
-- Confidence: <0-100>
-- D Zone Price: <number or 0 if none>
-- Entry Zone: <price range string or "N/A">
-- Stop Loss: <absolute stop loss price level or 0 if none>
-- Take Profit 1: <absolute take profit price level or 0 if none>
-- Take Profit 2: <absolute take profit price level or 0 if none>
 - Rationale: <bilingual string>
 
 ## RISK
@@ -640,14 +635,13 @@ You MUST reference them by their anchor ID without recalculating.
 - {{CANDLESTICK_PATTERNS}}: Detected candlestick patterns by timeframe
   - Array of pattern strings per timeframe (e.g., {"H1": ["bullish_engulfing"]})
 - {{HARMONIC_CTX}}: Pre-computed harmonic pattern detection
-  - detected_pattern, direction, confidence, d_zone_price, completion_pct
-  - Use exactly as provided; set detected_pattern="none" if empty
+  - Programmatic detector output: detected_pattern, direction, confidence, PRZ, stop_loss, target levels
+  - Use exactly as provided without modification; harmonic analysis is injected by system, not LLM-generated
 
 ## INTEGRATION INSTRUCTIONS
 - The WAVE section MUST use {{WAVE_STRUCT}} data without modification
 - The CHANLUN section MUST use {{CHANLUN_STRUCT}} data without modification
-- The HARMONIC section MUST reflect {{HARMONIC_CTX}} — use detected_pattern, direction, confidence directly
-- If {{HARMONIC_CTX}} is empty, set detected_pattern="none" and direction="neutral"
+- Harmonic pattern analysis is injected from {{HARMONIC_CTX}} programmatically — do NOT output a HARMONIC section
 - Mention aligned patterns from {{CANDLESTICK_PATTERNS}} in technical.indicators_summary`;
 }
 
@@ -760,7 +754,7 @@ ${harmonicVolatile ? stableStringify(harmonicVolatile) : 'none'}
 ${pendingSignal ? stableStringify(pendingSignal) : 'none'}
 
 ### Final Reminders
-- Output MUST include all 6 top-level sections
+- Output MUST include all 5 top-level sections: TECHNICAL, WAVE, CHANLUN, RISK, ARBITRATION
 - Risk and arbitration sections must reflect account, positions, and pending signal
 - All prices must fit instrument range (~${profile.priceRangeHint})
 - **PRICE ANCHOR: Current ${symbol} price is ${currentPrice.toFixed(profile.pricePrecision)}. All SL/TP values MUST be absolute price levels in this same order of magnitude.** Do NOT output ATR values, point distances, or pip offsets as SL/TP.`;
@@ -836,6 +830,72 @@ function buildFallback(currentPrice: number): ComprehensiveAnalysisResult {
     },
   };
 }
+
+/**
+ * Build HarmonicAnalysisResult from programmatic detection context.
+ * Replaces LLM self-judgment with the detector's authoritative output.
+ */
+function buildHarmonicFromContext(ctx: HarmonicContextPayload | undefined | null): HarmonicAnalysisResult {
+  if (!ctx || !ctx.active_pattern) {
+    return {
+      detected_pattern: 'none',
+      direction: 'neutral',
+      timeframe: 'N/A',
+      completion_pct: 0,
+      confidence: 0,
+      d_zone_price: 0,
+      entry_zone: 'N/A',
+      stop_loss: 0,
+      take_profit_1: 0,
+      take_profit_2: 0,
+      rationale: '无程序化谐波形态检测到 (No programmatic harmonic pattern detected)',
+    };
+  }
+
+  const ap = ctx.active_pattern;
+  const przLow = ap.prz_low ?? 0;
+  const przHigh = ap.prz_high ?? 0;
+  const dZonePrice = przLow > 0 && przHigh > 0 ? (przLow + przHigh) / 2 : 0;
+  const entryZone = przLow > 0 && przHigh > 0 ? `${przLow.toFixed(2)}-${przHigh.toFixed(2)}` : 'N/A';
+
+  return {
+    detected_pattern: ap.type as HarmonicAnalysisResult['detected_pattern'],
+    direction: ap.direction as 'bullish' | 'bearish' | 'neutral',
+    timeframe: ap.timeframe,
+    completion_pct: ap.confidence ?? ap.score,
+    confidence: ap.confidence ?? ap.score,
+    d_zone_price: dZonePrice,
+    entry_zone: entryZone,
+    stop_loss: ap.stop_loss ?? 0,
+    take_profit_1: ap.target_1 ?? 0,
+    take_profit_2: ap.target_2 ?? 0,
+    rationale: ap.reason || `程序化检测到 ${ap.timeframe} ${ap.direction} ${ap.type} 形态，PRZ=${entryZone}`,
+  };
+}
+
+/**
+ * Build HarmonicTheoryAnalysis from programmatic detection context.
+ * Mirrors buildHarmonicFromContext for the arbitration section.
+ */
+function buildHarmonicTheoryFromContext(ctx: HarmonicContextPayload | undefined | null): HarmonicTheoryAnalysis {
+  if (!ctx || !ctx.active_pattern) {
+    return {
+      pattern: 'none',
+      direction: 'neutral',
+      confidence: 0,
+      rationale: '无程序化谐波形态 (No programmatic harmonic pattern)',
+    };
+  }
+
+  const ap = ctx.active_pattern;
+  return {
+    pattern: ap.type as HarmonicTheoryAnalysis['pattern'],
+    direction: ap.direction as 'bullish' | 'bearish' | 'neutral',
+    confidence: ap.confidence ?? ap.score,
+    rationale: ap.reason || `程序化检测到 ${ap.type} 形态`,
+  };
+}
+
 
 /**
  * Parse Markdown-structured LLM output into ComprehensiveAnalysisResult.
@@ -923,7 +983,7 @@ function parseMarkdownResponse(raw: string, currentPrice: number, profile: Symbo
   const harmonicFields = extractFields(harmonicSection);
 
   const harmonic: HarmonicAnalysisResult = {
-    detected_pattern: getEnumField(harmonicFields, 'detected_pattern', ['gartley', 'bat', 'butterfly', 'crab', 'abcd', 'cypher', 'shark', 'none'] as const, 'none'),
+    detected_pattern: getEnumField(harmonicFields, 'detected_pattern', ['gartley', 'bat', 'butterfly', 'crab', 'abcd', 'cypher', 'shark', 'deep_crab', 'none'] as const, 'none'),
     direction: getEnumField(harmonicFields, 'direction', ['bullish', 'bearish', 'neutral'] as const, 'neutral'),
     timeframe: getStringField(harmonicFields, 'timeframe', 'N/A'),
     completion_pct: getNumberField(harmonicFields, 'completion', 0, { min: 0, max: 100 }),
@@ -983,7 +1043,7 @@ function parseMarkdownResponse(raw: string, currentPrice: number, profile: Symbo
   };
 
   const harmonicTheory: HarmonicTheoryAnalysis = {
-    pattern: getEnumField(arbFields, 'harmonic_pattern', ['gartley', 'bat', 'butterfly', 'crab', 'abcd', 'cypher', 'shark', 'none'] as const, 'none'),
+    pattern: getEnumField(arbFields, 'harmonic_pattern', ['gartley', 'bat', 'butterfly', 'crab', 'abcd', 'cypher', 'shark', 'deep_crab', 'none'] as const, 'none'),
     direction: getEnumField(arbFields, 'harmonic_direction', ['bullish', 'bearish', 'neutral'] as const, 'neutral'),
     confidence: getNumberField(arbFields, 'harmonic_confidence', 0, { min: 0, max: 100 }),
     rationale: getStringField(arbFields, 'harmonic_rationale', ''),
@@ -1210,7 +1270,11 @@ export class ComprehensiveAnalystService {
           logger.error({ symbol, rawPrefix: raw.slice(0, 200) }, 'comprehensiveAnalysis: both Markdown and JSON parse failed');
           return buildFallback(currentPrice);
         }
-        result = normalizeComprehensive(parsed);
+        // Ensure harmonic field exists before normalizeComprehensive (will be overridden by post-parse injection)
+        if (!parsed.harmonic) {
+          parsed.harmonic = buildHarmonicFromContext(null);
+        }
+        result = normalizeComprehensive(parsed as ComprehensiveAnalysisResult);
       }
     } else {
       const parsed = safeParseResponse(raw, ComprehensiveAnalysisDataSchema, {
@@ -1221,8 +1285,20 @@ export class ComprehensiveAnalystService {
         logger.error({ symbol, rawPrefix: raw.slice(0, 200) }, 'comprehensiveAnalysis: both Markdown and JSON parse failed');
         return buildFallback(currentPrice);
       }
-      result = normalizeComprehensive(parsed);
+      // Ensure harmonic field exists before normalizeComprehensive (will be overridden by post-parse injection)
+      if (!parsed.harmonic) {
+        parsed.harmonic = buildHarmonicFromContext(null);
+      }
+      result = normalizeComprehensive(parsed as ComprehensiveAnalysisResult);
     }
+
+    // ── POST-PARSE PROGRAMMATIC OVERRIDE: Harmonic detection ──
+    // Replace LLM-generated harmonic analysis with programmatic detector output.
+    // This ensures harmonic pattern detection follows the same authoritative pre-computed
+    // path as wave structure and chanlun, avoiding LLM drift/hallucination.
+    result.harmonic = buildHarmonicFromContext(payload.harmonic_context);
+    result.arbitration.harmonic_theory = buildHarmonicTheoryFromContext(payload.harmonic_context);
+
 
     // ── POST-PARSE VALIDATION: Dynamic price sanity check ──
     // Catches LLM hallucinations where it outputs prices for a different instrument.

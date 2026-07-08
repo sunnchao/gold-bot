@@ -419,6 +419,14 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
           cd_ratio: 1.272,
           xd_ratio: 0.886,
           reason: 'Bullish bat pattern near D zone',
+          prz_low: 2313,
+          prz_high: 2317,
+          stop_loss: 2308,
+          target_1: 2325,
+          target_2: 2335,
+          confidence: 78,
+          invalidated: false,
+          status: 'completed',
         },
         direction_bias: 'bullish',
         score: score,
@@ -460,6 +468,9 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(firstUserLayers[0].text).toContain('"type":"bat"');
     expect(firstUserLayers[0].text).toContain('"direction":"bullish"');
     expect(firstUserLayers[0].text).toContain('"x_price":2300');
+    expect(firstUserLayers[0].text).toContain('"prz_low":2313');
+    expect(firstUserLayers[0].text).toContain('"stop_loss":2308');
+    expect(firstUserLayers[0].text).toContain('"target_1":2325');
 
     // Realtime layer should contain the volatile values
     expect(firstUserLayers[1].text).toContain('75');
