@@ -14,6 +14,7 @@ export type AIApproveCommandInput = {
   riskGate: EaRecord;
   nowIso: string;
   orderType: AIApproveOrderType;
+  positions?: EaRecord[];
 };
 
 export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): CommandCandidate {
@@ -24,7 +25,7 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
   const entry = pickAIApproveEntryPrice(entryZone);
   const confidence = numberField(input.tradePlan, 'confidence');
   const expiration = unixSeconds(input.nowIso) + 4 * 60 * 60;
-  return {
+  const candidate: CommandCandidate = {
     command_id: `ai_pending_${input.accountId}_${input.symbol}_${unixNanos(input.nowIso)}`,
     action: 'SIGNAL',
     symbol: input.symbol,
@@ -45,7 +46,46 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
     reason: stringField(input.tradePlan, 'narrative'),
     trade_plan_mode: stringField(input.tradePlan, 'mode'),
     risk_gate: input.riskGate
-  } satisfies CommandCandidate;
+  };
+
+  const addOnType = stringField(input.tradePlan, 'add_on_type');
+  if (addOnType === 'favorable' && input.positions != null) {
+    const positions = input.positions.filter((pos) => {
+      const posSymbol = stringField(pos, 'symbol').trim().toUpperCase();
+      const posSide = stringField(pos, 'type').trim().toUpperCase();
+      return (posSymbol === input.symbol.trim().toUpperCase() || posSymbol === '') && posSide === side;
+    });
+    if (positions.length > 0) {
+      const largestTicket = positions.reduce((max, pos) => {
+        const ticket = numberField(pos, 'ticket');
+        return ticket > max ? ticket : max;
+      }, 0);
+      let totalLots = 0;
+      let weightedEntry = 0;
+      for (const pos of positions) {
+        const lots = numberField(pos, 'lots');
+        const openPrice = numberField(pos, 'open_price') || numberField(pos, 'openPrice');
+        if (lots > 0 && openPrice > 0) {
+          totalLots += lots;
+          weightedEntry += lots * openPrice;
+        }
+      }
+      const groupAvgEntry = totalLots > 0 ? weightedEntry / totalLots : 0;
+      const groupBestSl = side === 'BUY'
+        ? Math.max(...positions.map((pos) => numberField(pos, 'open_price') || numberField(pos, 'openPrice')))
+        : Math.min(...positions.filter((pos) => {
+            const op = numberField(pos, 'open_price') || numberField(pos, 'openPrice');
+            return op > 0;
+          }).map((pos) => numberField(pos, 'open_price') || numberField(pos, 'openPrice')));
+
+      candidate.scale_in_parent_ticket = largestTicket;
+      candidate.weighted_avg_entry = round2(groupAvgEntry);
+      candidate.unified_sl = round2(groupBestSl);
+      candidate.scale_in_count = positions.length;
+    }
+  }
+
+  return candidate;
 }
 
 function unixNanos(value: string): string {

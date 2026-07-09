@@ -1077,4 +1077,29 @@ describe('position manager Analyze orchestration parity slice', () => {
       expect.objectContaining({ ticket: 1002, beMoved: true, tp1Hit: true, bestSl: 3340 })
     ]);
   });
+
+  it('tightens stop loss when a favorable add-on position is detected', () => {
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 3345,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      positions: [
+        { ticket: 2001, type: 'BUY', openPrice: 3330, lots: 0.5, sl: 3328 },
+        { ticket: 2002, type: 'BUY', openPrice: 3340, lots: 0.3, sl: 3338 }
+      ],
+      states: [
+        { ticket: 2001, openTime: '2026-04-13T06:00:00.000Z', beTriggerAtr: 1.5, beMoved: false, bestSl: 3328 }
+      ]
+    });
+
+    expect(result.advisories).toContainEqual(
+      expect.objectContaining({ action: 'MODIFY', ticket: 2001, newSL: 3340, reason: 'group_favorable_addon_BUY' })
+    );
+    expect(result.nextStates).toEqual([
+      expect.objectContaining({ ticket: 2001, bestSl: 3340 }),
+      expect.objectContaining({ ticket: 2002, bestSl: 3340 })
+    ]);
+  });
 });

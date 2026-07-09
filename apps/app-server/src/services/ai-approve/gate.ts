@@ -116,6 +116,21 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     if (Math.abs(entry - averagePrice) < m30Atr) {
       return reject('position.add_on_distance');
     }
+
+    const addOnType = stringField(input.tradePlan, 'add_on_type');
+    if (addOnType === 'favorable') {
+      const existingLots = totalLotsOnSide(positions, input.symbol, side);
+      if (existingLots <= 0) {
+        return reject('position.favorable_add_no_existing_lots');
+      }
+      const profitAtr = calculateProfitAtr(positions, input.symbol, side, currentPrice, m30Atr);
+      if (profitAtr < 1.0) {
+        return reject('position.favorable_add_profit_not_enough');
+      }
+      if (lots > existingLots * 0.5) {
+        return reject('position.favorable_add_lots_too_large');
+      }
+    }
   }
 
   if (await input.store.hasActiveAIApprovePending(input.accountId, input.symbol, side, input.nowIso)) {
@@ -303,4 +318,52 @@ function stringField(record: EaRecord, field: string): string {
 
 function booleanField(record: EaRecord, field: string): boolean {
   return record[field] === true;
+}
+
+function totalLotsOnSide(positions: EaRecord[], symbol: string, side: string): number {
+  const wantSymbol = symbol.trim().toUpperCase();
+  const wantSide = side.trim().toUpperCase();
+  let total = 0;
+  for (const position of positions) {
+    const positionSymbol = stringField(position, 'symbol');
+    if (wantSymbol.length > 0 && positionSymbol.length > 0 && positionSymbol.trim().toUpperCase() !== wantSymbol) {
+      continue;
+    }
+    if (stringField(position, 'type').trim().toUpperCase() !== wantSide) {
+      continue;
+    }
+    const lots = numberField(position, 'lots');
+    if (lots > 0) {
+      total += lots;
+    }
+  }
+  return total;
+}
+
+function calculateProfitAtr(positions: EaRecord[], symbol: string, side: string, currentPrice: number, atr: number): number {
+  const wantSymbol = symbol.trim().toUpperCase();
+  const wantSide = side.trim().toUpperCase();
+  let totalLots = 0;
+  let weightedProfit = 0;
+  for (const position of positions) {
+    const positionSymbol = stringField(position, 'symbol');
+    if (wantSymbol.length > 0 && positionSymbol.length > 0 && positionSymbol.trim().toUpperCase() !== wantSymbol) {
+      continue;
+    }
+    if (stringField(position, 'type').trim().toUpperCase() !== wantSide) {
+      continue;
+    }
+    const lots = numberField(position, 'lots');
+    const openPrice = numberField(position, 'open_price') || numberField(position, 'openPrice');
+    if (lots <= 0 || openPrice <= 0 || currentPrice <= 0 || atr <= 0) {
+      continue;
+    }
+    const priceDiff = wantSide === 'BUY' ? currentPrice - openPrice : openPrice - currentPrice;
+    totalLots += lots;
+    weightedProfit += lots * priceDiff;
+  }
+  if (totalLots <= 0 || atr <= 0) {
+    return 0;
+  }
+  return (weightedProfit / totalLots) / atr;
 }

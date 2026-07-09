@@ -223,6 +223,7 @@ export const TradePlanSchema = z.object({
   conflicts: z.array(z.string()),
   narrative: z.string().min(1),
   add_on: z.boolean().optional().default(false),
+  add_on_type: z.enum(['favorable', 'adverse']).optional(),
 }).superRefine((plan, ctx) => {
   if (plan.mode === 'observe' || plan.mode === 'veto') {
     return;

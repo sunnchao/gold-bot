@@ -302,6 +302,83 @@ describe('AI approve pending gate', () => {
       nowIso
     })).resolves.toEqual({ accepted: false, reason: 'order_intent.missing' });
   });
+
+  it('accepts favorable add-on when profit >= 1.0 ATR and new lots <= existing * 0.5', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [{ ticket: 2001, symbol, type: 'BUY', lots: 0.2, open_price: 3333.6, strategy: 'ai_signal' }]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'favorable',
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        max_lots: 0.1
+      }),
+      nowIso
+    })).resolves.toMatchObject({ accepted: true });
+  });
+
+  it('rejects favorable add-on when profit < 1.0 ATR', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [{ ticket: 2001, symbol, type: 'BUY', lots: 0.2, open_price: 3335.0, strategy: 'ai_signal' }]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'favorable',
+        entry_zone: { min: 3337.6, max: 3337.8 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT',
+        max_lots: 0.1
+      }),
+      nowIso
+    })).resolves.toEqual({
+      accepted: false,
+      reason: 'position.favorable_add_profit_not_enough'
+    });
+  });
+
+  it('rejects favorable add-on when new lots > existing * 0.5', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [{ ticket: 2001, symbol, type: 'BUY', lots: 0.05, open_price: 3333.6, strategy: 'ai_signal' }]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'favorable',
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        max_lots: 0.15
+      }),
+      nowIso
+    })).resolves.toEqual({
+      accepted: false,
+      reason: 'position.favorable_add_lots_too_large'
+    });
+  });
 });
 
 function tradePlan(overrides: EaRecord = {}): EaRecord {
@@ -352,3 +429,95 @@ async function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 
     });
   }
 }
+
+describe('AI approve favorable add-on', () => {
+  it('accepts favorable add-on when profit >= 1.0 ATR and lots <= existing*0.5', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.10, open_price: 3333.0, sl: 3330.0, tp: 3340.0, profit: 260, strategy: 'ai_signal' }
+      ]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'favorable',
+        max_lots: 0.10,
+        entry_zone: { min: 3336.0, max: 3336.2 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso
+    })).resolves.toMatchObject({
+      accepted: true,
+      lots: 0.03
+    });
+  });
+
+  it('rejects favorable add-on when profit < 1.0 ATR', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.10, open_price: 3334.5, sl: 3330.0, tp: 3340.0, profit: 110, strategy: 'ai_signal' }
+      ]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'favorable',
+        max_lots: 0.10,
+        entry_zone: { min: 3336.6, max: 3336.8 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso
+    })).resolves.toEqual({
+      accepted: false,
+      reason: 'position.favorable_add_profit_not_enough'
+    });
+  });
+
+  it('rejects favorable add-on when new lots > existing*0.5', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.04, open_price: 3333.0, sl: 3330.0, tp: 3340.0, profit: 104, strategy: 'ai_signal' }
+      ]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'favorable',
+        max_lots: 0.10,
+        entry_zone: { min: 3336.0, max: 3336.2 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso
+    })).resolves.toEqual({
+      accepted: false,
+      reason: 'position.favorable_add_lots_too_large'
+    });
+  });
+});

@@ -687,7 +687,8 @@ export function evaluatePositionManagerCommands(input: PositionManagerCommandsIn
     .filter((state): state is PositionManagerState => state != null);
   applySameSideGroupClose(result.advisories, result.nextStates, openPositions, preTP1Hit, 'tp1Hit', 'group_tp1');
   applySameSideGroupClose(result.advisories, result.nextStates, openPositions, preTP2Hit, 'tp2Hit', 'group_tp2');
-  applySameSideBreakeven(result.advisories, result.nextStates, openPositions, preBE);
+  const previousTickets = new Set(inputStates.keys());
+  applySameSideBreakeven(result.advisories, result.nextStates, openPositions, preBE, previousTickets);
 
   return result;
 }
@@ -1029,7 +1030,8 @@ function applySameSideBreakeven(
   advisories: PositionManagerCommandAdvisory[],
   nextStates: PositionManagerState[],
   positions: OpenPosition[],
-  preBE: Map<number, boolean>
+  preBE: Map<number, boolean>,
+  previousTickets: Set<number>
 ): void {
   const statesByTicket = new Map(nextStates.map((state) => [state.ticket, state]));
   const groups = new Map<PositionSide, OpenPosition[]>();
@@ -1051,7 +1053,26 @@ function applySameSideBreakeven(
       const state = statesByTicket.get(position.ticket);
       return state?.beMoved === true && preBE.get(position.ticket) !== true;
     });
-    if (!anyNewBE) {
+
+    const newPositions = group.filter((position) => !previousTickets.has(position.ticket));
+    const oldPositions = group.filter((position) => previousTickets.has(position.ticket));
+    let hasFavorableAddOn = false;
+    if (newPositions.length > 0 && oldPositions.length > 0) {
+      const weightedSum = oldPositions.reduce((sum, pos) => sum + pos.openPrice * pos.lots, 0);
+      const totalLots = oldPositions.reduce((sum, pos) => sum + pos.lots, 0);
+      const averagePrice = totalLots > 0 ? weightedSum / totalLots : 0;
+      if (averagePrice > 0) {
+        hasFavorableAddOn = newPositions.some((position) => {
+          if (side === 'BUY') {
+            return position.openPrice > averagePrice;
+          } else {
+            return position.openPrice < averagePrice;
+          }
+        });
+      }
+    }
+
+    if (!anyNewBE && !hasFavorableAddOn) {
       continue;
     }
 
@@ -1072,11 +1093,12 @@ function applySameSideBreakeven(
       const currentBestSL = state.bestSl ?? 0;
       if (validateNewSL(side, bestSL, currentBestSL) && bestSL !== currentBestSL) {
         state.bestSl = bestSL;
+        const reason = hasFavorableAddOn ? `group_favorable_addon_${side}` : `group_be_${side}`;
         advisories.push({
           action: 'MODIFY',
           ticket: position.ticket,
           newSL: bestSL,
-          reason: `group_be_${side}`
+          reason
         });
       }
     }
