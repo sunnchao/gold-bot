@@ -461,7 +461,7 @@ export async function createPostgresEaStore(dsn: string): Promise<EaStore | null
     async savePositionState(accountIdValue: string, symbol: string, state: PositionStateRecord): Promise<void> {
       const normalized = normalizePositionState(state);
       await q.query(
-        `INSERT INTO position_states (account_id, symbol, ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, open_time, last_modify_time) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(account_id, symbol, ticket) DO UPDATE SET tp1_hit = excluded.tp1_hit, tp2_hit = excluded.tp2_hit, max_profit_atr = excluded.max_profit_atr, be_moved = excluded.be_moved, be_trigger_atr = excluded.be_trigger_atr, open_time = excluded.open_time, last_modify_time = excluded.last_modify_time`,
+        `INSERT INTO position_states (account_id, symbol, ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, best_sl, open_time, last_modify_time) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT(account_id, symbol, ticket) DO UPDATE SET tp1_hit = excluded.tp1_hit, tp2_hit = excluded.tp2_hit, max_profit_atr = excluded.max_profit_atr, be_moved = excluded.be_moved, be_trigger_atr = excluded.be_trigger_atr, best_sl = excluded.best_sl, open_time = excluded.open_time, last_modify_time = excluded.last_modify_time`,
         [
           accountIdValue,
           symbol,
@@ -471,6 +471,7 @@ export async function createPostgresEaStore(dsn: string): Promise<EaStore | null
           normalized.max_profit_atr,
           boolToInt(normalized.be_moved),
           normalized.be_trigger_atr,
+          normalized.best_sl,
           normalized.open_time,
           normalized.last_modify_time
         ]
@@ -478,7 +479,7 @@ export async function createPostgresEaStore(dsn: string): Promise<EaStore | null
     },
 
     async loadPositionStates(accountIdValue: string, symbol: string): Promise<PositionStateRecord[]> {
-      const rows = await queryRows(q, 'SELECT ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, open_time, last_modify_time FROM position_states WHERE account_id = $1 AND symbol = $2 ORDER BY ticket ASC', [accountIdValue, symbol]);
+      const rows = await queryRows(q, 'SELECT ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, best_sl, open_time, last_modify_time FROM position_states WHERE account_id = $1 AND symbol = $2 ORDER BY ticket ASC', [accountIdValue, symbol]);
       return rows.map((row) => positionStateFromRow({
         ticket: asNumber(row.ticket),
         tp1_hit: asNumber(row.tp1_hit),
@@ -486,6 +487,7 @@ export async function createPostgresEaStore(dsn: string): Promise<EaStore | null
         max_profit_atr: asNumber(row.max_profit_atr),
         be_moved: asNumber(row.be_moved),
         be_trigger_atr: asNumber(row.be_trigger_atr),
+        best_sl: asNumber(row.best_sl),
         open_time: asString(row.open_time),
         last_modify_time: asString(row.last_modify_time)
       } as PositionStateRow));

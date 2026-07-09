@@ -6,6 +6,7 @@ import type { RuntimeStateRecord } from './runtime-state.js';
 import type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary, ShadowRuntimeSnapshot } from './shadow.js';
 import type { StoredApiToken, StoredApiTokenInput } from './tokens.js';
 import { runMigrations } from './migrate.js';
+import { BE_TRIGGER_ATR_DEFAULT } from './helpers.js';
 export type { CommandCandidate, StoredCommand } from './commands.js';
 export type { DecisionEvent, DecisionEventFilter, DecisionEventInput, DecisionStage, DecisionStatus } from './decisions.js';
 export type { RuntimeStateRecord } from './runtime-state.js';
@@ -33,9 +34,12 @@ export type PositionStateRecord = {
   max_profit_atr: number;
   be_moved: boolean;
   be_trigger_atr: number;
+  best_sl: number;
   open_time: string;
   last_modify_time: string;
 };
+
+export { BE_TRIGGER_ATR_DEFAULT } from './helpers.js';
 
 export type EaStore = {
   saveRegistration(payload: EaRecord): Promise<void>;
@@ -472,7 +476,8 @@ export function createSqliteEaStore(path: string): EaStore {
       tp2_hit INTEGER NOT NULL DEFAULT 0,
       max_profit_atr REAL NOT NULL DEFAULT 0,
       be_moved INTEGER NOT NULL DEFAULT 0,
-      be_trigger_atr REAL NOT NULL DEFAULT 1.0,
+      be_trigger_atr REAL NOT NULL DEFAULT 1.5,
+      best_sl REAL NOT NULL DEFAULT 0,
       open_time TEXT NOT NULL DEFAULT '',
       last_modify_time TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (account_id, symbol, ticket)
@@ -578,9 +583,10 @@ export function createSqliteEaStore(path: string): EaStore {
       max_profit_atr,
       be_moved,
       be_trigger_atr,
+      best_sl,
       open_time,
       last_modify_time
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(account_id, symbol, ticket)
     DO UPDATE SET
       tp1_hit = excluded.tp1_hit,
@@ -588,11 +594,12 @@ export function createSqliteEaStore(path: string): EaStore {
       max_profit_atr = excluded.max_profit_atr,
       be_moved = excluded.be_moved,
       be_trigger_atr = excluded.be_trigger_atr,
+      best_sl = excluded.best_sl,
       open_time = excluded.open_time,
       last_modify_time = excluded.last_modify_time
   `);
   const selectPositionStates = db.prepare(`
-    SELECT ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, open_time, last_modify_time
+    SELECT ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, best_sl, open_time, last_modify_time
     FROM position_states
     WHERE account_id = ? AND symbol = ?
     ORDER BY ticket ASC
@@ -762,6 +769,7 @@ export function createSqliteEaStore(path: string): EaStore {
         normalized.max_profit_atr,
         normalized.be_moved ? 1 : 0,
         normalized.be_trigger_atr,
+        normalized.best_sl,
         normalized.open_time,
         normalized.last_modify_time
       );
@@ -1328,7 +1336,8 @@ function normalizePositionState(state: PositionStateRecord): PositionStateRecord
     tp2_hit: state.tp2_hit === true,
     max_profit_atr: Number.isFinite(state.max_profit_atr) ? state.max_profit_atr : 0,
     be_moved: state.be_moved === true,
-    be_trigger_atr: Number.isFinite(state.be_trigger_atr) ? state.be_trigger_atr : 1.0,
+    be_trigger_atr: Number.isFinite(state.be_trigger_atr) ? state.be_trigger_atr : BE_TRIGGER_ATR_DEFAULT,
+    best_sl: Number.isFinite(state.best_sl) ? state.best_sl : 0,
     open_time: state.open_time.length > 0 ? state.open_time : now,
     last_modify_time: state.last_modify_time.length > 0 ? state.last_modify_time : now
   };
@@ -1341,6 +1350,7 @@ type PositionStateRow = {
   max_profit_atr: number;
   be_moved: number;
   be_trigger_atr: number;
+  best_sl: number;
   open_time: string;
   last_modify_time: string;
 };
@@ -1353,6 +1363,7 @@ function positionStateFromRow(row: PositionStateRow): PositionStateRecord {
     max_profit_atr: Number(row.max_profit_atr),
     be_moved: row.be_moved !== 0,
     be_trigger_atr: Number(row.be_trigger_atr),
+    best_sl: Number(row.best_sl),
     open_time: row.open_time,
     last_modify_time: row.last_modify_time
   };

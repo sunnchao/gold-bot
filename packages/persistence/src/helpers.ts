@@ -4,6 +4,8 @@ import type { DecisionEvent, DecisionEventFilter, DecisionEventInput } from './d
 import type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary } from './shadow.js';
 import type { StoredApiToken, StoredApiTokenInput } from './tokens.js';
 
+export const BE_TRIGGER_ATR_DEFAULT = 1.5;
+
 export type EaRecord = Record<string, unknown>;
 
 export type EaCommand = EaRecord & {
@@ -18,6 +20,7 @@ export type PositionStateRecord = {
   max_profit_atr: number;
   be_moved: boolean;
   be_trigger_atr: number;
+  best_sl: number;
   open_time: string;
   last_modify_time: string;
 };
@@ -29,6 +32,7 @@ export type PositionStateRow = {
   max_profit_atr: number;
   be_moved: number;
   be_trigger_atr: number;
+  best_sl: number;
   open_time: string;
   last_modify_time: string;
 };
@@ -275,7 +279,8 @@ export function normalizePositionState(state: PositionStateRecord): PositionStat
     tp2_hit: state.tp2_hit === true,
     max_profit_atr: Number.isFinite(state.max_profit_atr) ? state.max_profit_atr : 0,
     be_moved: state.be_moved === true,
-    be_trigger_atr: Number.isFinite(state.be_trigger_atr) ? state.be_trigger_atr : 1.0,
+    be_trigger_atr: Number.isFinite(state.be_trigger_atr) ? state.be_trigger_atr : BE_TRIGGER_ATR_DEFAULT,
+    best_sl: Number.isFinite(state.best_sl) ? state.best_sl : 0,
     open_time: state.open_time.length > 0 ? state.open_time : now,
     last_modify_time: state.last_modify_time.length > 0 ? state.last_modify_time : now
   };
@@ -289,6 +294,7 @@ export function positionStateFromRow(row: PositionStateRow): PositionStateRecord
     max_profit_atr: Number(row.max_profit_atr),
     be_moved: row.be_moved !== 0,
     be_trigger_atr: Number(row.be_trigger_atr),
+    best_sl: Number(row.best_sl),
     open_time: row.open_time,
     last_modify_time: row.last_modify_time
   };

@@ -417,6 +417,7 @@ describe('SchedulerService', () => {
       max_profit_atr: 1.6,
       be_moved: true,
       be_trigger_atr: 1.5,
+      best_sl: 0,
       open_time: '2026-04-13T06:00:00.000Z',
       last_modify_time: '2026-04-13T07:00:00.000Z'
     });
