@@ -256,6 +256,7 @@ export type PositionManagerCommandsInput = {
   m1Bars?: unknown[];
   positions: PositionManagerPosition[];
   states?: PositionManagerState[];
+  equity?: number;
 };
 
 export type PositionManagerCommandAdvisory =
@@ -701,6 +702,8 @@ export function evaluatePositionManagerCommands(input: PositionManagerCommandsIn
   applySameSideGroupClose(result.advisories, result.nextStates, openPositions, preTP2Hit, 'tp2Hit', 'group_tp2');
   const previousTickets = new Set(inputStates.keys());
   applySameSideBreakeven(result.advisories, result.nextStates, openPositions, preBE, previousTickets);
+  applySameSideGroupStopReanchor(result.advisories, result.nextStates, openPositions, previousTickets, now);
+  applyAdverseGroupDrawdownExit(result.advisories, result.nextStates, openPositions, input.equity ?? 0);
 
   return result;
 }
@@ -1111,6 +1114,160 @@ function applySameSideBreakeven(
           ticket: position.ticket,
           newSL: bestSL,
           reason
+        });
+      }
+    }
+  }
+}
+
+function applySameSideGroupStopReanchor(
+  advisories: PositionManagerCommandAdvisory[],
+  nextStates: PositionManagerState[],
+  positions: OpenPosition[],
+  previousTickets: Set<number>,
+  now: Date
+): void {
+  const statesByTicket = new Map(nextStates.map((state) => [state.ticket, state]));
+  const groups = new Map<PositionSide, OpenPosition[]>();
+
+  for (const position of positions) {
+    const group = groups.get(position.side);
+    if (group == null) {
+      groups.set(position.side, [position]);
+    } else {
+      group.push(position);
+    }
+  }
+
+  for (const [side, group] of groups) {
+    if (group.length <= 1) {
+      continue;
+    }
+
+    const newPositions = group.filter((position) => !previousTickets.has(position.ticket));
+    const oldPositions = group.filter((position) => previousTickets.has(position.ticket));
+
+    if (newPositions.length === 0 || oldPositions.length === 0) {
+      continue;
+    }
+
+    const oldWeightedSum = oldPositions.reduce((sum, pos) => sum + pos.openPrice * pos.lots, 0);
+    const oldTotalLots = oldPositions.reduce((sum, pos) => sum + pos.lots, 0);
+    const oldAveragePrice = oldTotalLots > 0 ? oldWeightedSum / oldTotalLots : 0;
+
+    if (oldAveragePrice === 0) {
+      continue;
+    }
+
+    const hasAdverseAddOn = newPositions.some((position) => {
+      if (side === 'BUY') {
+        return position.openPrice < oldAveragePrice;
+      } else {
+        return position.openPrice > oldAveragePrice;
+      }
+    });
+
+    if (!hasAdverseAddOn) {
+      continue;
+    }
+
+    const allWeightedSum = group.reduce((sum, pos) => sum + pos.openPrice * pos.lots, 0);
+    const allTotalLots = group.reduce((sum, pos) => sum + pos.lots, 0);
+    const groupAvgEntry = allTotalLots > 0 ? allWeightedSum / allTotalLots : 0;
+
+    if (groupAvgEntry === 0) {
+      continue;
+    }
+
+    const nowIso = now.toISOString();
+    for (const position of group) {
+      const state = statesByTicket.get(position.ticket);
+      if (state == null) {
+        continue;
+      }
+
+      if (newPositions.some((p) => p.ticket === position.ticket)) {
+        const currentCount = state.addOnCount ?? state.add_on_count ?? 0;
+        state.addOnCount = currentCount + 1;
+        state.lastAddOnTime = nowIso;
+        state.lastAddOnPrice = position.openPrice;
+      } else {
+        if (state.addOnCount == null && state.add_on_count == null) {
+          state.addOnCount = 0;
+        }
+      }
+
+      if (state.groupId == null || state.groupId === '') {
+        state.groupId = `${side}_${group[0].ticket}`;
+      }
+      state.groupAvgEntry = groupAvgEntry;
+      state.groupBestSl = groupAvgEntry;
+
+      const currentBestSL = state.bestSl ?? 0;
+      if (validateNewSL(side, groupAvgEntry, currentBestSL) && groupAvgEntry !== currentBestSL) {
+        state.bestSl = groupAvgEntry;
+        advisories.push({
+          action: 'MODIFY',
+          ticket: position.ticket,
+          newSL: groupAvgEntry,
+          reason: `group_adverse_reanchor_${side}`
+        });
+      }
+    }
+  }
+}
+
+function applyAdverseGroupDrawdownExit(
+  advisories: PositionManagerCommandAdvisory[],
+  nextStates: PositionManagerState[],
+  positions: OpenPosition[],
+  equity: number
+): void {
+  if (equity <= 0) {
+    return;
+  }
+
+  const statesByTicket = new Map(nextStates.map((state) => [state.ticket, state]));
+  const groups = new Map<PositionSide, OpenPosition[]>();
+
+  for (const position of positions) {
+    const group = groups.get(position.side);
+    if (group == null) {
+      groups.set(position.side, [position]);
+    } else {
+      group.push(position);
+    }
+  }
+
+  for (const [side, group] of groups) {
+    if (group.length <= 1) {
+      continue;
+    }
+
+    const hasAdverseGroup = group.some((position) => {
+      const state = statesByTicket.get(position.ticket);
+      return (state?.addOnCount ?? state?.add_on_count ?? 0) > 0;
+    });
+
+    if (!hasAdverseGroup) {
+      continue;
+    }
+
+    const netProfit = group.reduce((sum, pos) => sum + pos.profit, 0);
+    if (netProfit >= 0) {
+      continue;
+    }
+
+    const netLoss = Math.abs(netProfit);
+    const drawdownPct = (netLoss / equity) * 100;
+
+    if (drawdownPct >= 6.0) {
+      for (const position of group) {
+        advisories.push({
+          action: 'CLOSE',
+          ticket: position.ticket,
+          lots: position.lots,
+          reason: `adverse_group_exit_${drawdownPct.toFixed(1)}pct`
         });
       }
     }

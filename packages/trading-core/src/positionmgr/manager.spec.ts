@@ -1102,4 +1102,89 @@ describe('position manager Analyze orchestration parity slice', () => {
       expect.objectContaining({ ticket: 2002, bestSl: 3340 })
     ]);
   });
+
+  it('tightens stop loss to group avg entry when adverse add-on detected', () => {
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 3320,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      positions: [
+        { ticket: 3001, type: 'BUY', openPrice: 3330, lots: 0.1, sl: 3328, profit: -10 },
+        { ticket: 3002, type: 'BUY', openPrice: 3325, lots: 0.06, sl: 3323, profit: -5 }
+      ],
+      states: [
+        { ticket: 3001, openTime: '2026-04-13T06:00:00.000Z', beTriggerAtr: 1.5, beMoved: false, bestSl: 3328 }
+      ]
+    });
+
+    const groupAvgEntry = (3330 * 0.1 + 3325 * 0.06) / 0.16;
+    expect(result.advisories).toContainEqual(
+      expect.objectContaining({ action: 'MODIFY', ticket: 3001, newSL: expect.closeTo(groupAvgEntry, 0.01), reason: 'group_adverse_reanchor_BUY' })
+    );
+    expect(result.advisories).toContainEqual(
+      expect.objectContaining({ action: 'MODIFY', ticket: 3002, newSL: expect.closeTo(groupAvgEntry, 0.01), reason: 'group_adverse_reanchor_BUY' })
+    );
+    expect(result.nextStates[0].groupAvgEntry).toBeCloseTo(groupAvgEntry, 2);
+    expect(result.nextStates[0].addOnCount).toBe(0);
+    expect(result.nextStates[1].addOnCount).toBe(1);
+  });
+
+  it('does not trigger adverse reanchor when net loss is below 6% of equity', () => {
+    const equity = 10000;
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 3300,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      equity,
+      positions: [
+        { ticket: 4001, type: 'BUY', openPrice: 3330, lots: 0.1, sl: 3328, profit: -300 },
+        { ticket: 4002, type: 'BUY', openPrice: 3320, lots: 0.06, sl: 3318, profit: -120 },
+        { ticket: 4003, type: 'BUY', openPrice: 3310, lots: 0.04, sl: 3308, profit: -40 }
+      ],
+      states: [
+        { ticket: 4001, openTime: '2026-04-13T06:00:00.000Z', addOnCount: 0 },
+        { ticket: 4002, openTime: '2026-04-13T06:30:00.000Z', addOnCount: 1 },
+        { ticket: 4003, openTime: '2026-04-13T07:00:00.000Z', addOnCount: 2 }
+      ]
+    });
+
+    const closeAdvisories = result.advisories.filter((a) => a.action === 'CLOSE' && a.reason.startsWith('adverse_group_exit'));
+    expect(closeAdvisories).toHaveLength(0);
+  });
+
+  it('closes all positions when net loss reaches 6% threshold', () => {
+    const equity = 10000;
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 3290,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      equity,
+      positions: [
+        { ticket: 5001, type: 'BUY', openPrice: 3330, lots: 0.1, sl: 3328, profit: -400 },
+        { ticket: 5002, type: 'BUY', openPrice: 3320, lots: 0.06, sl: 3318, profit: -180 },
+        { ticket: 5003, type: 'BUY', openPrice: 3310, lots: 0.04, sl: 3308, profit: -80 }
+      ],
+      states: [
+        { ticket: 5001, openTime: '2026-04-13T06:00:00.000Z', addOnCount: 0 },
+        { ticket: 5002, openTime: '2026-04-13T06:30:00.000Z', addOnCount: 1 },
+        { ticket: 5003, openTime: '2026-04-13T07:00:00.000Z', addOnCount: 2 }
+      ]
+    });
+
+    expect(result.advisories).toContainEqual(
+      expect.objectContaining({ action: 'CLOSE', ticket: 5001, lots: 0.1, reason: expect.stringMatching(/adverse_group_exit_\d+\.\d+pct/) })
+    );
+    expect(result.advisories).toContainEqual(
+      expect.objectContaining({ action: 'CLOSE', ticket: 5002, lots: 0.06 })
+    );
+    expect(result.advisories).toContainEqual(
+      expect.objectContaining({ action: 'CLOSE', ticket: 5003, lots: 0.04 })
+    );
+  });
 });
