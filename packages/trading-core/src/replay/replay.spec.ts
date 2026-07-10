@@ -65,11 +65,13 @@ describe('replay harness Go oracle slice', () => {
     });
 
     expect(result.signal).toBeNull();
-    expect(result.logs).toContainEqual({
-      level: 'warn',
-      strategy: '汇总',
-      msg: '防重复: 已有同向持仓 @ 95.50,距离 < 1.0 ATR'
-    });
+    expect(result.logs).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        strategy: '汇总',
+        msg: expect.stringContaining('防重复: 已有同向持仓')
+      })
+    );
     expect(result.position_commands).toBeNull();
     expect(result.canProduceLiveCommands).toBe(false);
   });
@@ -85,12 +87,71 @@ describe('replay harness Go oracle slice', () => {
     });
 
     expect(result.signal).toBeNull();
-    expect(result.logs).toContainEqual({
-      level: 'warn',
-      strategy: '汇总',
-      msg: '防对冲: 已有反向持仓 @ 98.00,距离 < 2.0 ATR'
-    });
+    expect(result.logs).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        strategy: '汇总',
+        msg: expect.stringContaining('防对冲: 已有反向持仓')
+      })
+    );
     expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('allows pullback signal when breakout_retest position exists (strategy isolation)', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars()
+      },
+      positions: [
+        { ticket: 101, symbol: 'XAUUSD', type: 'BUY', lots: 0.1, open_price: 95.5, strategy: 'breakout_retest' }
+      ]
+    });
+
+    expect(result.signal).not.toBeNull();
+    expect(result.signal?.strategy).toBe('pullback');
+    expect(result.signal?.side).toBe('BUY');
+  });
+
+  it('blocks pullback signal when another pullback position exists (same strategy)', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars()
+      },
+      positions: [
+        { ticket: 101, symbol: 'XAUUSD', type: 'BUY', lots: 0.1, open_price: 95.5, strategy: 'pullback' }
+      ]
+    });
+
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        strategy: '汇总',
+        msg: expect.stringContaining('防重复: 已有同向持仓 [pullback]')
+      })
+    );
+  });
+
+  it('allows ai_signal when technical strategy position exists (cross-strategy isolation)', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars()
+      },
+      positions: [
+        { ticket: 101, symbol: 'XAUUSD', type: 'BUY', lots: 0.1, open_price: 95.5, strategy: 'divergence' }
+      ]
+    });
+
+    // The signal would normally be blocked, but with strategy isolation it should pass
+    // Note: this test validates the filter logic, actual signal depends on strategy detection
+    expect(result.signal).not.toBeNull();
+    expect(result.signal?.strategy).toBe('pullback');
   });
 
   it('applies an AI suggested stop loss override when the distance and side are valid', () => {

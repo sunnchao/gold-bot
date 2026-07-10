@@ -1615,7 +1615,19 @@ function applyPositionConflictFilter(
     return { signal, logs: [] };
   }
 
-  for (const position of positions) {
+  // Strategy isolation: only check positions from the same strategy
+  const signalStrategy = signal.strategy || '';
+  const relevantPositions = positions.filter((position) => {
+    const posStrategy = position.strategy ?? '';
+    // If both have strategy tags, only consider same-strategy positions
+    if (signalStrategy.length > 0 && posStrategy.length > 0) {
+      return posStrategy === signalStrategy;
+    }
+    // If either lacks strategy tag, include it (backward compatibility)
+    return true;
+  });
+
+  for (const position of relevantPositions) {
     const openPrice = position.openPrice ?? position.open_price ?? 0;
     const positionSide = (position.type ?? '').toUpperCase();
     if (openPrice <= 0 || (positionSide !== 'BUY' && positionSide !== 'SELL')) {
@@ -1631,7 +1643,7 @@ function applyPositionConflictFilter(
             {
               level: 'warn',
               strategy: '汇总',
-              msg: `防重复: 已有同向持仓 @ ${formatFixed(openPrice, 2)},距离 < 1.0 ATR`
+              msg: `防重复: 已有同向持仓 [${position.strategy ?? '未知'}] @ ${formatFixed(openPrice, 2)},距离 < 1.0 ATR`
             }
           ]
         };
@@ -1646,7 +1658,7 @@ function applyPositionConflictFilter(
           {
             level: 'warn',
             strategy: '汇总',
-            msg: `防对冲: 已有反向持仓 @ ${formatFixed(openPrice, 2)},距离 < 2.0 ATR`
+            msg: `防对冲: 已有反向持仓 [${position.strategy ?? '未知'}] @ ${formatFixed(openPrice, 2)},距离 < 2.0 ATR`
           }
         ]
       };
