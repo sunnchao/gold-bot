@@ -54,6 +54,10 @@ export type ReplaySnapshot = {
   ai_result?: ReplayAIResult;
   positions?: unknown[];
   position_states?: unknown[];
+  account?: {
+    equity?: number;
+    balance?: number;
+  };
 };
 
 type ReplayAIResult = {

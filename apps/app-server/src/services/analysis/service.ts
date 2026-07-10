@@ -6,6 +6,7 @@ export class AnalysisService {
 
   async analyzeAccountSymbol(accountId: string, symbol: string) {
     const latestTick = (await this.store.getLatestTick(accountId, symbol)) ?? {};
+    const heartbeat = (await this.store.getHeartbeat(accountId)) ?? {};
     const positions = filterPositionsForSymbol(symbol, await this.store.getPositions(accountId, symbol));
     const latestAIResult = (await this.store.getAIResults(accountId)).find((result) => result.symbol === symbol);
     const h1Bars = await this.store.getBars(accountId, symbol, 'H1');
@@ -26,6 +27,10 @@ export class AnalysisService {
         },
         positions,
         position_states: await this.store.loadPositionStates(accountId, symbol),
+        account: {
+          equity: optionalNumberField(heartbeat, 'equity'),
+          balance: optionalNumberField(heartbeat, 'balance')
+        },
         ai_result: replayAIResult(latestAIResult)
       }),
       positionSummary: summarizePositions({
