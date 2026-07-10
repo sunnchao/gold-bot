@@ -5,6 +5,12 @@ import {
   type PositionManagerPosition,
   type PositionManagerState
 } from '../positionmgr/manager.js';
+import { getStrategyConfigBySymbol } from '../engine/config.js';
+import { pickSLTP } from './sr-sltp.js';
+import { applyFibExtensionTP } from './fib-extension.js';
+import { checkScaleIn } from './scale-in.js';
+import { calculateSMCBonus } from './smc-scoring.js';
+import { confirmBreakoutPyramid } from './breakout-cache.js';
 
 export type ReplayRawBar = {
   time?: string;
@@ -100,6 +106,14 @@ export type ReplaySmcContext = {
   h1_obs?: ReplayOrderBlock[];
   h1_short_obs?: ReplayOrderBlock[];
   h1_fvgs?: ReplayFVG[];
+  m30_breaks?: ReplayStructureBreak[];
+  m30_sweeps?: ReplayLiquiditySweep[];
+  m30_obs?: ReplayOrderBlock[];
+  m30_fvgs?: ReplayFVG[];
+  m15_breaks?: ReplayStructureBreak[];
+  m15_sweeps?: ReplayLiquiditySweep[];
+  m15_obs?: ReplayOrderBlock[];
+  m15_fvgs?: ReplayFVG[];
 };
 
 type ReplayStrategyName = 'pullback' | 'breakout_retest' | 'divergence' | 'counter_pullback' | 'breakout_pyramid' | 'scale_in';
@@ -238,16 +252,21 @@ export function runReplay(raw: unknown): ReplayResult {
   const currentPrice = snapshot.current_price ?? enrichedH1[enrichedH1.length - 1]?.close ?? 0;
   const momentumConfig = momentumScalpConfigForSymbol(snapshot.symbol);
   const pricePrecision = roundingPrecisionForSymbol(snapshot.symbol);
+  const positions = normalizePositionManagerPositions(snapshot.positions ?? []);
   const candidates = collectReplayCandidates(
     enrichedH1,
     enrichedH4,
+    enrichedM30,
     enrichedM15,
     enrichedM5,
     enrichedM1,
     currentPrice,
     snapshot.smc,
     momentumConfig,
-    pricePrecision
+    pricePrecision,
+    snapshot.symbol ?? '',
+    positions,
+    snapshot.ai_result
   );
   const h4FilterResult = applyH4FilterToCandidates(candidates, enrichedH4);
   const trendRatedCandidates = h4FilterResult.candidates.map((candidate) =>
@@ -259,7 +278,7 @@ export function runReplay(raw: unknown): ReplayResult {
   const boostedSignal = selectHighestScore(boostedCandidates);
   const rawSignal = selectRawCandidateFor(boostedSignal, candidates);
   const selectedSignal = boostedSignal == null ? null : withAllStrategies(boostedSignal, boostedCandidates);
-  const positionFilterResult = applyPositionConflictFilter(selectedSignal, normalizePositionManagerPositions(snapshot.positions ?? []));
+  const positionFilterResult = applyPositionConflictFilter(selectedSignal, positions);
   const aiStopLossResult = applyAIStopLossOverride(positionFilterResult.signal, snapshot.ai_result);
   const aiTakeProfitResult = applyAITakeProfitOverride(aiStopLossResult.signal, snapshot.ai_result);
   const positionReview = evaluateReplayPositionCommands(snapshot, enrichedH1, currentPrice);
@@ -291,13 +310,17 @@ export function runReplay(raw: unknown): ReplayResult {
 function collectReplayCandidates(
   h1: EnrichedReplayBar[],
   h4: EnrichedReplayBar[],
+  m30: EnrichedReplayBar[],
   m15: EnrichedReplayBar[],
   m5: EnrichedReplayBar[],
   m1: EnrichedReplayBar[],
   price: number,
   smc: ReplaySmcContext | undefined,
   momentumConfig: MomentumScalpConfig,
-  pricePrecision: number
+  pricePrecision: number,
+  symbol: string,
+  positions: PositionManagerPosition[],
+  aiResult?: ReplayAIResult
 ): ReplaySignal[] {
   return [
     evaluatePullbackSignal(h1, h4, price, pricePrecision),
@@ -305,6 +328,8 @@ function collectReplayCandidates(
     evaluateDivergenceSignal(h1, price, pricePrecision),
     evaluateCounterPullbackSignal(h1, price, smc, pricePrecision),
     evaluateBreakoutPyramidSignal(h1, price, smc, pricePrecision),
+    // TODO: Add scale_in strategy integration
+    // evaluateScaleInSignal(h1, price, positions, pricePrecision, symbol),
     // NOTE: momentum_scalp strategy disabled for intraday trading focus
     // evaluateMomentumScalpSignal(m15, m5, m1, price, momentumConfig, pricePrecision)
   ].filter((signal): signal is ReplaySignal => signal != null);
