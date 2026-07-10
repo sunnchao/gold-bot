@@ -49,7 +49,7 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
   };
 
   const addOnType = stringField(input.tradePlan, 'add_on_type');
-  if (addOnType === 'favorable' && input.positions != null) {
+  if ((addOnType === 'favorable' || addOnType === 'adverse') && input.positions != null) {
     const positions = input.positions.filter((pos) => {
       const posSymbol = stringField(pos, 'symbol').trim().toUpperCase();
       const posSide = stringField(pos, 'type').trim().toUpperCase();
@@ -71,17 +71,24 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
         }
       }
       const groupAvgEntry = totalLots > 0 ? weightedEntry / totalLots : 0;
-      const groupBestSl = side === 'BUY'
-        ? Math.max(...positions.map((pos) => numberField(pos, 'open_price') || numberField(pos, 'openPrice')))
-        : Math.min(...positions.filter((pos) => {
-            const op = numberField(pos, 'open_price') || numberField(pos, 'openPrice');
-            return op > 0;
-          }).map((pos) => numberField(pos, 'open_price') || numberField(pos, 'openPrice')));
+      const openPrices = positions
+        .map((pos) => numberField(pos, 'open_price') || numberField(pos, 'openPrice'))
+        .filter((price) => price > 0);
+      const groupBestSl = openPrices.length === 0
+        ? 0
+        : addOnType === 'adverse'
+          ? (side === 'BUY' ? Math.min(...openPrices) : Math.max(...openPrices))
+          : (side === 'BUY' ? Math.max(...openPrices) : Math.min(...openPrices));
 
       candidate.scale_in_parent_ticket = largestTicket;
       candidate.weighted_avg_entry = round2(groupAvgEntry);
       candidate.unified_sl = round2(groupBestSl);
       candidate.scale_in_count = positions.length;
+
+      if (addOnType === 'adverse') {
+        candidate.scale_in_add_on_type = 'adverse';
+        candidate.scale_in_add_on_level = numberField(input.tradePlan, 'add_on_level') || 1;
+      }
     }
   }
 

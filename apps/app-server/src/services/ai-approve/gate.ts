@@ -1,4 +1,4 @@
-import type { EaRecord, EaStore } from '@gold-bot/persistence';
+import { type EaRecord, type EaStore, type PositionStateRecord } from '@gold-bot/persistence';
 import {
   calcAIApproveLots,
   pickAIApproveEntryPrice,
@@ -21,6 +21,7 @@ export type AIApprovePendingGateInput = {
   tradePlan: EaRecord;
   nowIso: string;
   cooldown?: AIApproveCooldown;
+  positionStates?: PositionStateRecord[];
 };
 
 export type AIApprovePendingGateResult =
@@ -113,11 +114,15 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     if (m30Atr <= 0) {
       return reject('position.m30_atr_missing');
     }
-    if (Math.abs(entry - averagePrice) < m30Atr) {
+    const addOnType = stringField(input.tradePlan, 'add_on_type');
+    const addOnLevel = numberField(input.tradePlan, 'add_on_level') || 1;
+    const spacingMultiplier = addOnType === 'adverse'
+      ? (addOnLevel >= 3 ? 2.0 : addOnLevel === 2 ? 1.5 : 1.0)
+      : 1.0;
+    if (Math.abs(entry - averagePrice) < spacingMultiplier * m30Atr) {
       return reject('position.add_on_distance');
     }
 
-    const addOnType = stringField(input.tradePlan, 'add_on_type');
     if (addOnType === 'favorable') {
       const existingLots = totalLotsOnSide(positions, input.symbol, side);
       if (existingLots <= 0) {
@@ -129,6 +134,59 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
       }
       if (lots > existingLots * 0.5) {
         return reject('position.favorable_add_lots_too_large');
+      }
+    }
+
+    if (addOnType === 'adverse') {
+      const existingLots = totalLotsOnSide(positions, input.symbol, side);
+      if (existingLots <= 0) {
+        return reject('position.adverse_add_no_existing_lots');
+      }
+
+      const lossAtr = calculateLossAtr(positions, input.symbol, side, currentPrice, m30Atr);
+      const level = addOnLevel >= 1 && addOnLevel <= 3 ? addOnLevel : inferAdverseLevel(lossAtr);
+      const lossThreshold = level >= 3 ? 3.5 : level === 2 ? 2.0 : 1.0;
+      if (lossAtr < lossThreshold) {
+        return reject('position.adverse_add_loss_not_enough');
+      }
+
+      const positionStates = input.positionStates ?? await input.store.loadPositionStates(input.accountId, input.symbol);
+      const addOnMeta = latestAdverseAddOnState(positionStates);
+      const intervalMs = level >= 3 ? 90 * 60 * 1000 : level === 2 ? 45 * 60 * 1000 : 0;
+      if (intervalMs > 0 && addOnMeta.lastAddOnTime.length > 0) {
+        const elapsed = nowMillis(input.nowIso) - nowMillis(addOnMeta.lastAddOnTime);
+        if (elapsed >= 0 && elapsed < intervalMs) {
+          return reject('position.adverse_add_interval_active');
+        }
+      }
+
+      const maxAddCount = numberField(input.tradePlan, 'max_add_count') || 2;
+      if (addOnMeta.addOnCount >= maxAddCount) {
+        return reject('position.adverse_add_count_exceeded');
+      }
+
+      if (lots > existingLots * 0.6) {
+        return reject('position.adverse_add_single_lots_too_large');
+      }
+
+      const initialLots = largestLotsOnSide(positions, input.symbol, side);
+      if (initialLots > 0 && addOnMeta.addOnCount > 0 && existingLots - initialLots + lots > initialLots * 1.5) {
+        return reject('position.adverse_add_cumulative_lots_exceeded');
+      }
+
+      const maxTotalLots = numberField(input.tradePlan, 'max_total_lots');
+      if (maxTotalLots > 0 && existingLots + lots > maxTotalLots) {
+        return reject('position.adverse_add_total_lots_exceeded');
+      }
+
+      const heartbeat = await input.store.getHeartbeat(input.accountId);
+      const balance = numberField(heartbeat ?? {}, 'balance');
+      const equity = numberField(heartbeat ?? {}, 'equity');
+      if (balance > 0 && equity > 0) {
+        const drawdownPct = ((balance - equity) / balance) * 100;
+        if (drawdownPct >= 5.0) {
+          return reject('position.adverse_add_account_drawdown_exceeded');
+        }
       }
     }
   }
@@ -366,4 +424,86 @@ function calculateProfitAtr(positions: EaRecord[], symbol: string, side: string,
     return 0;
   }
   return (weightedProfit / totalLots) / atr;
+}
+
+function calculateLossAtr(positions: EaRecord[], symbol: string, side: string, currentPrice: number, atr: number): number {
+  const wantSymbol = symbol.trim().toUpperCase();
+  const wantSide = side.trim().toUpperCase();
+  let totalLots = 0;
+  let weightedLoss = 0;
+  for (const position of positions) {
+    const positionSymbol = stringField(position, 'symbol');
+    if (wantSymbol.length > 0 && positionSymbol.length > 0 && positionSymbol.trim().toUpperCase() !== wantSymbol) {
+      continue;
+    }
+    if (stringField(position, 'type').trim().toUpperCase() !== wantSide) {
+      continue;
+    }
+    const lots = numberField(position, 'lots');
+    const openPrice = numberField(position, 'open_price') || numberField(position, 'openPrice');
+    if (lots <= 0 || openPrice <= 0 || currentPrice <= 0 || atr <= 0) {
+      continue;
+    }
+    const priceDiff = wantSide === 'BUY' ? openPrice - currentPrice : currentPrice - openPrice;
+    totalLots += lots;
+    weightedLoss += lots * priceDiff;
+  }
+  if (totalLots <= 0 || atr <= 0) {
+    return 0;
+  }
+  return (weightedLoss / totalLots) / atr;
+}
+
+function inferAdverseLevel(lossAtr: number): number {
+  if (lossAtr >= 3.5) {
+    return 3;
+  }
+  if (lossAtr >= 2.0) {
+    return 2;
+  }
+  return 1;
+}
+
+function largestLotsOnSide(positions: EaRecord[], symbol: string, side: string): number {
+  const wantSymbol = symbol.trim().toUpperCase();
+  const wantSide = side.trim().toUpperCase();
+  let largest = 0;
+  for (const position of positions) {
+    const positionSymbol = stringField(position, 'symbol');
+    if (wantSymbol.length > 0 && positionSymbol.length > 0 && positionSymbol.trim().toUpperCase() !== wantSymbol) {
+      continue;
+    }
+    if (stringField(position, 'type').trim().toUpperCase() !== wantSide) {
+      continue;
+    }
+    const lots = numberField(position, 'lots');
+    if (lots > largest) {
+      largest = lots;
+    }
+  }
+  return largest;
+}
+
+type AdverseAddOnMeta = {
+  lastAddOnTime: string;
+  lastAddOnPrice: number;
+  addOnCount: number;
+};
+
+function latestAdverseAddOnState(positionStates: PositionStateRecord[]): AdverseAddOnMeta {
+  let latestTime = '';
+  let latestPrice = 0;
+  let addOnCount = 0;
+  for (const state of positionStates) {
+    const count = Number(state.add_on_count) || 0;
+    if (count > addOnCount) {
+      addOnCount = count;
+    }
+    const lastTime = typeof state.last_add_on_time === 'string' ? state.last_add_on_time : '';
+    if (lastTime.length > 0 && (latestTime.length === 0 || lastTime > latestTime)) {
+      latestTime = lastTime;
+      latestPrice = Number(state.last_add_on_price) || 0;
+    }
+  }
+  return { lastAddOnTime: latestTime, lastAddOnPrice: latestPrice, addOnCount };
 }

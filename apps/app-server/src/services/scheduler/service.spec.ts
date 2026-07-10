@@ -419,7 +419,13 @@ describe('SchedulerService', () => {
       be_trigger_atr: 1.5,
       best_sl: 0,
       open_time: '2026-04-13T06:00:00.000Z',
-      last_modify_time: '2026-04-13T07:00:00.000Z'
+      last_modify_time: '2026-04-13T07:00:00.000Z',
+      add_on_count: 0,
+      last_add_on_time: '',
+      last_add_on_price: 0,
+      group_id: '',
+      group_avg_entry: 0,
+      group_best_sl: 0
     });
     const analysis = new AnalysisService(store, () => '2026-04-13T08:00:00.000Z');
     const scheduler = new SchedulerService(analysis, new CommandLifecycleService(store), undefined, store);

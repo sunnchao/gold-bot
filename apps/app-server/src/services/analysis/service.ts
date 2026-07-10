@@ -137,6 +137,12 @@ function toPositionStateRecord(state: PositionManagerState, nowIso: string): Pos
     be_trigger_atr: state.beTriggerAtr ?? state.be_trigger_atr ?? BE_TRIGGER_ATR_DEFAULT,
     best_sl: state.bestSl ?? state.best_sl ?? 0,
     open_time: state.openTime ?? state.open_time ?? nowIso,
-    last_modify_time: nowIso
+    last_modify_time: nowIso,
+    add_on_count: state.addOnCount ?? state.add_on_count ?? 0,
+    last_add_on_time: state.lastAddOnTime ?? state.last_add_on_time ?? '',
+    last_add_on_price: state.lastAddOnPrice ?? state.last_add_on_price ?? 0,
+    group_id: state.groupId ?? state.group_id ?? '',
+    group_avg_entry: state.groupAvgEntry ?? state.group_avg_entry ?? 0,
+    group_best_sl: state.groupBestSl ?? state.group_best_sl ?? 0
   };
 }

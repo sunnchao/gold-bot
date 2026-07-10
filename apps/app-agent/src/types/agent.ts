@@ -56,6 +56,10 @@ export interface TradePlan {
   conflicts: string[];
   narrative: string;
   add_on?: boolean;
+  add_on_type?: 'favorable' | 'adverse';
+  add_on_level?: number;
+  max_add_count?: number;
+  max_total_lots?: number;
 }
 
 export interface DualTradePlan {

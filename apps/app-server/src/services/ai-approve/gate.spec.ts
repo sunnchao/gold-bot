@@ -521,3 +521,271 @@ describe('AI approve favorable add-on', () => {
     });
   });
 });
+
+describe('AI approve adverse add-on', () => {
+  it('accepts adverse add-on L1 when loss >= 1.0 ATR, spacing >= 1.0 ATR, lots <= net*0.6', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.10, open_price: 3337.6, sl: 3330.0, tp: 3340.0, strategy: 'ai_signal' }
+      ]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'adverse',
+        add_on_level: 1,
+        max_lots: 0.05,
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso
+    })).resolves.toMatchObject({ accepted: true, lots: 0.03 });
+  });
+
+  it('rejects adverse add-on when loss < 1.0 ATR (L1)', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.10, open_price: 3336.0, sl: 3330.0, tp: 3340.0, strategy: 'ai_signal' }
+      ]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'adverse',
+        add_on_level: 1,
+        max_lots: 0.05,
+        entry_zone: { min: 3333.4, max: 3333.6 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'position.adverse_add_loss_not_enough' });
+  });
+
+  it('rejects adverse add-on L2 when spacing < 1.5 ATR', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.10, open_price: 3340.0, sl: 3330.0, tp: 3340.0, strategy: 'ai_signal' }
+      ]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'adverse',
+        add_on_level: 2,
+        max_lots: 0.05,
+        entry_zone: { min: 3337.0, max: 3337.2 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'position.add_on_distance' });
+  });
+
+  it('rejects adverse add-on L2 when time interval not elapsed (45min)', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.10, open_price: 3340.0, sl: 3330.0, tp: 3340.0, strategy: 'ai_signal' }
+      ]
+    });
+    await store.savePositionState(accountId, symbol, {
+      ticket: 1001,
+      tp1_hit: false,
+      tp2_hit: false,
+      max_profit_atr: 0,
+      be_moved: false,
+      be_trigger_atr: 1.5,
+      best_sl: 0,
+      open_time: '2026-04-13T06:00:00.000Z',
+      last_modify_time: '2026-04-13T07:10:00.000Z',
+      add_on_count: 1,
+      last_add_on_time: '2026-04-13T07:30:00.000Z',
+      last_add_on_price: 3338.0,
+      group_id: '',
+      group_avg_entry: 0,
+      group_best_sl: 0
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'adverse',
+        add_on_level: 2,
+        max_lots: 0.05,
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso: '2026-04-13T07:50:00.000Z'
+    })).resolves.toEqual({ accepted: false, reason: 'position.adverse_add_interval_active' });
+  });
+
+  it('rejects adverse add-on when count exceeded (max_add_count=2)', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.10, open_price: 3343.0, sl: 3330.0, tp: 3340.0, strategy: 'ai_signal' }
+      ]
+    });
+    await store.savePositionState(accountId, symbol, {
+      ticket: 1001,
+      tp1_hit: false,
+      tp2_hit: false,
+      max_profit_atr: 0,
+      be_moved: false,
+      be_trigger_atr: 1.5,
+      best_sl: 0,
+      open_time: '2026-04-13T05:00:00.000Z',
+      last_modify_time: '2026-04-13T07:00:00.000Z',
+      add_on_count: 2,
+      last_add_on_time: '2026-04-13T05:30:00.000Z',
+      last_add_on_price: 3339.0,
+      group_id: '',
+      group_avg_entry: 0,
+      group_best_sl: 0
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'adverse',
+        add_on_level: 3,
+        max_add_count: 2,
+        max_lots: 0.05,
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'position.adverse_add_count_exceeded' });
+  });
+
+  it('rejects adverse add-on when single lots > net*0.6', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.04, open_price: 3338.0, sl: 3330.0, tp: 3340.0, strategy: 'ai_signal' }
+      ]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'adverse',
+        add_on_level: 1,
+        max_lots: 0.10,
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'position.adverse_add_single_lots_too_large' });
+  });
+
+  it('rejects adverse add-on when total lots > max_total_lots', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.10, open_price: 3338.0, sl: 3330.0, tp: 3340.0, strategy: 'ai_signal' }
+      ]
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'adverse',
+        add_on_level: 1,
+        max_lots: 0.05,
+        max_total_lots: 0.11,
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'position.adverse_add_total_lots_exceeded' });
+  });
+
+  it('rejects adverse add-on when account drawdown >= 5%', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    await store.savePositions({
+      account_id: accountId,
+      symbol,
+      positions: [
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.10, open_price: 3338.0, sl: 3330.0, tp: 3340.0, strategy: 'ai_signal' }
+      ]
+    });
+    await store.saveHeartbeat({
+      account_id: accountId,
+      balance: 10000,
+      equity: 9400,
+      time: '2026-04-13T07:59:00.000Z'
+    });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        add_on: true,
+        add_on_type: 'adverse',
+        add_on_level: 1,
+        max_lots: 0.05,
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        execution_type: 'limit',
+        requested_order_type: 'BUY_LIMIT'
+      }),
+      nowIso
+    })).resolves.toEqual({ accepted: false, reason: 'position.adverse_add_account_drawdown_exceeded' });
+  });
+});

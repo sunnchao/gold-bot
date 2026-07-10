@@ -64,6 +64,18 @@ export type PositionManagerState = {
   be_trigger_atr?: number;
   bestSl?: number;
   best_sl?: number;
+  addOnCount?: number;
+  add_on_count?: number;
+  lastAddOnTime?: string;
+  last_add_on_time?: string;
+  lastAddOnPrice?: number;
+  last_add_on_price?: number;
+  groupId?: string;
+  group_id?: string;
+  groupAvgEntry?: number;
+  group_avg_entry?: number;
+  groupBestSl?: number;
+  group_best_sl?: number;
 };
 
 export type PositionTimeStopInput = {

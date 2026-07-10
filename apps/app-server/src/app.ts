@@ -885,6 +885,7 @@ async function queueAIApprovePendingCommands(
 ): Promise<StoredCommand | undefined> {
   let firstCommand: StoredCommand | undefined;
   const positions = await deps.store.getPositions(accountId, symbol);
+  const positionStates = await deps.store.loadPositionStates(accountId, symbol);
   for (const tradePlan of tradePlans) {
     const queueSkipReason = aiApproveQueueSkipReason(tradePlan, riskGate);
     if (queueSkipReason != null) {
@@ -897,7 +898,8 @@ async function queueAIApprovePendingCommands(
       symbol,
       tradePlan,
       nowIso: eventTimestamp,
-      cooldown: deps.aiApproveCooldown
+      cooldown: deps.aiApproveCooldown,
+      positionStates
     });
     if (!pendingGate.accepted) {
       await recordAIApprovePendingGateEvent(deps.store, accountId, symbol, tradePlan, pendingGate.reason, eventTimestamp);

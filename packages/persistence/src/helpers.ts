@@ -23,6 +23,12 @@ export type PositionStateRecord = {
   best_sl: number;
   open_time: string;
   last_modify_time: string;
+  add_on_count: number;
+  last_add_on_time: string;
+  last_add_on_price: number;
+  group_id: string;
+  group_avg_entry: number;
+  group_best_sl: number;
 };
 
 export type PositionStateRow = {
@@ -35,6 +41,12 @@ export type PositionStateRow = {
   best_sl: number;
   open_time: string;
   last_modify_time: string;
+  add_on_count: number;
+  last_add_on_time: string;
+  last_add_on_price: number;
+  group_id: string;
+  group_avg_entry: number;
+  group_best_sl: number;
 };
 
 export type RuntimeCommandRow = {
@@ -282,7 +294,13 @@ export function normalizePositionState(state: PositionStateRecord): PositionStat
     be_trigger_atr: Number.isFinite(state.be_trigger_atr) ? state.be_trigger_atr : BE_TRIGGER_ATR_DEFAULT,
     best_sl: Number.isFinite(state.best_sl) ? state.best_sl : 0,
     open_time: state.open_time.length > 0 ? state.open_time : now,
-    last_modify_time: state.last_modify_time.length > 0 ? state.last_modify_time : now
+    last_modify_time: state.last_modify_time.length > 0 ? state.last_modify_time : now,
+    add_on_count: Number.isInteger(state.add_on_count) ? state.add_on_count : 0,
+    last_add_on_time: typeof state.last_add_on_time === 'string' ? state.last_add_on_time : '',
+    last_add_on_price: Number.isFinite(state.last_add_on_price) ? state.last_add_on_price : 0,
+    group_id: typeof state.group_id === 'string' ? state.group_id : '',
+    group_avg_entry: Number.isFinite(state.group_avg_entry) ? state.group_avg_entry : 0,
+    group_best_sl: Number.isFinite(state.group_best_sl) ? state.group_best_sl : 0
   };
 }
 
@@ -296,7 +314,13 @@ export function positionStateFromRow(row: PositionStateRow): PositionStateRecord
     be_trigger_atr: Number(row.be_trigger_atr),
     best_sl: Number(row.best_sl),
     open_time: row.open_time,
-    last_modify_time: row.last_modify_time
+    last_modify_time: row.last_modify_time,
+    add_on_count: Number(row.add_on_count) || 0,
+    last_add_on_time: typeof row.last_add_on_time === 'string' ? row.last_add_on_time : '',
+    last_add_on_price: Number(row.last_add_on_price) || 0,
+    group_id: typeof row.group_id === 'string' ? row.group_id : '',
+    group_avg_entry: Number(row.group_avg_entry) || 0,
+    group_best_sl: Number(row.group_best_sl) || 0
   };
 }
 

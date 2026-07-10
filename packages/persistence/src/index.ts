@@ -37,6 +37,12 @@ export type PositionStateRecord = {
   best_sl: number;
   open_time: string;
   last_modify_time: string;
+  add_on_count: number;
+  last_add_on_time: string;
+  last_add_on_price: number;
+  group_id: string;
+  group_avg_entry: number;
+  group_best_sl: number;
 };
 
 export { BE_TRIGGER_ATR_DEFAULT } from './helpers.js';
@@ -480,6 +486,12 @@ export function createSqliteEaStore(path: string): EaStore {
       best_sl REAL NOT NULL DEFAULT 0,
       open_time TEXT NOT NULL DEFAULT '',
       last_modify_time TEXT NOT NULL DEFAULT '',
+      add_on_count INTEGER NOT NULL DEFAULT 0,
+      last_add_on_time TEXT NOT NULL DEFAULT '',
+      last_add_on_price REAL NOT NULL DEFAULT 0,
+      group_id TEXT NOT NULL DEFAULT '',
+      group_avg_entry REAL NOT NULL DEFAULT 0,
+      group_best_sl REAL NOT NULL DEFAULT 0,
       PRIMARY KEY (account_id, symbol, ticket)
     );
     CREATE INDEX IF NOT EXISTS idx_ea_events_kind_account_delivered
@@ -585,8 +597,14 @@ export function createSqliteEaStore(path: string): EaStore {
       be_trigger_atr,
       best_sl,
       open_time,
-      last_modify_time
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      last_modify_time,
+      add_on_count,
+      last_add_on_time,
+      last_add_on_price,
+      group_id,
+      group_avg_entry,
+      group_best_sl
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(account_id, symbol, ticket)
     DO UPDATE SET
       tp1_hit = excluded.tp1_hit,
@@ -596,10 +614,16 @@ export function createSqliteEaStore(path: string): EaStore {
       be_trigger_atr = excluded.be_trigger_atr,
       best_sl = excluded.best_sl,
       open_time = excluded.open_time,
-      last_modify_time = excluded.last_modify_time
+      last_modify_time = excluded.last_modify_time,
+      add_on_count = excluded.add_on_count,
+      last_add_on_time = excluded.last_add_on_time,
+      last_add_on_price = excluded.last_add_on_price,
+      group_id = excluded.group_id,
+      group_avg_entry = excluded.group_avg_entry,
+      group_best_sl = excluded.group_best_sl
   `);
   const selectPositionStates = db.prepare(`
-    SELECT ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, best_sl, open_time, last_modify_time
+    SELECT ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, best_sl, open_time, last_modify_time, add_on_count, last_add_on_time, last_add_on_price, group_id, group_avg_entry, group_best_sl
     FROM position_states
     WHERE account_id = ? AND symbol = ?
     ORDER BY ticket ASC
@@ -771,7 +795,13 @@ export function createSqliteEaStore(path: string): EaStore {
         normalized.be_trigger_atr,
         normalized.best_sl,
         normalized.open_time,
-        normalized.last_modify_time
+        normalized.last_modify_time,
+        normalized.add_on_count,
+        normalized.last_add_on_time,
+        normalized.last_add_on_price,
+        normalized.group_id,
+        normalized.group_avg_entry,
+        normalized.group_best_sl
       );
     },
     async loadPositionStates(accountId, symbol) {
@@ -1339,7 +1369,13 @@ function normalizePositionState(state: PositionStateRecord): PositionStateRecord
     be_trigger_atr: Number.isFinite(state.be_trigger_atr) ? state.be_trigger_atr : BE_TRIGGER_ATR_DEFAULT,
     best_sl: Number.isFinite(state.best_sl) ? state.best_sl : 0,
     open_time: state.open_time.length > 0 ? state.open_time : now,
-    last_modify_time: state.last_modify_time.length > 0 ? state.last_modify_time : now
+    last_modify_time: state.last_modify_time.length > 0 ? state.last_modify_time : now,
+    add_on_count: Number.isInteger(state.add_on_count) ? state.add_on_count : 0,
+    last_add_on_time: typeof state.last_add_on_time === 'string' ? state.last_add_on_time : '',
+    last_add_on_price: Number.isFinite(state.last_add_on_price) ? state.last_add_on_price : 0,
+    group_id: typeof state.group_id === 'string' ? state.group_id : '',
+    group_avg_entry: Number.isFinite(state.group_avg_entry) ? state.group_avg_entry : 0,
+    group_best_sl: Number.isFinite(state.group_best_sl) ? state.group_best_sl : 0
   };
 }
 
@@ -1353,6 +1389,12 @@ type PositionStateRow = {
   best_sl: number;
   open_time: string;
   last_modify_time: string;
+  add_on_count: number;
+  last_add_on_time: string;
+  last_add_on_price: number;
+  group_id: string;
+  group_avg_entry: number;
+  group_best_sl: number;
 };
 
 function positionStateFromRow(row: PositionStateRow): PositionStateRecord {
@@ -1365,7 +1407,13 @@ function positionStateFromRow(row: PositionStateRow): PositionStateRecord {
     be_trigger_atr: Number(row.be_trigger_atr),
     best_sl: Number(row.best_sl),
     open_time: row.open_time,
-    last_modify_time: row.last_modify_time
+    last_modify_time: row.last_modify_time,
+    add_on_count: Number(row.add_on_count) || 0,
+    last_add_on_time: typeof row.last_add_on_time === 'string' ? row.last_add_on_time : '',
+    last_add_on_price: Number(row.last_add_on_price) || 0,
+    group_id: typeof row.group_id === 'string' ? row.group_id : '',
+    group_avg_entry: Number(row.group_avg_entry) || 0,
+    group_best_sl: Number(row.group_best_sl) || 0
   };
 }
 
