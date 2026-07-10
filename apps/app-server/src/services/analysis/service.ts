@@ -1,5 +1,5 @@
 import { runReplay, summarizePositions, type PositionManagerPosition, type PositionManagerState } from '@gold-bot/trading-core';
-import type { EaRecord, EaStore, PositionStateRecord } from '@gold-bot/persistence';
+import { BE_TRIGGER_ATR_DEFAULT, type EaRecord, type EaStore, type PositionStateRecord } from '@gold-bot/persistence';
 
 export class AnalysisService {
   constructor(private readonly store: EaStore, private readonly nowIso: () => string) {}
@@ -134,8 +134,15 @@ function toPositionStateRecord(state: PositionManagerState, nowIso: string): Pos
     tp2_hit: state.tp2Hit ?? state.tp2_hit ?? false,
     max_profit_atr: state.maxProfitAtr ?? state.max_profit_atr ?? 0,
     be_moved: state.beMoved ?? state.be_moved ?? false,
-    be_trigger_atr: state.beTriggerAtr ?? state.be_trigger_atr ?? 1.0,
+    be_trigger_atr: state.beTriggerAtr ?? state.be_trigger_atr ?? BE_TRIGGER_ATR_DEFAULT,
+    best_sl: state.bestSl ?? state.best_sl ?? 0,
     open_time: state.openTime ?? state.open_time ?? nowIso,
-    last_modify_time: nowIso
+    last_modify_time: nowIso,
+    add_on_count: state.addOnCount ?? state.add_on_count ?? 0,
+    last_add_on_time: state.lastAddOnTime ?? state.last_add_on_time ?? '',
+    last_add_on_price: state.lastAddOnPrice ?? state.last_add_on_price ?? 0,
+    group_id: state.groupId ?? state.group_id ?? '',
+    group_avg_entry: state.groupAvgEntry ?? state.group_avg_entry ?? 0,
+    group_best_sl: state.groupBestSl ?? state.group_best_sl ?? 0
   };
 }

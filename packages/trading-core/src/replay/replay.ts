@@ -608,7 +608,8 @@ function evaluateReplayPositionCommands(snapshot: ReplaySnapshot, enrichedH1: En
     m5Bars: snapshot.bars.M5 ?? [],
     m1Bars: snapshot.bars.M1 ?? [],
     positions: normalizePositionManagerPositions(snapshot.positions ?? []),
-    states: normalizePositionManagerStates(snapshot.position_states ?? [])
+    states: normalizePositionManagerStates(snapshot.position_states ?? []),
+    equity: snapshot.account?.equity ?? 0
   });
 
   return {

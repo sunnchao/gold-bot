@@ -141,6 +141,7 @@ describe('persistence scaffold', () => {
           max_profit_atr: 1.6,
           be_moved: true,
           be_trigger_atr: 1.5,
+          best_sl: 0,
           open_time: '2026-04-13T06:00:00.000Z',
           last_modify_time: '2026-04-13T08:00:00.000Z'
         });
@@ -151,6 +152,7 @@ describe('persistence scaffold', () => {
           max_profit_atr: 0.4,
           be_moved: false,
           be_trigger_atr: 1.5,
+          best_sl: 0,
           open_time: '2026-04-13T06:05:00.000Z',
           last_modify_time: '2026-04-13T08:05:00.000Z'
         });
@@ -163,8 +165,15 @@ describe('persistence scaffold', () => {
             max_profit_atr: 1.6,
             be_moved: true,
             be_trigger_atr: 1.5,
+            best_sl: 0,
             open_time: '2026-04-13T06:00:00.000Z',
-            last_modify_time: '2026-04-13T08:00:00.000Z'
+            last_modify_time: '2026-04-13T08:00:00.000Z',
+            add_on_count: 0,
+            last_add_on_time: '',
+            last_add_on_price: 0,
+            group_id: '',
+            group_avg_entry: 0,
+            group_best_sl: 0
           }
         ]);
 
@@ -175,6 +184,7 @@ describe('persistence scaffold', () => {
           max_profit_atr: 2.4,
           be_moved: true,
           be_trigger_atr: 1.5,
+          best_sl: 0,
           open_time: '2026-04-13T06:00:00.000Z',
           last_modify_time: '2026-04-13T09:00:00.000Z'
         });
@@ -185,6 +195,7 @@ describe('persistence scaffold', () => {
           max_profit_atr: 0.2,
           be_moved: false,
           be_trigger_atr: 1.5,
+          best_sl: 0,
           open_time: '2026-04-13T07:00:00.000Z',
           last_modify_time: '2026-04-13T07:00:00.000Z'
         });
@@ -199,8 +210,15 @@ describe('persistence scaffold', () => {
             max_profit_atr: 2.4,
             be_moved: true,
             be_trigger_atr: 1.5,
+            best_sl: 0,
             open_time: '2026-04-13T06:00:00.000Z',
-            last_modify_time: '2026-04-13T09:00:00.000Z'
+            last_modify_time: '2026-04-13T09:00:00.000Z',
+            add_on_count: 0,
+            last_add_on_time: '',
+            last_add_on_price: 0,
+            group_id: '',
+            group_avg_entry: 0,
+            group_best_sl: 0
           }
         ]);
         expect((await store.loadPositionStates('90011087', 'GBPJPY')).map((state) => state.ticket)).toEqual([1001]);

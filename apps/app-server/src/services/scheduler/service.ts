@@ -44,6 +44,9 @@ export class SchedulerService {
       await this.queueAIStopLossAdjust(accountId, symbol);
     }
     await this.queuePositionManagerCommands(accountId, symbol, result.replay.position_commands);
+    if (result.replay.position_states != null && result.replay.position_states.length > 0) {
+      await this.analysis.persistPositionStates(accountId, symbol, result.replay.position_states);
+    }
   }
 
   private async canRunLiveAnalysis(accountId: string): Promise<boolean> {

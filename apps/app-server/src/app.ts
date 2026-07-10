@@ -884,6 +884,8 @@ async function queueAIApprovePendingCommands(
   eventTimestamp: string
 ): Promise<StoredCommand | undefined> {
   let firstCommand: StoredCommand | undefined;
+  const positions = await deps.store.getPositions(accountId, symbol);
+  const positionStates = await deps.store.loadPositionStates(accountId, symbol);
   for (const tradePlan of tradePlans) {
     const queueSkipReason = aiApproveQueueSkipReason(tradePlan, riskGate);
     if (queueSkipReason != null) {
@@ -896,13 +898,14 @@ async function queueAIApprovePendingCommands(
       symbol,
       tradePlan,
       nowIso: eventTimestamp,
-      cooldown: deps.aiApproveCooldown
+      cooldown: deps.aiApproveCooldown,
+      positionStates
     });
     if (!pendingGate.accepted) {
       await recordAIApprovePendingGateEvent(deps.store, accountId, symbol, tradePlan, pendingGate.reason, eventTimestamp);
       continue;
     }
-    const candidate = tradePlanToCommandCandidate(accountId, symbol, tradePlan, riskGate, eventTimestamp, pendingGate.orderType);
+    const candidate = tradePlanToCommandCandidate(accountId, symbol, tradePlan, riskGate, eventTimestamp, pendingGate.orderType, positions);
     const command = await deps.commandLifecycle.acceptCandidate(accountId, candidate);
     firstCommand ??= command;
     if (command.status === 'queued') {
@@ -1497,7 +1500,8 @@ function tradePlanToCommandCandidate(
   tradePlan: EaRecord,
   riskGate: EaRecord,
   nowIso: string,
-  orderType: AIApproveOrderType
+  orderType: AIApproveOrderType,
+  positions?: EaRecord[]
 ): CommandCandidate {
   return buildAIApproveCommandCandidate({
     accountId,
@@ -1505,7 +1509,8 @@ function tradePlanToCommandCandidate(
     tradePlan,
     riskGate,
     nowIso,
-    orderType
+    orderType,
+    positions
   });
 }
 

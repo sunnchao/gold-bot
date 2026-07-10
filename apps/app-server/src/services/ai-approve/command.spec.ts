@@ -121,4 +121,80 @@ describe('AI approve command builder', () => {
     expect([buyLimit.order_type, sellLimit.order_type]).not.toContain('BUY_STOP');
     expect([buyLimit.order_type, sellLimit.order_type]).not.toContain('SELL_STOP');
   });
+
+  it('builds adverse SIGNAL with scale_in_add_on_type/level and unified_sl = min openPrice (BUY)', () => {
+    const command = buildAIApproveCommandCandidate({
+      accountId: '90011087',
+      symbol: 'XAUUSD',
+      nowIso: '2026-04-13T08:00:00Z',
+      orderType: 'BUY_LIMIT',
+      riskGate: { decision_id: 'tpv1_adverse', mode: 'approve', symbol: 'XAUUSD' },
+      tradePlan: {
+        decision_id: 'tpv1_adverse',
+        mode: 'approve',
+        side: 'buy',
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        stop_loss: 3330,
+        take_profit: [3345],
+        max_lots: 0.05,
+        confidence: 76,
+        narrative: 'adverse add-on L1',
+        add_on: true,
+        add_on_type: 'adverse',
+        add_on_level: 1
+      },
+      positions: [
+        { ticket: 1001, symbol: 'XAUUSD', type: 'BUY', lots: 0.10, open_price: 3337.6, strategy: 'ai_signal' }
+      ]
+    });
+
+    expect(command).toMatchObject({
+      type: 'BUY',
+      order_type: 'BUY_LIMIT',
+      strategy: 'ai_signal',
+      scale_in_parent_ticket: 1001,
+      weighted_avg_entry: 3337.6,
+      unified_sl: 3337.6,
+      scale_in_count: 1,
+      scale_in_add_on_type: 'adverse',
+      scale_in_add_on_level: 1
+    });
+  });
+
+  it('builds adverse SIGNAL with unified_sl = min openPrice across multiple positions (BUY)', () => {
+    const command = buildAIApproveCommandCandidate({
+      accountId: '90011087',
+      symbol: 'XAUUSD',
+      nowIso: '2026-04-13T08:00:00Z',
+      orderType: 'BUY_LIMIT',
+      riskGate: { decision_id: 'tpv1_adverse', mode: 'approve', symbol: 'XAUUSD' },
+      tradePlan: {
+        decision_id: 'tpv1_adverse',
+        mode: 'approve',
+        side: 'buy',
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        stop_loss: 3330,
+        take_profit: [3345],
+        max_lots: 0.05,
+        confidence: 76,
+        narrative: 'adverse add-on L2',
+        add_on: true,
+        add_on_type: 'adverse',
+        add_on_level: 2
+      },
+      positions: [
+        { ticket: 1001, symbol: 'XAUUSD', type: 'BUY', lots: 0.10, open_price: 3340.0, strategy: 'ai_signal' },
+        { ticket: 1002, symbol: 'XAUUSD', type: 'BUY', lots: 0.06, open_price: 3338.0, strategy: 'ai_signal' }
+      ]
+    });
+
+    expect(command).toMatchObject({
+      scale_in_parent_ticket: 1002,
+      weighted_avg_entry: 3339.25,
+      unified_sl: 3338,
+      scale_in_count: 2,
+      scale_in_add_on_type: 'adverse',
+      scale_in_add_on_level: 2
+    });
+  });
 });

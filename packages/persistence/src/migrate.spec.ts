@@ -90,4 +90,31 @@ describe('migrate', () => {
       rmSync(tmpDir, { recursive: true });
     }
   });
+
+  it('migration 0009 adds adverse add-on columns to position_states', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'migrate-test-'));
+    const dbPath = join(tmpDir, 'test.db');
+
+    try {
+      const db = new DatabaseSync(dbPath);
+      runMigrations(db);
+
+      const columns = (db.prepare("PRAGMA table_info(position_states)").all() as Array<{ name: string }>)
+        .map((row) => row.name);
+
+      expect(columns).toContain('add_on_count');
+      expect(columns).toContain('last_add_on_time');
+      expect(columns).toContain('last_add_on_price');
+      expect(columns).toContain('group_id');
+      expect(columns).toContain('group_avg_entry');
+      expect(columns).toContain('group_best_sl');
+
+      const applied = db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: number }>;
+      expect(applied.map((row) => row.version)).toContain(9);
+
+      db.close();
+    } finally {
+      rmSync(tmpDir, { recursive: true });
+    }
+  });
 });

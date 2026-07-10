@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createInMemoryEaStore } from '@gold-bot/persistence';
 import { SchedulerService } from './service.js';
 import { CommandLifecycleService } from '../command-lifecycle/service.js';
@@ -452,8 +452,15 @@ describe('SchedulerService', () => {
       max_profit_atr: 1.6,
       be_moved: true,
       be_trigger_atr: 1.5,
+      best_sl: 0,
       open_time: '2026-04-13T06:00:00.000Z',
-      last_modify_time: '2026-04-13T07:00:00.000Z'
+      last_modify_time: '2026-04-13T07:00:00.000Z',
+      add_on_count: 0,
+      last_add_on_time: '',
+      last_add_on_price: 0,
+      group_id: '',
+      group_avg_entry: 0,
+      group_best_sl: 0
     });
     const analysis = new AnalysisService(store, () => '2026-04-13T08:00:00.000Z');
     const scheduler = new SchedulerService(analysis, new CommandLifecycleService(store), undefined, store);
@@ -489,3 +496,31 @@ async function saveTradeableHeartbeat(store: ReturnType<typeof createInMemoryEaS
     is_trade_allowed: true
   });
 }
+
+it('persists position_states after position review', async () => {
+  const store = createInMemoryEaStore();
+  const mockPositionStates = [
+    { ticket: 6001, addOnCount: 1, lastAddOnTime: '2026-04-13T08:00:00.000Z', groupAvgEntry: 3328.5 }
+  ];
+  const analysis = {
+    analyzeAccountSymbol: vi.fn().mockResolvedValue({
+      replay: {
+        position_states: mockPositionStates,
+        signal: null
+      }
+    }),
+    persistPositionStates: vi.fn().mockResolvedValue(undefined)
+  };
+
+  await saveTradeableHeartbeat(store);
+
+  const commandLifecycle = new CommandLifecycleService(store);
+  const scheduler = new SchedulerService(analysis as any, commandLifecycle, undefined, store);
+  await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+
+  expect(analysis.persistPositionStates).toHaveBeenCalledWith(
+    '90011087',
+    'XAUUSD',
+    mockPositionStates
+  );
+});

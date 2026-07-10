@@ -4,6 +4,8 @@ import type { DecisionEvent, DecisionEventFilter, DecisionEventInput } from './d
 import type { ShadowComparison, ShadowComparisonFilter, ShadowComparisonSummary } from './shadow.js';
 import type { StoredApiToken, StoredApiTokenInput } from './tokens.js';
 
+export const BE_TRIGGER_ATR_DEFAULT = 1.5;
+
 export type EaRecord = Record<string, unknown>;
 
 export type EaCommand = EaRecord & {
@@ -18,8 +20,15 @@ export type PositionStateRecord = {
   max_profit_atr: number;
   be_moved: boolean;
   be_trigger_atr: number;
+  best_sl: number;
   open_time: string;
   last_modify_time: string;
+  add_on_count: number;
+  last_add_on_time: string;
+  last_add_on_price: number;
+  group_id: string;
+  group_avg_entry: number;
+  group_best_sl: number;
 };
 
 export type PositionStateRow = {
@@ -29,8 +38,15 @@ export type PositionStateRow = {
   max_profit_atr: number;
   be_moved: number;
   be_trigger_atr: number;
+  best_sl: number;
   open_time: string;
   last_modify_time: string;
+  add_on_count: number;
+  last_add_on_time: string;
+  last_add_on_price: number;
+  group_id: string;
+  group_avg_entry: number;
+  group_best_sl: number;
 };
 
 export type RuntimeCommandRow = {
@@ -275,9 +291,16 @@ export function normalizePositionState(state: PositionStateRecord): PositionStat
     tp2_hit: state.tp2_hit === true,
     max_profit_atr: Number.isFinite(state.max_profit_atr) ? state.max_profit_atr : 0,
     be_moved: state.be_moved === true,
-    be_trigger_atr: Number.isFinite(state.be_trigger_atr) ? state.be_trigger_atr : 1.0,
+    be_trigger_atr: Number.isFinite(state.be_trigger_atr) ? state.be_trigger_atr : BE_TRIGGER_ATR_DEFAULT,
+    best_sl: Number.isFinite(state.best_sl) ? state.best_sl : 0,
     open_time: state.open_time.length > 0 ? state.open_time : now,
-    last_modify_time: state.last_modify_time.length > 0 ? state.last_modify_time : now
+    last_modify_time: state.last_modify_time.length > 0 ? state.last_modify_time : now,
+    add_on_count: Number.isInteger(state.add_on_count) ? state.add_on_count : 0,
+    last_add_on_time: typeof state.last_add_on_time === 'string' ? state.last_add_on_time : '',
+    last_add_on_price: Number.isFinite(state.last_add_on_price) ? state.last_add_on_price : 0,
+    group_id: typeof state.group_id === 'string' ? state.group_id : '',
+    group_avg_entry: Number.isFinite(state.group_avg_entry) ? state.group_avg_entry : 0,
+    group_best_sl: Number.isFinite(state.group_best_sl) ? state.group_best_sl : 0
   };
 }
 
@@ -289,8 +312,15 @@ export function positionStateFromRow(row: PositionStateRow): PositionStateRecord
     max_profit_atr: Number(row.max_profit_atr),
     be_moved: row.be_moved !== 0,
     be_trigger_atr: Number(row.be_trigger_atr),
+    best_sl: Number(row.best_sl),
     open_time: row.open_time,
-    last_modify_time: row.last_modify_time
+    last_modify_time: row.last_modify_time,
+    add_on_count: Number(row.add_on_count) || 0,
+    last_add_on_time: typeof row.last_add_on_time === 'string' ? row.last_add_on_time : '',
+    last_add_on_price: Number(row.last_add_on_price) || 0,
+    group_id: typeof row.group_id === 'string' ? row.group_id : '',
+    group_avg_entry: Number(row.group_avg_entry) || 0,
+    group_best_sl: Number(row.group_best_sl) || 0
   };
 }
 
