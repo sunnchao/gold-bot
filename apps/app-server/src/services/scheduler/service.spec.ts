@@ -200,10 +200,15 @@ describe('SchedulerService', () => {
     expect(await store.listCommands('90011087')).toEqual([]);
   });
 
-  it('does not queue replay-only position manager commands during position review', async () => {
+  it('queues replay position manager commands during position review', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
     await saveTradeableHeartbeat(store);
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      positions: [{ ticket: 777, symbol: 'XAUUSD', type: 'BUY', open_price: 3320, lots: 0.1, sl: 3325, tp: 3345 }]
+    });
     const commandLifecycle = new CommandLifecycleService(store);
     const scheduler = new SchedulerService(
       {
@@ -212,7 +217,7 @@ describe('SchedulerService', () => {
             replay: {
               signal: null,
               position_commands: [
-                { action: 'MODIFY', ticket: 777, new_sl: 3330, sl: 3330, tp: 3345, old_sl: 3325, distance: 5, atr: 10, decision_id: 'tpv1_modify', reason: 'breakeven_2.2ATR' },
+                { action: 'MODIFY', ticket: 777, new_sl: 3330, reason: 'breakeven_2.2ATR' },
                 { action: 'CLOSE', ticket: 777, lots: 0.04, reason: 'TP1_2.2ATR' }
               ]
             }
@@ -228,7 +233,37 @@ describe('SchedulerService', () => {
     await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
     await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
 
-    expect(await store.listCommands('90011087')).toEqual([]);
+    const commands = await store.listCommands('90011087');
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toMatchObject({
+      command_id: expect.stringMatching(/^pm_90011087_XAUUSD_777_modify_breakeven_2_2ATR_20260413080000000$/),
+      action: 'MODIFY',
+      source: 'position_manager',
+      status: 'queued',
+      symbol: 'XAUUSD',
+      ticket: 777,
+      new_sl: 3330,
+      sl: 3330,
+      old_sl: 3325,
+      tp: 3345,
+      open_price: 3320,
+      distance: 5,
+      reason: 'breakeven_2.2ATR',
+      trigger_time: '2026-04-13T08:00:00.000Z',
+      analysis_mode: 'positions'
+    });
+    expect(commands[1]).toMatchObject({
+      command_id: expect.stringMatching(/^pm_90011087_XAUUSD_777_close_TP1_2_2ATR_20260413080000000$/),
+      action: 'CLOSE',
+      source: 'position_manager',
+      status: 'queued',
+      symbol: 'XAUUSD',
+      ticket: 777,
+      lots: 0.04,
+      reason: 'TP1_2.2ATR',
+      trigger_time: '2026-04-13T08:00:00.000Z',
+      analysis_mode: 'positions'
+    });
   });
 
   it('publishes position-triggered replay signals with positions analysis mode', async () => {

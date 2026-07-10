@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { CommandCandidate, EaRecord, EaStore } from '@gold-bot/persistence';
+import type { ReplayPositionCommand } from '@gold-bot/trading-core';
 import { AnalysisService } from '../analysis/service.js';
 import { CommandLifecycleService } from '../command-lifecycle/service.js';
 import type { ShadowService } from '../shadow/service.js';
@@ -42,6 +43,7 @@ export class SchedulerService {
     if (result.replay.signal == null) {
       await this.queueAIStopLossAdjust(accountId, symbol);
     }
+    await this.queuePositionManagerCommands(accountId, symbol, result.replay.position_commands);
   }
 
   private async canRunLiveAnalysis(accountId: string): Promise<boolean> {
@@ -142,6 +144,83 @@ export class SchedulerService {
       await this.commandLifecycle.acceptCandidate(accountId, candidate);
       this.rememberAIStopLossQueued(accountId, symbol, candidate);
     }
+  }
+
+  private async queuePositionManagerCommands(
+    accountId: string,
+    symbol: string,
+    commands: ReplayPositionCommand[] | null
+  ): Promise<void> {
+    if (commands == null || commands.length === 0) {
+      return;
+    }
+    const nowIso = this.nowIso();
+    const positions = (await this.store?.getPositions?.(accountId, symbol)) ?? [];
+    for (const command of commands) {
+      const candidate = this.positionManagerCommandCandidate(accountId, symbol, command, positions, nowIso);
+      if (candidate == null || (await this.store?.getCommand?.(candidate.command_id ?? '')) != null) {
+        continue;
+      }
+      await this.commandLifecycle.acceptCandidate(accountId, candidate);
+    }
+  }
+
+  private positionManagerCommandCandidate(
+    accountId: string,
+    symbol: string,
+    command: ReplayPositionCommand,
+    positions: EaRecord[],
+    nowIso: string
+  ): CommandCandidate | undefined {
+    const ticket = command.ticket;
+    if (!Number.isFinite(ticket) || ticket <= 0) {
+      return undefined;
+    }
+    const commandId = positionManagerCommandId(accountId, symbol, command, nowIso);
+    if (command.action === 'MODIFY') {
+      const newSL = command.new_sl ?? 0;
+      if (newSL <= 0) {
+        return undefined;
+      }
+      const position = positions.find((candidate) => numberField(candidate, 'ticket') === ticket);
+      if (position == null) {
+        return undefined;
+      }
+      const oldSL = numberField(position, 'sl');
+      if (oldSL <= 0) {
+        return undefined;
+      }
+      return {
+        command_id: commandId,
+        action: 'MODIFY',
+        source: 'position_manager',
+        symbol,
+        ticket,
+        new_sl: newSL,
+        sl: newSL,
+        old_sl: oldSL,
+        tp: numberField(position, 'tp'),
+        open_price: numberField(position, 'open_price') || numberField(position, 'openPrice'),
+        distance: Math.abs(newSL - oldSL),
+        reason: command.reason,
+        trigger_time: nowIso,
+        analysis_mode: 'positions'
+      };
+    }
+    if (command.action === 'CLOSE') {
+      return {
+        command_id: commandId,
+        action: 'CLOSE',
+        source: 'position_manager',
+        symbol,
+        ticket,
+        lots: command.lots,
+        reason: command.reason,
+        trigger_time: nowIso,
+        analysis_mode: 'positions'
+      };
+    }
+    return undefined;
   }
 
   private isAIStopLossCooldownActive(accountId: string, symbol: string, candidate: CommandCandidate): boolean {
@@ -303,6 +382,23 @@ function liveCommandId(accountId: string, symbol: string, signal: EaRecord, deci
 function aiStopLossCommandId(accountId: string, symbol: string, ticket: number, nowIso: string): string {
   const seed = [accountId, symbol.toUpperCase(), ticket, utcMinuteKey(nowIso)].join('|');
   return `mod_${createHash('sha1').update(seed).digest('hex').slice(0, 16)}`;
+}
+
+function positionManagerCommandId(accountId: string, symbol: string, command: ReplayPositionCommand, nowIso: string): string {
+  const timestampKey = nowIso.replace(/[^0-9]/g, '') || String(Date.now());
+  return [
+    'pm',
+    commandIdPart(accountId),
+    commandIdPart(symbol.toUpperCase()),
+    String(command.ticket),
+    command.action.toLowerCase(),
+    commandIdPart(command.reason),
+    timestampKey
+  ].filter((part) => part.length > 0).join('_');
+}
+
+function commandIdPart(value: string): string {
+  return value.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48);
 }
 
 function aiDecisionId(aiResult: EaRecord): string {

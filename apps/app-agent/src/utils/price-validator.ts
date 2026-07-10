@@ -163,8 +163,8 @@ export function validateTradeRecommendation(
     const tpDist = Math.abs(fixed.take_profit_1 - fixed.entry_price);
     if (slDist > 0) {
       const rr = tpDist / slDist;
-      if (rr < 0.5) {
-        warnings.push(`Risk/reward ratio ${rr.toFixed(2)} < 0.5 — unfavorable trade`);
+      if (rr < 0.4) {
+        warnings.push(`Risk/reward ratio ${rr.toFixed(2)} < 0.4 — unfavorable trade`);
       }
       // Update the risk_reward_ratio field to match actual computed value
       fixed = { ...fixed, risk_reward_ratio: Number(rr.toFixed(2)) };

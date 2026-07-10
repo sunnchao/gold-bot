@@ -346,9 +346,9 @@ export function composeFinalSignal(state: AnalysisGraphStateType): AISignalResul
     technicalAnalysis: technical,
     waveAnalysis,
     chanlunAnalysis,
-    arbitration,
     riskAssessment,
   } = state;
+  let { arbitration } = state;
   const filters = marketFilterCodes(state);
   const marketBlocked = filters.blocking.length > 0;
 
@@ -377,6 +377,48 @@ export function composeFinalSignal(state: AnalysisGraphStateType): AISignalResul
   ) {
     confidence = Math.min(100, confidence + 10);
   }
+
+  /**
+   * 动态置信度阈值计算
+   * 根据趋势强度、多周期共振、持仓盈亏动态调整执行阈值
+   */
+  function getDynamicConfidenceThreshold(
+    trendStrength: string | undefined,
+    multiTfAlign: boolean,
+    currentPositionPnL: number,
+  ): number {
+    let baseThreshold = 58;
+
+    if (trendStrength === 'strong') baseThreshold -= 8;
+    else if (trendStrength === 'weak') baseThreshold += 6;
+
+    if (multiTfAlign) baseThreshold -= 5;
+
+    if (currentPositionPnL < -20) baseThreshold += 15;
+
+    return Math.max(35, Math.min(75, baseThreshold));
+  }
+
+  const dynamicThreshold = getDynamicConfidenceThreshold(
+    waveAnalysis?.trend_strength,
+    arbitration?.dow_theory?.multi_tf_confirm ?? false,
+    0, // TODO: integrate position P&L when available
+  );
+
+  if (arbitration && confidence < dynamicThreshold && arbitration.action === 'open') {
+    const gatedConfidence = Math.min(confidence, dynamicThreshold - 5);
+    arbitration = {
+      ...arbitration,
+      action: 'hold',
+      confidence: gatedConfidence,
+    };
+    confidence = gatedConfidence;
+  }
+
+  const effectiveState =
+    arbitration === state.arbitration ? state : { ...state, arbitration };
+  const tradeAction =
+    arbitration.action === 'open' ? state.tradeAction : undefined;
 
   return {
     bias,
@@ -433,9 +475,11 @@ export function composeFinalSignal(state: AnalysisGraphStateType): AISignalResul
     wave_theory: arbitration?.wave_theory,
     chanlun_theory: arbitration?.chanlun_theory,
     trade_recommendation: arbitration?.trade_recommendation,
-    trade_plan: (state.tradeAction && state.tradeAction.type !== 'do_nothing')
-      ? buildTradePlanFromTradeAction(state, state.tradeAction)
-      : buildTradePlan(state, confidence),
-    dual_trade_plan: buildDualTradePlan(state, confidence),
+    trade_plan: (tradeAction && tradeAction.type !== 'do_nothing')
+      ? buildTradePlanFromTradeAction(effectiveState, tradeAction)
+      : buildTradePlan(effectiveState, confidence),
+    dual_trade_plan: arbitration.action === 'open'
+      ? buildDualTradePlan(effectiveState, confidence)
+      : undefined,
   };
 }

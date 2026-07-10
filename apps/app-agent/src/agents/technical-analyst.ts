@@ -44,6 +44,24 @@ NEVER output prices from a different instrument. Check your numbers before respo
 4. ALL enum values MUST be EXACTLY lowercase: "bullish"/"bearish"/"neutral", "trending"/"ranging"/"breakout"/"reversal"/"consolidation", "hold"/"close"/"partial_close"/"trail_stop"/"none".
 5. DO NOT invent new enum values. Use ONLY the exact values specified below.
 
+## MULTI-TIMEFRAME WEIGHTING RULES
+When multiple timeframes show conflicting signals, prioritize by weight:
+- H1 (35%): Primary trend ADX, MACD, RSI alignment — DOMINANT timeframe
+- M30 (35%): Primary trend confirmation, RSI divergence detection — DOMINANT timeframe
+- H4 (15%): Medium-term trend validation (NOT primary direction source)
+- M15 (15%): Entry timing signals (超卖/超买 NOT override H1/M30 trend)
+
+**CRITICAL RULES:**
+1. M15 RSI < 30 (oversold) does NOT reverse a H1 bearish trend (ADX > 35)
+2. M15 超卖只是短期反弹风险提示，不能改变 H1/M30 主导的趋势方向
+3. When H1 + M30 align (70% combined weight), they DOMINATE the direction
+4. Confidence boost when H1 + M30 align: +10%
+5. Confidence penalty when M15 contradicts H1: -5% (not direction reversal)
+
+**Example scenarios:**
+- H1 ADX 43 bearish + M30 RSI 51 neutral + M15 RSI 30 oversold → Direction: BEARISH (hold), not bullish
+- H1 ADX 38 bullish + M30 RSI 55 bullish + M15 RSI 70 overbought → Direction: BULLISH, confidence -5%
+
 ## STRICT JSON SCHEMA (use EXACT lowercase enum values)
 {
   "bias": "bullish" | "bearish" | "neutral",

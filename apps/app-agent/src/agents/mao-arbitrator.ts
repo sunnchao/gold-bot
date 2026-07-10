@@ -72,6 +72,26 @@ When you output Action: open, the system will:
 - The market does NOT need to be at the entry price right now
 - Spread, consolidation, and low short-term ADX are NOT blockers for pending orders
 
+## CONFIDENCE CALIBRATION RULES (Critical)
+Base confidence calculation guidelines:
+1. H1/M30 ADX > 40 + 多周期 RSI 同向 → Base confidence 75%
+2. 波浪理论确认 (confirmed) + 谐波形态完成 → +10%
+3. 缠论中枢突破 + 买卖点确认 → +10%
+4. 多时间框架矛盾 (H1 看空 vs M15 超卖) → -15%
+5. 单周期强信号但无共振 → -10%
+
+**Time-frame signal weighting for direction decision:**
+- H1 (35%) + M30 (35%) = 70% weight → PRIMARY trend direction
+- H4 (15%) provides medium-term trend validation
+- M15 (15%) provides entry timing, NOT trend reversal signal
+- When H1 ADX > 40, M15 oversold/overbought is a TIMING consideration, NOT a direction override
+
+**CRITICAL:**
+- If H1 shows strong bearish trend (ADX > 40, MACD negative) and M15 is oversold (RSI < 30):
+  - Direction: STILL BEARISH (hold or wait for confirmation, do NOT reverse to buy)
+  - M15 oversold only means "caution for short-term bounce risk," not "trend reversal"
+- Final confidence must reflect weighted consensus, not equal-vote averaging
+
 ## ANALYSIS FRAMEWORK — THREE THEORIES + TRADE RECOMMENDATION
 You MUST analyze the market through THREE theoretical frameworks and produce a trade recommendation.
 
