@@ -62,6 +62,12 @@ describe('determineTrendDirection', () => {
   it('returns NEUTRAL for insufficient data', () => {
     expect(determineTrendDirection([], [])).toBe('NEUTRAL');
   });
+
+  it('returns NEUTRAL when highs and lows do not agree on direction', () => {
+    const swingHighs = [{ index: 0, price: 10, type: 'HIGH' as const }, { index: 2, price: 15, type: 'HIGH' as const }];
+    const swingLows = [{ index: 1, price: 8, type: 'LOW' as const }, { index: 3, price: 7, type: 'LOW' as const }];
+    expect(determineTrendDirection(swingHighs, swingLows)).toBe('NEUTRAL');
+  });
 });
 
 describe('detectStructureBreaks', () => {
@@ -191,7 +197,51 @@ describe('buildSMCContext', () => {
     expect(ctx.h4TrendDirection).toBe('NEUTRAL');
     expect(ctx.h1TrendDirection).toBe('NEUTRAL');
   });
+
+  it('populates detector-built M30 and M15 breaks, sweeps, OBs, and FVGs', () => {
+    const m30 = smcCounterPullbackBars();
+    const m15 = smcCounterPullbackBars();
+    const ctx = buildSMCContext([], [], m30, m15);
+
+    expect(ctx.m30TrendDirection).toBe('BEAR');
+    expect(ctx.m15TrendDirection).toBe('BEAR');
+    expect(ctx.m30Breaks).toContainEqual(expect.objectContaining({ index: 28, direction: 'UP', type: 'CHoCH' }));
+    expect(ctx.m15Breaks).toContainEqual(expect.objectContaining({ index: 28, direction: 'UP', type: 'CHoCH' }));
+    expect(ctx.m30Sweeps).toContainEqual(expect.objectContaining({ index: 17, level: 100, side: 'BULL', reversed: true }));
+    expect(ctx.m15Sweeps).toContainEqual(expect.objectContaining({ index: 17, level: 100, side: 'BULL', reversed: true }));
+    expect(ctx.m30OBs).toContainEqual(expect.objectContaining({ index: 27, side: 'BUY', valid: true }));
+    expect(ctx.m15OBs).toContainEqual(expect.objectContaining({ index: 27, side: 'BUY', valid: true }));
+    expect(ctx.m30FVGs).toContainEqual(expect.objectContaining({ startIndex: 26, side: 'BULL', filled: false }));
+    expect(ctx.m15FVGs).toContainEqual(expect.objectContaining({ startIndex: 26, side: 'BULL', filled: false }));
+  });
+
+  it('populates H1 short-lookback order blocks used by breakout pyramid guards', () => {
+    const h1 = smcShortOrderBlockBars();
+    const ctx = buildSMCContext([], h1, []);
+
+    expect(ctx.h1TrendDirection).toBe('BEAR');
+    expect(ctx.h1ShortOBs).toContainEqual(expect.objectContaining({ index: 27, side: 'BUY', valid: true }));
+  });
 });
+
+function smcCounterPullbackBars(): SmcBar[] {
+  const bars = Array.from({ length: 30 }, () => makeBar(101, 100.8, 101, 100));
+  bars[4] = makeBar(108, 104, 106, 106);
+  bars[8] = makeBar(105, 100, 102, 103);
+  bars[12] = makeBar(106, 102, 104, 104);
+  bars[16] = makeBar(103, 100, 101, 101);
+  bars[17] = makeBar(101, 99.5, 100.3, 100);
+  bars[20] = makeBar(102, 100.2, 101, 101);
+  bars[25] = makeBar(101, 100.2, 100.3, 100);
+  bars[26] = makeBar(99.2, 98.8, 99, 99);
+  bars[27] = makeBar(101.2, 99.8, 100.2, 101.1);
+  bars[28] = makeBar(105, 100.5, 104.5, 100);
+  return bars;
+}
+
+function smcShortOrderBlockBars(): SmcBar[] {
+  return smcCounterPullbackBars();
+}
 
 describe('helper functions', () => {
   it('filterOBsBySide', () => {

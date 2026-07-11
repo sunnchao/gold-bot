@@ -440,21 +440,31 @@ function checkOrderBlockValidity(ob: OrderBlock, bars: SmcBar[]): OrderBlock {
 // --------------- SMC Context Builder ---------------
 
 /**
- * Constructs a multi-timeframe SMC context from H4, H1, and M30 bars.
+ * Constructs a multi-timeframe SMC context from H4, H1, M30, and M15 bars.
  */
-export function buildSMCContext(h4: SmcBar[], h1: SmcBar[], _m30: SmcBar[]): SMCContext {
+export function buildSMCContext(h4: SmcBar[], h1: SmcBar[], m30: SmcBar[], m15: SmcBar[] = []): SMCContext {
   const ctx: SMCContext = {
     h4OBs: [],
     h1OBs: [],
     h1ShortOBs: [],
+    m30OBs: [],
+    m15OBs: [],
     h4FVGs: [],
     h1FVGs: [],
+    m30FVGs: [],
+    m15FVGs: [],
     h4Breaks: [],
     h1Breaks: [],
+    m30Breaks: [],
+    m15Breaks: [],
     h4Sweeps: [],
     h1Sweeps: [],
+    m30Sweeps: [],
+    m15Sweeps: [],
     h4TrendDirection: 'NEUTRAL',
     h1TrendDirection: 'NEUTRAL',
+    m30TrendDirection: 'NEUTRAL',
+    m15TrendDirection: 'NEUTRAL',
   };
 
   if (h4.length >= 20) {
@@ -466,7 +476,7 @@ export function buildSMCContext(h4: SmcBar[], h1: SmcBar[], _m30: SmcBar[]): SMC
       ...detectOrderBlocks(h4, 'SELL', 50, ctx.h4TrendDirection),
     ];
     ctx.h4FVGs = detectFVGs(h4, 50);
-    ctx.h4Sweeps = detectLiquiditySweeps(h4, h4Highs, h4Lows, 3);
+    ctx.h4Sweeps = detectLiquiditySweeps(h4, h4Highs, h4Lows, 10);
   }
 
   if (h1.length >= 20) {
@@ -478,13 +488,37 @@ export function buildSMCContext(h4: SmcBar[], h1: SmcBar[], _m30: SmcBar[]): SMC
       ...detectOrderBlocks(h1, 'SELL', 50, ctx.h1TrendDirection),
     ];
     ctx.h1FVGs = detectFVGs(h1, 50);
-    ctx.h1Sweeps = detectLiquiditySweeps(h1, h1Highs, h1Lows, 3);
+    ctx.h1Sweeps = detectLiquiditySweeps(h1, h1Highs, h1Lows, 10);
 
     // Short-lookback OBs for breakout_pyramid (lookback=20)
     ctx.h1ShortOBs = [
       ...detectOrderBlocks(h1, 'BUY', 20, ctx.h1TrendDirection),
       ...detectOrderBlocks(h1, 'SELL', 20, ctx.h1TrendDirection),
     ];
+  }
+
+  if (m30.length >= 20) {
+    const { swingHighs: m30Highs, swingLows: m30Lows } = findSwingPoints(m30, 3, 3);
+    ctx.m30TrendDirection = determineTrendDirection(m30Highs, m30Lows);
+    ctx.m30Breaks = detectStructureBreaks(m30, 50, ctx.m30TrendDirection);
+    ctx.m30OBs = [
+      ...detectOrderBlocks(m30, 'BUY', 50, ctx.m30TrendDirection),
+      ...detectOrderBlocks(m30, 'SELL', 50, ctx.m30TrendDirection),
+    ];
+    ctx.m30FVGs = detectFVGs(m30, 50);
+    ctx.m30Sweeps = detectLiquiditySweeps(m30, m30Highs, m30Lows, 10);
+  }
+
+  if (m15.length >= 20) {
+    const { swingHighs: m15Highs, swingLows: m15Lows } = findSwingPoints(m15, 3, 3);
+    ctx.m15TrendDirection = determineTrendDirection(m15Highs, m15Lows);
+    ctx.m15Breaks = detectStructureBreaks(m15, 30, ctx.m15TrendDirection);
+    ctx.m15OBs = [
+      ...detectOrderBlocks(m15, 'BUY', 30, ctx.m15TrendDirection),
+      ...detectOrderBlocks(m15, 'SELL', 30, ctx.m15TrendDirection),
+    ];
+    ctx.m15FVGs = detectFVGs(m15, 30);
+    ctx.m15Sweeps = detectLiquiditySweeps(m15, m15Highs, m15Lows, 10);
   }
 
   return ctx;

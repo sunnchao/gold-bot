@@ -457,10 +457,10 @@ describe('strategy engine replay-backed slice', () => {
       accountId: '90011087',
       symbol: '',
       price: 100.4,
-      bars: { H1: counterPullbackBuyBars() },
+      bars: { H1: counterPullbackBuyBars(), M30: counterPullbackBuyBars() },
       smc: {
-        h1_breaks: [{ index: 18, direction: 'UP', level: 101, type: 'CHoCH' }],
-        h1_sweeps: [{ index: 17, level: 100, side: 'BULL', reversed: true }]
+        m30_breaks: [{ index: 18, direction: 'UP', level: 101, type: 'CHoCH' }],
+        m30_sweeps: [{ index: 17, level: 100, side: 'BULL', reversed: true }]
       }
     });
 
@@ -472,12 +472,12 @@ describe('strategy engine replay-backed slice', () => {
       stopLoss: 99,
       tp1: 104.4,
       tp2: 108.4,
-      score: 7
+      score: 6
     });
     expect(result.logs).toContainEqual({
       level: 'signal',
       strategy: '反转回调',
-      message: '🟢 BUY 评分=7 | 看涨反转回调: CHoCH↑+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=44.0 | MACD>0'
+      message: '🟢 BUY 评分=7 | M30 | 看涨反转回调: CHoCH↑+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=44.0 | MACD>0'
     });
     expect(result.canProduceLiveCommands).toBe(false);
   });
@@ -487,10 +487,10 @@ describe('strategy engine replay-backed slice', () => {
       accountId: '90011087',
       symbol: '',
       price: 99.6,
-      bars: { H1: counterPullbackSellBars() },
+      bars: { H1: counterPullbackSellBars(), M30: counterPullbackSellBars() },
       smc: {
-        h1_breaks: [{ index: 18, direction: 'DOWN', level: 99, type: 'CHoCH' }],
-        h1_sweeps: [{ index: 17, level: 100, side: 'BEAR', reversed: true }]
+        m30_breaks: [{ index: 18, direction: 'DOWN', level: 99, type: 'CHoCH' }],
+        m30_sweeps: [{ index: 17, level: 100, side: 'BEAR', reversed: true }]
       }
     });
 
@@ -502,12 +502,12 @@ describe('strategy engine replay-backed slice', () => {
       stopLoss: 101,
       tp1: 95.6,
       tp2: 91.6,
-      score: 7
+      score: 6
     });
     expect(result.logs).toContainEqual({
       level: 'signal',
       strategy: '反转回调',
-      message: '🔴 SELL 评分=7 | 看跌反转回调: CHoCH↓+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=56.0 | MACD<0'
+      message: '🔴 SELL 评分=7 | M30 | 看跌反转回调: CHoCH↓+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=56.0 | MACD<0'
     });
     expect(result.canProduceLiveCommands).toBe(false);
   });

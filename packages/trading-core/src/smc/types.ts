@@ -45,14 +45,24 @@ export type SMCContext = {
   h4OBs: OrderBlock[];
   h1OBs: OrderBlock[];
   h1ShortOBs: OrderBlock[];  // lookback=20 for breakout_pyramid strategy
+  m30OBs: OrderBlock[];
+  m15OBs: OrderBlock[];
   h4FVGs: FVG[];
   h1FVGs: FVG[];
+  m30FVGs: FVG[];
+  m15FVGs: FVG[];
   h4Breaks: StructureBreak[];
   h1Breaks: StructureBreak[];
+  m30Breaks: StructureBreak[];
+  m15Breaks: StructureBreak[];
   h4Sweeps: LiquiditySweep[];
   h1Sweeps: LiquiditySweep[];
+  m30Sweeps: LiquiditySweep[];
+  m15Sweeps: LiquiditySweep[];
 
   // Trend direction derived from structure breaks
   h4TrendDirection: 'BULL' | 'BEAR' | 'NEUTRAL';
   h1TrendDirection: 'BULL' | 'BEAR' | 'NEUTRAL';
+  m30TrendDirection: 'BULL' | 'BEAR' | 'NEUTRAL';
+  m15TrendDirection: 'BULL' | 'BEAR' | 'NEUTRAL';
 };

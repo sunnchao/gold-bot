@@ -2,18 +2,18 @@
 // Adds scoring bonus when SMC structure confirms signal
 
 export type SMCContext = {
+  h4_breaks?: Array<{ type: string; direction: string; index: number }>;
+  h4_sweeps?: Array<{ side: string; level: number; index: number; reversed?: boolean }>;
+  h4_obs?: Array<{ side: string; high: number; low: number; valid?: boolean }>;
   h1_breaks?: Array<{ type: string; direction: string; index: number }>;
-  h1_sweeps?: Array<{ side: string; level: number }>;
-  h1_obs?: Array<{ side: string; high: number; low: number }>;
-  h1_fvgs?: Array<{ side: string; high: number; low: number }>;
+  h1_sweeps?: Array<{ side: string; level: number; index: number; reversed?: boolean }>;
+  h1_obs?: Array<{ side: string; high: number; low: number; valid?: boolean }>;
   m30_breaks?: Array<{ type: string; direction: string; index: number }>;
-  m30_sweeps?: Array<{ side: string; level: number }>;
-  m30_obs?: Array<{ side: string; high: number; low: number }>;
-  m30_fvgs?: Array<{ side: string; high: number; low: number }>;
+  m30_sweeps?: Array<{ side: string; level: number; index: number; reversed?: boolean }>;
+  m30_obs?: Array<{ side: string; high: number; low: number; valid?: boolean }>;
   m15_breaks?: Array<{ type: string; direction: string; index: number }>;
-  m15_sweeps?: Array<{ side: string; level: number }>;
-  m15_obs?: Array<{ side: string; high: number; low: number }>;
-  m15_fvgs?: Array<{ side: string; high: number; low: number }>;
+  m15_sweeps?: Array<{ side: string; level: number; index: number; reversed?: boolean }>;
+  m15_obs?: Array<{ side: string; high: number; low: number; valid?: boolean }>;
 };
 
 /**
@@ -57,7 +57,9 @@ export function hasConfirmingSweep(
   timeframe: 'h1' | 'm30' | 'm15',
   price: number,
   atr: number,
-  maxDistance: number = 2.0
+  maxDistance: number = 2.0,
+  lastBarIndex?: number,
+  maxBarsAgo: number = 10
 ): boolean {
   if (!smc) return false;
 
@@ -71,7 +73,10 @@ export function hasConfirmingSweep(
   // Find most recent sweep matching direction
   for (let i = sweeps.length - 1; i >= 0; i--) {
     const sw = sweeps[i];
-    if ('side' in sw && 'level' in sw && sw.side?.toUpperCase() === targetSide) {
+    if ('side' in sw && 'level' in sw && sw.side?.toUpperCase() === targetSide && sw.reversed !== false) {
+      if (lastBarIndex != null && 'index' in sw && lastBarIndex - sw.index > maxBarsAgo) {
+        continue;
+      }
       // Check if price is within reasonable distance from sweep level
       if (Math.abs(price - sw.level) <= atr * maxDistance) {
         return true;
@@ -96,50 +101,15 @@ export function hasValidOBNearPrice(
   if (!smc) return false;
 
   const obsKey = `${timeframe}_obs` as keyof SMCContext;
-  const obs = smc[obsKey];
+  const obs = timeframe === 'h1' ? [...(smc.h1_obs ?? []), ...(smc.h4_obs ?? [])] : smc[obsKey];
 
   if (!obs || !Array.isArray(obs)) return false;
 
   const targetSide = side === 'BUY' ? 'BUY' : 'SELL';
 
   for (const ob of obs) {
-    if ('side' in ob && 'high' in ob && 'low' in ob && ob.side?.toUpperCase() === targetSide) {
-      // Check if price is within OB zone
-      const obCenter = (ob.high + ob.low) / 2;
-      if (Math.abs(price - obCenter) <= atr * maxDistance) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-/**
- * Check if there's a FVG (Fair Value Gap) near current price
- */
-export function hasFVGNearPrice(
-  smc: SMCContext | undefined,
-  side: 'BUY' | 'SELL',
-  timeframe: 'h1' | 'm30' | 'm15',
-  price: number,
-  atr: number,
-  maxDistance: number = 1.0
-): boolean {
-  if (!smc) return false;
-
-  const fvgsKey = `${timeframe}_fvgs` as keyof SMCContext;
-  const fvgs = smc[fvgsKey];
-
-  if (!fvgs || !Array.isArray(fvgs)) return false;
-
-  const targetSide = side === 'BUY' ? 'BUY' : 'SELL';
-
-  for (const fvg of fvgs) {
-    if ('side' in fvg && 'high' in fvg && 'low' in fvg && fvg.side?.toUpperCase() === targetSide) {
-      // Check if price is within FVG zone
-      const fvgCenter = (fvg.high + fvg.low) / 2;
-      if (Math.abs(price - fvgCenter) <= atr * maxDistance) {
+    if ('side' in ob && 'high' in ob && 'low' in ob && ob.side?.toUpperCase() === targetSide && ob.valid !== false) {
+      if (ob.high >= price - atr * maxDistance && ob.low <= price + atr * maxDistance) {
         return true;
       }
     }
@@ -155,14 +125,14 @@ export function hasFVGNearPrice(
  * - Recent CHoCH in direction: +1
  * - Confirming sweep: +1
  * - Valid OB near price: +1
- * - FVG near price: +1
  */
 export function calculateSMCBonus(
   smc: SMCContext | undefined,
   side: 'BUY' | 'SELL',
   price: number,
   atr: number,
-  timeframe: 'h1' | 'm30' | 'm15' = 'h1'
+  timeframe: 'h1' | 'm30' | 'm15' = 'h1',
+  lastBarIndex?: number
 ): number {
   let bonus = 0;
 
@@ -170,15 +140,11 @@ export function calculateSMCBonus(
     bonus++;
   }
 
-  if (hasConfirmingSweep(smc, side, timeframe, price, atr)) {
+  if (hasConfirmingSweep(smc, side, timeframe, price, atr, 2.0, lastBarIndex)) {
     bonus++;
   }
 
-  if (hasValidOBNearPrice(smc, side, timeframe, price, atr)) {
-    bonus++;
-  }
-
-  if (hasFVGNearPrice(smc, side, timeframe, price, atr)) {
+  if (hasValidOBNearPrice(smc, side, timeframe, price, atr, 1.5)) {
     bonus++;
   }
 

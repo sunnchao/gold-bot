@@ -2,9 +2,9 @@
   "signal": {
     "side": "BUY",
     "entry": 3335.75,
-    "stop_loss": 3331.74,
-    "tp1": 3339.76,
-    "tp2": 3343.77,
+    "stop_loss": 3333.59,
+    "tp1": 3337.64,
+    "tp2": 3337.64,
     "score": 6,
     "strategy": "pullback",
     "atr": 2.671929727190101,
@@ -14,7 +14,7 @@
         "side": "BUY",
         "score": 6,
         "entry": 3335.75,
-        "stop_loss": 3331.74
+        "stop_loss": 3333.59
       }
     ]
   },
@@ -41,6 +41,11 @@
     },
     {
       "level": "info",
+      "strategy": "反转回调",
+      "msg": "无CHoCH信号 ⏭"
+    },
+    {
+      "level": "info",
       "strategy": "突破加仓",
       "msg": "BB=[3330.80, 3341.03] Price=3335.75 | 在通道内 ⏭"
     },
@@ -62,7 +67,7 @@
     {
       "level": "signal",
       "strategy": "汇总",
-      "msg": "✅ 发出信号: BUY @ 3335.75 | SL=3331.74 | 策略=pullback | 评分=6"
+      "msg": "✅ 发出信号: BUY @ 3335.75 | SL=3333.59 | 策略=pullback | 评分=6"
     }
   ],
   "position_commands": null

@@ -23,6 +23,8 @@ type Bar = {
   ema200?: number;
   bbUpper?: number;
   bbLower?: number;
+  bb_upper?: number;
+  bb_lower?: number;
   fib236?: number;
   fib382?: number;
   fib500?: number;
@@ -31,6 +33,17 @@ type Bar = {
   pp?: number;
   s1?: number;
   r1?: number;
+};
+
+type PickSLTPConfig = Pick<StrategyConfig, 'srMinDistATR' | 'srMaxDistATR' | 'srBufferATR' | 'pullbackSLATR' | 'pullbackTP1ATR' | 'pullbackTP2ATR'> | {
+  srMinDistATR: number;
+  srMaxDistATR: number;
+  srBufferATR: number;
+  pullback: {
+    slAtr: number;
+    tp1Atr: number;
+    tp2Atr: number;
+  };
 };
 
 function roundToPrecision(value: number, precision: number): number {
@@ -52,9 +65,15 @@ export function pickSLTP(
   lastBar: Bar,
   atr: number,
   precision: number,
-  cfg: StrategyConfig,
+  cfg: PickSLTPConfig,
   aiResult?: AIResult | null
 ): SRSLTPResult {
+  const pullbackSLATR = 'pullbackSLATR' in cfg ? cfg.pullbackSLATR : cfg.pullback.slAtr;
+  const pullbackTP1ATR = 'pullbackTP1ATR' in cfg ? cfg.pullbackTP1ATR : cfg.pullback.tp1Atr;
+  const pullbackTP2ATR = 'pullbackTP2ATR' in cfg ? cfg.pullbackTP2ATR : cfg.pullback.tp2Atr;
+  const bbUpper = lastBar.bbUpper ?? lastBar.bb_upper ?? 0;
+  const bbLower = lastBar.bbLower ?? lastBar.bb_lower ?? 0;
+
   // Step 1: Check AI override
   if (aiResult) {
     const aiSL = aiResult.suggestedSL ?? aiResult.suggested_sl;
@@ -64,8 +83,8 @@ export function pickSLTP(
       const sl = roundToPrecision(aiSL, precision);
       const tp1 = aiTP && aiTP > 0
         ? roundToPrecision(aiTP, precision)
-        : roundToPrecision(side === 'BUY' ? price + atr * cfg.pullbackTP1ATR : price - atr * cfg.pullbackTP1ATR, precision);
-      const tp2 = roundToPrecision(side === 'BUY' ? price + atr * cfg.pullbackTP2ATR : price - atr * cfg.pullbackTP2ATR, precision);
+        : roundToPrecision(side === 'BUY' ? price + atr * pullbackTP1ATR : price - atr * pullbackTP1ATR, precision);
+      const tp2 = roundToPrecision(side === 'BUY' ? price + atr * pullbackTP2ATR : price - atr * pullbackTP2ATR, precision);
       return { sl, tp1, tp2, usedSR: true };
     }
   }
@@ -135,14 +154,14 @@ export function pickSLTP(
     const supports = [
       lastBar.ema20 ?? 0,
       lastBar.ema50 ?? 0,
-      lastBar.bbLower ?? 0,
+      bbLower,
       lastBar.fib618 ?? 0,
       lastBar.fib786 ?? 0,
       lastBar.s1 ?? 0
     ];
     const resistances = [
       lastBar.ema20 ?? 0,
-      lastBar.bbUpper ?? 0,
+      bbUpper,
       lastBar.fib382 ?? 0,
       lastBar.r1 ?? 0
     ];
@@ -153,9 +172,9 @@ export function pickSLTP(
     // Fallback to ATR if no valid SR found
     if (slLevel <= 0 || tpLevel <= 0) {
       return {
-        sl: roundToPrecision(price - atr * cfg.pullbackSLATR, precision),
-        tp1: roundToPrecision(price + atr * cfg.pullbackTP1ATR, precision),
-        tp2: roundToPrecision(price + atr * cfg.pullbackTP2ATR, precision),
+        sl: roundToPrecision(price - atr * pullbackSLATR, precision),
+        tp1: roundToPrecision(price + atr * pullbackTP1ATR, precision),
+        tp2: roundToPrecision(price + atr * pullbackTP2ATR, precision),
         usedSR: false
       };
     }
@@ -165,9 +184,9 @@ export function pickSLTP(
     // Validate SL is below price and meets min distance
     if (sl >= price || Math.abs(price - sl) < minDist) {
       return {
-        sl: roundToPrecision(price - atr * cfg.pullbackSLATR, precision),
-        tp1: roundToPrecision(price + atr * cfg.pullbackTP1ATR, precision),
-        tp2: roundToPrecision(price + atr * cfg.pullbackTP2ATR, precision),
+        sl: roundToPrecision(price - atr * pullbackSLATR, precision),
+        tp1: roundToPrecision(price + atr * pullbackTP1ATR, precision),
+        tp2: roundToPrecision(price + atr * pullbackTP2ATR, precision),
         usedSR: false
       };
     }
@@ -177,7 +196,7 @@ export function pickSLTP(
 
     // Try to find a second TP level
     const secondTPLevel = closestLevel(
-      [lastBar.bbUpper ?? 0, lastBar.fib382 ?? 0, lastBar.r1 ?? 0],
+      [bbUpper, lastBar.fib382 ?? 0, lastBar.r1 ?? 0],
       false
     );
     if (secondTPLevel > tpLevel) {
@@ -194,13 +213,13 @@ export function pickSLTP(
     // SELL: SL above resistance, TP below support
     const resistances = [
       lastBar.ema20 ?? 0,
-      lastBar.bbUpper ?? 0,
+      bbUpper,
       lastBar.fib382 ?? 0,
       lastBar.r1 ?? 0
     ];
     const supports = [
       lastBar.ema20 ?? 0,
-      lastBar.bbLower ?? 0,
+      bbLower,
       lastBar.fib618 ?? 0,
       lastBar.fib786 ?? 0,
       lastBar.s1 ?? 0
@@ -212,9 +231,9 @@ export function pickSLTP(
     // Fallback to ATR if no valid SR found
     if (slLevel <= 0 || tpLevel <= 0) {
       return {
-        sl: roundToPrecision(price + atr * cfg.pullbackSLATR, precision),
-        tp1: roundToPrecision(price - atr * cfg.pullbackTP1ATR, precision),
-        tp2: roundToPrecision(price - atr * cfg.pullbackTP2ATR, precision),
+        sl: roundToPrecision(price + atr * pullbackSLATR, precision),
+        tp1: roundToPrecision(price - atr * pullbackTP1ATR, precision),
+        tp2: roundToPrecision(price - atr * pullbackTP2ATR, precision),
         usedSR: false
       };
     }
@@ -224,9 +243,9 @@ export function pickSLTP(
     // Validate SL is above price and meets min distance
     if (sl <= price || Math.abs(price - sl) < minDist) {
       return {
-        sl: roundToPrecision(price + atr * cfg.pullbackSLATR, precision),
-        tp1: roundToPrecision(price - atr * cfg.pullbackTP1ATR, precision),
-        tp2: roundToPrecision(price - atr * cfg.pullbackTP2ATR, precision),
+        sl: roundToPrecision(price + atr * pullbackSLATR, precision),
+        tp1: roundToPrecision(price - atr * pullbackTP1ATR, precision),
+        tp2: roundToPrecision(price - atr * pullbackTP2ATR, precision),
         usedSR: false
       };
     }
@@ -235,7 +254,7 @@ export function pickSLTP(
     tp2 = tp1;
 
     // Try to find a deeper TP level
-    for (const level of [lastBar.bbLower ?? 0, lastBar.fib618 ?? 0, lastBar.fib786 ?? 0, lastBar.s1 ?? 0]) {
+    for (const level of [bbLower, lastBar.fib618 ?? 0, lastBar.fib786 ?? 0, lastBar.s1 ?? 0]) {
       if (level > 0 && level < tpLevel && Math.abs(price - level) >= minDist && Math.abs(price - level) <= maxDist) {
         tp2 = roundToPrecision(level, precision);
         break;

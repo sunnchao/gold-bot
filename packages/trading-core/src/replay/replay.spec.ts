@@ -170,8 +170,8 @@ describe('replay harness Go oracle slice', () => {
       side: 'BUY',
       entry: 95,
       stop_loss: 93,
-      tp1: 98,
-      tp2: 101,
+      tp1: 95.8,
+      tp2: 96.13,
       score: 9,
       strategy: 'pullback',
       atr: 2,
@@ -188,7 +188,7 @@ describe('replay harness Go oracle slice', () => {
     expect(result.logs).toContainEqual({
       level: 'info',
       strategy: 'AI止损',
-      msg: '🤖 AI止损覆盖: 92.00 → 93.00 (基于支撑阻力位)'
+      msg: '🤖 AI止损覆盖: 93.13 → 93.00 (基于支撑阻力位)'
     });
     expect(result.logs).toContainEqual({
       level: 'signal',
@@ -213,7 +213,7 @@ describe('replay harness Go oracle slice', () => {
     expect(result.signal).toEqual({
       side: 'BUY',
       entry: 95,
-      stop_loss: 92,
+      stop_loss: 93.13,
       tp1: 100,
       tp2: 100,
       score: 9,
@@ -225,19 +225,19 @@ describe('replay harness Go oracle slice', () => {
           side: 'BUY',
           score: 9,
           entry: 95,
-          stop_loss: 92
+          stop_loss: 93.13
         }
       ]
     });
     expect(result.logs).toContainEqual({
       level: 'info',
       strategy: 'AI止盈',
-      msg: '🤖 AI止盈覆盖: TP1=98.00→100.00, TP2=101.00→100.00'
+      msg: '🤖 AI止盈覆盖: TP1=95.80→100.00, TP2=96.13→100.00'
     });
     expect(result.logs).toContainEqual({
       level: 'signal',
       strategy: '汇总',
-      msg: '✅ 发出信号: BUY @ 95.00 | SL=92.00 | 策略=pullback | 评分=9'
+      msg: '✅ 发出信号: BUY @ 95.00 | SL=93.13 | 策略=pullback | 评分=9'
     });
     expect(result.canProduceLiveCommands).toBe(false);
   });
@@ -389,9 +389,9 @@ describe('replay harness Go oracle slice', () => {
     expect(result.signal).toEqual({
       side: 'BUY',
       entry: 95,
-      stop_loss: 92,
-      tp1: 98,
-      tp2: 101,
+      stop_loss: 93.13,
+      tp1: 95.8,
+      tp2: 96.13,
       score: 10,
       strategy: 'pullback',
       atr: 2,
@@ -401,7 +401,7 @@ describe('replay harness Go oracle slice', () => {
           side: 'BUY',
           score: 10,
           entry: 95,
-          stop_loss: 92
+          stop_loss: 93.13
         }
       ]
     });
@@ -413,12 +413,12 @@ describe('replay harness Go oracle slice', () => {
     expect(result.logs).toContainEqual({
       level: 'info',
       strategy: 'M15确认',
-      msg: '✅ pullback | M15确认: RSI=35.0<40(多头) | 评分+1→10'
+      msg: '✅ pullback | M15确认: RSI=35.0<40(多头) | 近Fib382=95.12 | 评分+1→10'
     });
     expect(result.logs).toContainEqual({
       level: 'signal',
       strategy: '汇总',
-      msg: '✅ 发出信号: BUY @ 95.00 | SL=92.00 | 策略=pullback | 评分=10'
+      msg: '✅ 发出信号: BUY @ 95.00 | SL=93.13 | 策略=pullback | 评分=10'
     });
     expect(result.canProduceLiveCommands).toBe(false);
   });
@@ -440,6 +440,123 @@ describe('replay harness Go oracle slice', () => {
       msg: 'H4=震荡(ADX=10.0<30), 过滤所有信号'
     });
     expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('uses the per-symbol H4 ADX threshold instead of the XAUUSD default', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'XAGUSD',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars(),
+        H4: h4SilverBullTrendBars()
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'pullback'
+    });
+    expect(result.logs).not.toContainEqual(
+      expect.objectContaining({
+        strategy: 'H4过滤',
+        msg: expect.stringContaining('H4=震荡')
+      })
+    );
+  });
+
+  it('uses the per-symbol H4 consecutive-bar requirement instead of the XAUUSD default', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars(),
+        H4: h4TwoConsecutiveBearTrendBars()
+      }
+    });
+
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: 'pullback',
+      msg: '🌀 pullback+FIB: 信号方向与H4趋势不一致 ⏭'
+    });
+  });
+
+  it('uses per-symbol pullback SL/TP multipliers', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'XAGUSD',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars()
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'pullback',
+      stop_loss: 93.13,
+      tp1: 95.8,
+      tp2: 96.13
+    });
+  });
+
+  it('applies per-symbol minScore before position filtering', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'XAGUSD',
+      current_price: 100,
+      bars: { H1: counterPullbackH1AtrBars(), M30: lowScoreCounterPullbackBuyBars() },
+      smc: {
+        m30_breaks: [{ index: 18, direction: 'UP', level: 100, type: 'CHoCH' }],
+        m30_sweeps: [{ index: 18, level: 100, side: 'BULL' }]
+      },
+      positions: [{ ticket: 101, symbol: 'XAGUSD', type: 'BUY', lots: 0.1, open_price: 100.2, strategy: 'counter_pullback' }]
+    });
+
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: '汇总',
+      msg: '最优信号评分 4 < 最低要求 6,过滤'
+    });
+    expect(result.logs).not.toContainEqual(
+      expect.objectContaining({
+        strategy: '汇总',
+        msg: expect.stringContaining('防重复')
+      })
+    );
+  });
+
+  it('continues to position conflict filtering when score meets per-symbol minScore', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'XAGUSD',
+      current_price: 100,
+      bars: { H1: counterPullbackH1AtrBars(), M30: counterPullbackBuyBars() },
+      smc: {
+        m30_breaks: [{ index: 18, direction: 'UP', level: 100, type: 'CHoCH' }],
+        m30_sweeps: [{ index: 18, level: 100, side: 'BULL' }]
+      },
+      positions: [{ ticket: 101, symbol: 'XAGUSD', type: 'BUY', lots: 0.1, open_price: 100.2, strategy: 'counter_pullback' }]
+    });
+
+    expect(result.signal).toBeNull();
+    expect(result.logs).not.toContainEqual(
+      expect.objectContaining({
+        strategy: '汇总',
+        msg: expect.stringContaining('最低要求')
+      })
+    );
+    expect(result.logs).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        strategy: '汇总',
+        msg: expect.stringContaining('防重复: 已有同向持仓 [counter_pullback]')
+      })
+    );
   });
 
   it('keeps a later momentum scalp candidate when H4 filters the earlier pullback candidate', () => {
@@ -505,9 +622,9 @@ describe('replay harness Go oracle slice', () => {
     expect(result.signal).toEqual({
       side: 'BUY',
       entry: 95,
-      stop_loss: 92,
-      tp1: 98,
-      tp2: 101,
+      stop_loss: 93.13,
+      tp1: 95.8,
+      tp2: 96.13,
       score: 7,
       strategy: 'pullback',
       atr: 2,
@@ -517,16 +634,74 @@ describe('replay harness Go oracle slice', () => {
           side: 'BUY',
           score: 7,
           entry: 95,
-          stop_loss: 92
+          stop_loss: 93.13
         }
       ]
     });
     expect(result.logs).toContainEqual({
       level: 'signal',
       strategy: '汇总',
-      msg: '✅ 发出信号: BUY @ 95.00 | SL=92.00 | 策略=pullback | 评分=7'
+      msg: '✅ 发出信号: BUY @ 95.00 | SL=93.13 | 策略=pullback | 评分=7'
     });
     expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('applies Go trend consensus penalty when signal opposes strong consensus', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars(),
+        D1: d1BearTrendBars(),
+        M30: m30BearTrendBars()
+      }
+    });
+
+    expect(result.signal?.score).toBe(7);
+    expect(result.signal?.all_strategies).toEqual([
+      expect.objectContaining({ strategy: 'pullback', side: 'BUY', score: 7 })
+    ]);
+  });
+
+  it('adds Go harmonic bonus when active pattern aligns with the signal', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      harmonic: {
+        active_pattern: { type: 'gartley', direction: 'BUY', score: 5 }
+      },
+      bars: {
+        H1: pullbackWeakAdxBuyBars(),
+        M30: m30NeutralBars()
+      }
+    });
+
+    expect(result.signal?.score).toBe(8);
+    expect(result.signal?.all_strategies).toEqual([
+      expect.objectContaining({ strategy: 'pullback', side: 'BUY', score: 8 })
+    ]);
+  });
+
+  it('adds Go SMC CHoCH/Sweep/OB confirmation bonus without FVG scoring', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      bars: {
+        H1: pullbackWeakAdxBuyBars(),
+        M30: m30NeutralBars()
+      },
+      smc: {
+        h1_breaks: [{ index: 48, direction: 'UP', level: 94, type: 'CHoCH' }],
+        h1_sweeps: [{ index: 48, level: 95, side: 'BULL', reversed: true }],
+        h1_obs: [{ index: 48, side: 'BUY', high: 96, low: 94, valid: true }],
+        h1_fvgs: [{ index: 48, upper_bound: 96, lower_bound: 94, filled: false }]
+      }
+    });
+
+    expect(result.signal?.score).toBe(10);
+    expect(result.signal?.all_strategies).toEqual([
+      expect.objectContaining({ strategy: 'pullback', side: 'BUY', score: 10 })
+    ]);
   });
 
   it('matches the Go breakout retest BUY signal oracle slice', () => {
@@ -539,9 +714,9 @@ describe('replay harness Go oracle slice', () => {
     expect(result.signal).toEqual({
       side: 'BUY',
       entry: 102.2,
-      stop_loss: 99,
-      tp1: 106.2,
-      tp2: 110.2,
+      stop_loss: 99.6,
+      tp1: 102.81,
+      tp2: 102.81,
       score: 10,
       strategy: 'breakout_retest',
       atr: 2,
@@ -551,7 +726,7 @@ describe('replay harness Go oracle slice', () => {
           side: 'BUY',
           score: 10,
           entry: 102.2,
-          stop_loss: 99
+          stop_loss: 99.6
         }
       ]
     });
@@ -573,9 +748,9 @@ describe('replay harness Go oracle slice', () => {
     expect(result.signal).toEqual({
       side: 'SELL',
       entry: 97.8,
-      stop_loss: 101,
-      tp1: 93.8,
-      tp2: 89.8,
+      stop_loss: 100.4,
+      tp1: 97.19,
+      tp2: 97.19,
       score: 9,
       strategy: 'breakout_retest',
       atr: 2,
@@ -585,7 +760,7 @@ describe('replay harness Go oracle slice', () => {
           side: 'SELL',
           score: 9,
           entry: 97.8,
-          stop_loss: 101
+          stop_loss: 100.4
         }
       ]
     });
@@ -612,8 +787,8 @@ describe('replay harness Go oracle slice', () => {
       side: 'BUY',
       entry: 95,
       stop_loss: 88,
-      tp1: 98,
-      tp2: 101,
+      tp1: 95.8,
+      tp2: 96,
       score: 10,
       strategy: 'pullback',
       atr: 2,
@@ -633,6 +808,106 @@ describe('replay harness Go oracle slice', () => {
       msg: '🟢 BUY 评分=10 | EMA20回调 dist=0.80 | MACD柱>0 | RSI=45.0<50 | ADX=35.0>30 | 连续2根回调到位'
     });
     expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('enriches raw replay bars with Go Fibonacci retracement levels used by pullback fib gating', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      current_price: 95,
+      bars: {
+        H1: rawPullbackFibBuyBars(),
+        H4: pullbackFibH4BarsUp()
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'pullback',
+      entry: 95,
+      stop_loss: 88.78,
+      tp1: 95.8,
+      tp2: 95.8,
+      score: 10
+    });
+  });
+
+  it('invokes Go pickSLTP for a selected BUY signal and uses snake_case BB levels from enrichment', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'EURUSD',
+      current_price: 1.1,
+      bars: {
+        H1: pullbackBuyBarsWithBBSupportResistance()
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'pullback',
+      entry: 1.1,
+      stop_loss: 1.0987,
+      tp1: 1.1008,
+      tp2: 1.1008
+    });
+  });
+
+  it('enriches bars without pre-supplied BB/Pivot and still applies Go pickSLTP', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'EURUSD',
+      current_price: 1.1,
+      bars: {
+        H1: pullbackBuyBarsWithRawPivotSupportResistance()
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'pullback',
+      entry: 1.1,
+      stop_loss: 1.09919,
+      tp1: 1.10041,
+      tp2: 1.10041
+    });
+  });
+
+  it('applies Go pickSLTP to breakout_retest after H1 enrichment', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      current_price: 102.2,
+      bars: breakoutRetestBuyBarsWithPivotSupportResistance()
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'breakout_retest',
+      entry: 102.2,
+      stop_loss: 99.6,
+      tp1: 103.1,
+      tp2: 103.1
+    });
+  });
+
+  it('invokes Go pickSLTP for a selected SELL signal and uses snake_case BB levels from enrichment', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'EURUSD',
+      current_price: 1.25,
+      bars: {
+        H1: pullbackSellBarsWithBBSupportResistance()
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'SELL',
+      strategy: 'pullback',
+      entry: 1.25,
+      stop_loss: 1.2513,
+      tp1: 1.2492,
+      tp2: 1.2492
+    });
   });
 
   it('rejects a fib-enhanced pullback BUY slice when H4 trend context is missing', () => {
@@ -860,7 +1135,194 @@ describe('replay harness Go oracle slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
+  it('builds SMC context internally when snapshot.smc is missing', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 100.4,
+      bars: {
+        H1: counterPullbackH1AtrBars(),
+        M30: counterPullbackInternalBuyBars(),
+        M15: counterPullbackInternalBuyBars()
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'counter_pullback',
+      score: 10
+    });
+    expect(result.logs).toContainEqual({
+      level: 'signal',
+      strategy: '反转回调',
+      msg: '🟢 BUY 评分=9 | M30 | 看涨反转回调: CHoCH↑+Sweep@100.00 | CHoCH@28 | Sweep@100.00 | RSI=44.0 | OB确认 | MACD>0 | FVG确认'
+    });
+    expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('does not synthesize counter_pullback sweeps when detector finds no real sweep', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 100.4,
+      bars: {
+        H1: counterPullbackH1AtrBars(),
+        M30: counterPullbackInternalBuyBarsWithoutDetectorSweep()
+      }
+    });
+
+    expect(result.signal?.strategy).not.toBe('counter_pullback');
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: '反转回调',
+      msg: 'CHoCH无对应Sweep确认 ⏭'
+    });
+  });
+
+  it('logs counter_pullback detail from effective internal SMC context even when another strategy is selected', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 102,
+      bars: {
+        H1: breakoutPyramidBuySignalBars(),
+        M30: smcContextTrendBars(100)
+      }
+    });
+
+    expect(result.signal?.strategy).not.toBe('counter_pullback');
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: '反转回调',
+      msg: '无CHoCH信号 ⏭'
+    });
+  });
+
+  it('produces counter_pullback from internally built M30 SMC context', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 100.4,
+      bars: {
+        H1: counterPullbackH1AtrBars(),
+        M30: counterPullbackInternalBuyBars()
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'counter_pullback',
+      entry: 100.4
+    });
+    expect(result.logs).toContainEqual(
+      expect.objectContaining({
+        level: 'signal',
+        strategy: '反转回调',
+        msg: expect.stringContaining('M30')
+      })
+    );
+  });
+
+  it('prefers externally supplied snapshot.smc over internally built SMC context', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 100.4,
+      bars: {
+        H1: counterPullbackH1AtrBars(),
+        M30: counterPullbackInternalBuyBars()
+      },
+      smc: {
+        m30_breaks: [],
+        m30_sweeps: []
+      }
+    });
+
+    expect(result.signal?.strategy).not.toBe('counter_pullback');
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: '反转回调',
+      msg: '无CHoCH信号 ⏭'
+    });
+  });
+
+  it('uses internally built H1 short order blocks for breakout_pyramid guard', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 102,
+      bars: {
+        H1: breakoutPyramidInternalSmcGuardBars()
+      }
+    });
+
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: '突破加仓',
+      msg: '前方有空头OB 102.20 (距离0.2点), 突破风险高 ⏭'
+    });
+  });
+
   it('matches the Go counter pullback BUY signal oracle slice with replay SMC context', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 100.4,
+      bars: { H1: counterPullbackH1AtrBars(), M30: counterPullbackBuyBars() },
+      smc: {
+        m30_breaks: [{ index: 18, direction: 'UP', level: 101, type: 'CHoCH' }],
+        m30_sweeps: [{ index: 17, level: 100, side: 'BULL', reversed: true }]
+      }
+    });
+
+    expect(result.signal).toEqual({
+      side: 'BUY',
+      entry: 100.4,
+      stop_loss: 99,
+      tp1: 104.4,
+      tp2: 108.4,
+      score: 6,
+      strategy: 'counter_pullback',
+      atr: 2,
+      all_strategies: [
+        {
+          strategy: 'counter_pullback',
+          side: 'BUY',
+          score: 6,
+          entry: 100.4,
+          stop_loss: 99
+        }
+      ]
+    });
+    expect(result.logs).toContainEqual({
+      level: 'signal',
+      strategy: '反转回调',
+      msg: '🟢 BUY 评分=7 | M30 | 看涨反转回调: CHoCH↑+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=44.0 | MACD>0'
+    });
+    expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('uses M30 primary bars for counter_pullback and applies Go pickSLTP with H1 ATR', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      current_price: 100.4,
+      bars: {
+        H1: counterPullbackH1AtrBars(),
+        M30: counterPullbackBuyBarsWithPivotSupportResistance()
+      },
+      smc: {
+        m30_breaks: [{ index: 18, direction: 'UP', level: 101, type: 'CHoCH' }],
+        m30_sweeps: [{ index: 17, level: 100, side: 'BULL', reversed: true }]
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'counter_pullback',
+      entry: 100.4,
+      atr: 2,
+      stop_loss: 98.07,
+      tp1: 102.34,
+      tp2: 102.34
+    });
+  });
+
+  it('does not fall back to H1 structure for counter_pullback when M30/M15 are unavailable', () => {
     const result = runReplay({
       account_id: '90011087',
       current_price: 100.4,
@@ -871,43 +1333,82 @@ describe('replay harness Go oracle slice', () => {
       }
     });
 
-    expect(result.signal).toEqual({
+    expect(result.signal?.strategy).not.toBe('counter_pullback');
+    expect(result.logs).toContainEqual({
+      level: 'info',
+      strategy: '反转回调',
+      msg: '数据不足 ⏭'
+    });
+  });
+
+  it('falls back to M15 primary bars for counter_pullback when M30 has fewer than 20 bars', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 100.4,
+      bars: {
+        H1: counterPullbackH1AtrBars(),
+        M30: counterPullbackBuyBars().slice(0, 19),
+        M15: counterPullbackBuyBars()
+      },
+      smc: {
+        m15_breaks: [{ index: 18, direction: 'UP', level: 101, type: 'CHoCH' }],
+        m15_sweeps: [{ index: 17, level: 100, side: 'BULL', reversed: true }]
+      }
+    });
+
+    expect(result.signal).toMatchObject({
       side: 'BUY',
-      entry: 100.4,
-      stop_loss: 99,
-      tp1: 104.4,
-      tp2: 108.4,
-      score: 7,
       strategy: 'counter_pullback',
-      atr: 2,
-      all_strategies: [
-        {
-          strategy: 'counter_pullback',
-          side: 'BUY',
-          score: 7,
-          entry: 100.4,
-          stop_loss: 99
-        }
-      ]
+      entry: 100.4,
+      atr: 2
+    });
+    expect(result.logs).toContainEqual(
+      expect.objectContaining({
+        level: 'signal',
+        strategy: '反转回调',
+        msg: expect.stringContaining('M15')
+      })
+    );
+  });
+
+  it('uses selected M30 OB/FVG context for counter_pullback scoring and logs', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 100.4,
+      bars: {
+        H1: counterPullbackH1AtrBars(),
+        M30: counterPullbackBuyBars()
+      },
+      smc: {
+        m30_breaks: [{ index: 18, direction: 'UP', level: 101, type: 'CHoCH' }],
+        m30_sweeps: [{ index: 17, level: 100, side: 'BULL', reversed: true }],
+        m30_obs: [{ index: 16, side: 'BUY', high: 101.2, low: 99.8, valid: true }],
+        m30_fvgs: [{ index: 15, upper_bound: 101.1, lower_bound: 99.7, filled: false }]
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'counter_pullback',
+      score: 8
     });
     expect(result.logs).toContainEqual({
       level: 'signal',
       strategy: '反转回调',
-      msg: '🟢 BUY 评分=7 | 看涨反转回调: CHoCH↑+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=44.0 | MACD>0'
+      msg: '🟢 BUY 评分=9 | M30 | 看涨反转回调: CHoCH↑+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=44.0 | OB确认 | MACD>0 | FVG确认'
     });
-    expect(result.canProduceLiveCommands).toBe(false);
   });
 
   it('adds Go counter pullback OB and FVG confirmation bonuses from replay SMC context', () => {
     const result = runReplay({
       account_id: '90011087',
       current_price: 100.4,
-      bars: { H1: counterPullbackBuyBars() },
+      bars: { H1: counterPullbackH1AtrBars(), M30: counterPullbackBuyBars() },
       smc: {
-        h1_breaks: [{ index: 18, direction: 'UP', level: 101, type: 'CHoCH' }],
-        h1_sweeps: [{ index: 17, level: 100, side: 'BULL', reversed: true }],
-        h1_obs: [{ index: 16, side: 'BUY', high: 101.2, low: 99.8, valid: true }],
-        h1_fvgs: [{ index: 15, upper_bound: 101.1, lower_bound: 99.7, filled: false }]
+        m30_breaks: [{ index: 18, direction: 'UP', level: 101, type: 'CHoCH' }],
+        m30_sweeps: [{ index: 17, level: 100, side: 'BULL', reversed: true }],
+        m30_obs: [{ index: 16, side: 'BUY', high: 101.2, low: 99.8, valid: true }],
+        m30_fvgs: [{ index: 15, upper_bound: 101.1, lower_bound: 99.7, filled: false }]
       }
     });
 
@@ -917,14 +1418,14 @@ describe('replay harness Go oracle slice', () => {
       stop_loss: 99,
       tp1: 104.4,
       tp2: 108.4,
-      score: 9,
+      score: 8,
       strategy: 'counter_pullback',
       atr: 2,
       all_strategies: [
         {
           strategy: 'counter_pullback',
           side: 'BUY',
-          score: 9,
+          score: 8,
           entry: 100.4,
           stop_loss: 99
         }
@@ -933,7 +1434,7 @@ describe('replay harness Go oracle slice', () => {
     expect(result.logs).toContainEqual({
       level: 'signal',
       strategy: '反转回调',
-      msg: '🟢 BUY 评分=9 | 看涨反转回调: CHoCH↑+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=44.0 | OB确认 | MACD>0 | FVG确认'
+      msg: '🟢 BUY 评分=9 | M30 | 看涨反转回调: CHoCH↑+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=44.0 | OB确认 | MACD>0 | FVG确认'
     });
     expect(result.canProduceLiveCommands).toBe(false);
   });
@@ -942,10 +1443,10 @@ describe('replay harness Go oracle slice', () => {
     const result = runReplay({
       account_id: '90011087',
       current_price: 99.6,
-      bars: { H1: counterPullbackSellBars() },
+      bars: { H1: counterPullbackH1AtrBars(), M30: counterPullbackSellBars() },
       smc: {
-        h1_breaks: [{ index: 18, direction: 'DOWN', level: 99, type: 'CHoCH' }],
-        h1_sweeps: [{ index: 17, level: 100, side: 'BEAR', reversed: true }]
+        m30_breaks: [{ index: 18, direction: 'DOWN', level: 99, type: 'CHoCH' }],
+        m30_sweeps: [{ index: 17, level: 100, side: 'BEAR', reversed: true }]
       }
     });
 
@@ -955,14 +1456,14 @@ describe('replay harness Go oracle slice', () => {
       stop_loss: 101,
       tp1: 95.6,
       tp2: 91.6,
-      score: 7,
+      score: 6,
       strategy: 'counter_pullback',
       atr: 2,
       all_strategies: [
         {
           strategy: 'counter_pullback',
           side: 'SELL',
-          score: 7,
+          score: 6,
           entry: 99.6,
           stop_loss: 101
         }
@@ -971,7 +1472,7 @@ describe('replay harness Go oracle slice', () => {
     expect(result.logs).toContainEqual({
       level: 'signal',
       strategy: '反转回调',
-      msg: '🔴 SELL 评分=7 | 看跌反转回调: CHoCH↓+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=56.0 | MACD<0'
+      msg: '🔴 SELL 评分=7 | M30 | 看跌反转回调: CHoCH↓+Sweep@100.00 | CHoCH@18 | Sweep@100.00 | RSI=56.0 | MACD<0'
     });
     expect(result.canProduceLiveCommands).toBe(false);
   });
@@ -1135,6 +1636,124 @@ function pullbackFibBuyBars() {
   return bars;
 }
 
+function rawPullbackFibBuyBars() {
+  const bars = Array.from({ length: 50 }, (_, index) => ({
+    time: `2026-04-15T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 95,
+    high: 100,
+    low: 87,
+    close: 95,
+    atr: 2,
+    adx: 35,
+    rsi: 45,
+    ema20: 95.8,
+    ema50: 90,
+    macd_hist: 1
+  }));
+
+  bars[48] = {
+    ...bars[48],
+    close: 95.2,
+    open: 95.2
+  };
+  bars[49] = {
+    ...bars[49],
+    close: 95,
+    open: 95
+  };
+  return bars;
+}
+
+function pullbackBuyBarsWithBBSupportResistance() {
+  const bars = Array.from({ length: 50 }, (_, index) => ({
+    time: `2026-04-16T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 1.1,
+    high: 1.1004,
+    low: 1.1,
+    close: 1.1,
+    atr: 0.001,
+    adx: 35,
+    rsi: 45,
+    ema20: 1.09995,
+    ema50: 1.09994,
+    macd_hist: 0.0001,
+    bb_upper: 1.1008,
+    bb_lower: 1.0992,
+    fib_382: 0,
+    fib_618: 0,
+    fib_786: 0
+  }));
+  bars[48].close = 1.09996;
+  bars[48].open = 1.09996;
+  bars[48].high = 1.103;
+  bars[48].low = 1.096;
+  bars[49].close = 1.1;
+  bars[49].open = 1.1;
+  return bars;
+}
+
+function pullbackBuyBarsWithRawPivotSupportResistance() {
+  const bars = pullbackBuyBarsWithBBSupportResistance().map(({ bb_upper: _bbUpper, bb_lower: _bbLower, fib_382: _fib382, fib_618: _fib618, fib_786: _fib786, ...bar }) => ({
+    ...bar,
+    high: 1.1,
+    low: 1.1
+  }));
+  bars[48] = {
+    ...bars[48],
+    open: 1.1,
+    high: 1.1011,
+    low: 1.0993,
+    close: 1.1
+  };
+  bars[49] = {
+    ...bars[49],
+    high: 1.1,
+    low: 1.1,
+    close: 1.1,
+    open: 1.1
+  };
+  return bars;
+}
+
+function breakoutRetestBuyBarsWithPivotSupportResistance() {
+  const bars = breakoutRetestBuyBars().H1.map((bar) => ({ ...bar }));
+  bars[53] = {
+    ...bars[53],
+    high: 106.2,
+    low: 100.6,
+    close: 103.4
+  };
+  return { H1: bars };
+}
+
+function pullbackSellBarsWithBBSupportResistance() {
+  const bars = Array.from({ length: 50 }, (_, index) => ({
+    time: `2026-04-16T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 1.25,
+    high: 1.25,
+    low: 1.2496,
+    close: 1.25,
+    atr: 0.001,
+    adx: 35,
+    rsi: 55,
+    ema20: 1.25005,
+    ema50: 1.25006,
+    macd_hist: -0.0001,
+    bb_upper: 1.2508,
+    bb_lower: 1.2492,
+    fib_382: 0,
+    fib_618: 0,
+    fib_786: 0
+  }));
+  bars[48].close = 1.25004;
+  bars[48].open = 1.25004;
+  bars[48].high = 1.253;
+  bars[48].low = 1.246;
+  bars[49].close = 1.25;
+  bars[49].open = 1.25;
+  return bars;
+}
+
 function pullbackFibH4BarsUp() {
   return Array.from({ length: 5 }, (_, index) => ({
     time: `2026-04-15T${String(index).padStart(2, '0')}:00:00.000Z`,
@@ -1208,6 +1827,32 @@ function m30NeutralBars() {
   }));
 }
 
+function m30BearTrendBars() {
+  return Array.from({ length: 1 }, (_, index) => ({
+    time: `2026-04-16T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 95,
+    high: 96,
+    low: 94,
+    close: 95,
+    adx: 35,
+    ema20: 99,
+    ema50: 100
+  }));
+}
+
+function d1BearTrendBars() {
+  return Array.from({ length: 1 }, (_, index) => ({
+    time: `2026-04-16T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 95,
+    high: 96,
+    low: 94,
+    close: 95,
+    adx: 35,
+    ema20: 99,
+    ema50: 100
+  }));
+}
+
 function h4RangeBars() {
   return Array.from({ length: 50 }, (_, index) => ({
     time: `2026-04-16T${String(index).padStart(2, '0')}:00:00.000Z`,
@@ -1218,6 +1863,19 @@ function h4RangeBars() {
     adx: 10,
     ema20: 100,
     ema50: 99
+  }));
+}
+
+function h4SilverBullTrendBars() {
+  return Array.from({ length: 50 }, (_, index) => ({
+    time: `2026-04-16T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 95,
+    high: 97,
+    low: 94,
+    close: 96,
+    adx: 25,
+    ema20: 95,
+    ema50: 94
   }));
 }
 
@@ -1232,6 +1890,22 @@ function h4StrongBearBars() {
     ema20: 99,
     ema50: 100
   }));
+}
+
+function h4TwoConsecutiveBearTrendBars() {
+  return Array.from({ length: 50 }, (_, index) => {
+    const isRecentBearTrend = index >= 48;
+    return {
+      time: `2026-04-16T${String(index).padStart(2, '0')}:00:00.000Z`,
+      open: 95,
+      high: 96,
+      low: 94,
+      close: isRecentBearTrend ? 95 : 101,
+      adx: 35,
+      ema20: isRecentBearTrend ? 99 : 100,
+      ema50: 100
+    };
+  });
 }
 
 
@@ -1410,6 +2084,66 @@ function breakoutPyramidSellOrderBlockBars() {
   return bars;
 }
 
+function breakoutPyramidInternalSmcGuardBars() {
+  const bars = breakoutPyramidBuySignalBars();
+  bars[10] = { ...bars[10], open: 102, high: 102.2, low: 101.8, close: 102.1 };
+  bars[18] = { ...bars[18], open: 100, high: 100.3, low: 97, close: 98 };
+  return bars;
+}
+
+function smcContextTrendBars(base: number) {
+  return Array.from({ length: 30 }, (_, index) => ({
+    time: new Date((index + 1) * 1000).toISOString(),
+    open: base + index * 0.1,
+    high: base + index * 0.1 + 1,
+    low: base + index * 0.1 - 1,
+    close: base + index * 0.1 + 0.2,
+    atr: 2,
+    adx: 20,
+    rsi: 50,
+    ema20: base + 2,
+    ema50: base,
+    bb_upper: base + 4,
+    bb_lower: base - 4,
+    macd_hist: 0.1
+  }));
+}
+
+function counterPullbackInternalBuyBars() {
+  const bars = Array.from({ length: 30 }, (_, index) => ({
+    time: new Date((index + 1) * 1000).toISOString(),
+    open: 100,
+    high: 101,
+    low: 100.8,
+    close: 101,
+    atr: 2,
+    adx: 10,
+    rsi: index === 29 ? 44 : 50,
+    ema20: 120,
+    ema50: 119,
+    bb_upper: 130,
+    bb_lower: 80,
+    macd_hist: index === 29 ? 0.1 : 0
+  }));
+  bars[4] = { ...bars[4], open: 106, high: 108, low: 104, close: 106 };
+  bars[8] = { ...bars[8], open: 103, high: 105, low: 100, close: 102 };
+  bars[12] = { ...bars[12], open: 104, high: 106, low: 102, close: 104 };
+  bars[16] = { ...bars[16], open: 101, high: 103, low: 100, close: 101 };
+  bars[20] = { ...bars[20], open: 101, high: 102, low: 100.2, close: 101 };
+  bars[17] = { ...bars[17], open: 100, high: 101, low: 99.5, close: 100.3 };
+  bars[25] = { ...bars[25], open: 100, high: 101, low: 100.2, close: 100.3 };
+  bars[26] = { ...bars[26], open: 99, high: 99.2, low: 98.8, close: 99 };
+  bars[27] = { ...bars[27], open: 101.1, high: 101.2, low: 99.8, close: 100.2 };
+  bars[28] = { ...bars[28], open: 100, high: 105, low: 100.5, close: 104.5 };
+  return bars;
+}
+
+function counterPullbackInternalBuyBarsWithoutDetectorSweep() {
+  const bars = counterPullbackInternalBuyBars();
+  bars[17] = { ...bars[17], low: 100.6, close: 101 };
+  return bars;
+}
+
 function counterPullbackBuyBars() {
   return Array.from({ length: 20 }, (_, index) => ({
     time: new Date((index + 1) * 1000).toISOString(),
@@ -1426,6 +2160,33 @@ function counterPullbackBuyBars() {
     bb_lower: 80,
     macd_hist: index === 19 ? 0.1 : 0
   }));
+}
+
+function counterPullbackH1AtrBars() {
+  return counterPullbackBuyBars().map((bar) => ({ ...bar, atr: 2 }));
+}
+
+function counterPullbackBuyBarsWithPivotSupportResistance() {
+  const bars = counterPullbackBuyBars().map((bar) => ({ ...bar, atr: 999 }));
+  bars[18] = {
+    ...bars[18],
+    high: 104.4,
+    low: 99.4,
+    close: 101.4
+  };
+  return bars;
+}
+
+function lowScoreCounterPullbackBuyBars() {
+  return counterPullbackBuyBars().map((bar, index) =>
+    index === 19
+      ? {
+          ...bar,
+          rsi: 50,
+          macd_hist: 0
+        }
+      : bar
+  );
 }
 
 function counterPullbackSellBars() {

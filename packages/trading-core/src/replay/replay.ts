@@ -1,16 +1,20 @@
-import { adx, atr, bollinger, ema, isPriceInFibZone, macd, rsi } from '../indicators/index.js';
+import { adx, atr, bollinger, ema, fibonacci, isPriceInFibZone, macd, pivotPoints, rsi } from '../indicators/index.js';
 import {
   evaluatePositionManagerCommands,
   type PositionManagerCommandAdvisory,
   type PositionManagerPosition,
   type PositionManagerState
 } from '../positionmgr/manager.js';
-import { getStrategyConfigBySymbol } from '../engine/config.js';
+import { getStrategyConfigBySymbol, type StrategyConfig } from '../engine/config.js';
 import { pickSLTP } from './sr-sltp.js';
 import { applyFibExtensionTP } from './fib-extension.js';
 import { checkScaleIn } from './scale-in.js';
 import { calculateSMCBonus } from './smc-scoring.js';
 import { confirmBreakoutPyramid } from './breakout-cache.js';
+import { buildSMCContext } from '../smc/index.js';
+import type { SMCContext } from '../smc/index.js';
+import { buildContext as buildHarmonicContext } from '../harmonic/index.js';
+import type { HarmonicContext, HarmonicPattern } from '../harmonic/index.js';
 
 export type ReplayRawBar = {
   time?: string;
@@ -48,6 +52,11 @@ export type ReplayRawBar = {
   fib_786?: number;
   fib786?: number;
   Fib786?: number;
+  pp?: number;
+  r1?: number;
+  r2?: number;
+  s1?: number;
+  s2?: number;
 };
 
 export type ReplaySnapshot = {
@@ -57,6 +66,7 @@ export type ReplaySnapshot = {
   current_price?: number;
   bars: Record<string, ReplayRawBar[]>;
   smc?: ReplaySmcContext;
+  harmonic?: ReplayHarmonicContext;
   ai_result?: ReplayAIResult;
   positions?: unknown[];
   position_states?: unknown[];
@@ -101,6 +111,9 @@ export type ReplayFVG = {
 };
 
 export type ReplaySmcContext = {
+  h4_breaks?: ReplayStructureBreak[];
+  h4_sweeps?: ReplayLiquiditySweep[];
+  h4_obs?: ReplayOrderBlock[];
   h1_breaks: ReplayStructureBreak[];
   h1_sweeps: ReplayLiquiditySweep[];
   h1_obs?: ReplayOrderBlock[];
@@ -116,7 +129,14 @@ export type ReplaySmcContext = {
   m15_fvgs?: ReplayFVG[];
 };
 
+export type ReplayHarmonicPattern = Pick<HarmonicPattern, 'type' | 'direction' | 'score'>;
+
+export type ReplayHarmonicContext = {
+  active_pattern?: ReplayHarmonicPattern | null;
+};
+
 type ReplayStrategyName = 'pullback' | 'breakout_retest' | 'divergence' | 'counter_pullback' | 'breakout_pyramid' | 'scale_in';
+type CounterPullbackTimeframe = 'm30' | 'm15';
 // NOTE: 'momentum_scalp' disabled for intraday trading focus
 
 export type ReplaySignal = {
@@ -168,6 +188,11 @@ type EnrichedReplayBar = ReplayRawBar & {
   fib382?: number;
   fib618?: number;
   fib786?: number;
+  pp?: number;
+  r1?: number;
+  r2?: number;
+  s1?: number;
+  s2?: number;
 };
 
 export type ReplayPositionCommand = {
@@ -178,35 +203,89 @@ export type ReplayPositionCommand = {
   reason: string;
 };
 
-const pullbackConfig = {
-  minAdx: 25,
-  rsiOverbought: 70,
-  rsiOversold: 30,
-  distAtr: 0.5,
-  adxBonus: 30,
-  slAtr: 1.5,
-  tp1Atr: 1.5,
-  tp2Atr: 3
-} as const;
+type ReplayTraditionalConfig = {
+  pullback: {
+    minAdx: number;
+    rsiOverbought: number;
+    rsiOversold: number;
+    distAtr: number;
+    adxBonus: number;
+    slAtr: number;
+    tp1Atr: number;
+    tp2Atr: number;
+  };
+  breakoutRetest: {
+    lookback: number;
+    confirmWindow: number;
+    distAtr: number;
+    slAtr: number;
+    tp1Atr: number;
+    tp2Atr: number;
+  };
+  divergence: {
+    windowRecent: number;
+    windowPrev: number;
+    rsiBullThresh: number;
+    rsiBearThresh: number;
+    slAtr: number;
+    tp1Atr: number;
+    tp2Atr: number;
+  };
+  breakoutPyramid: {
+    minAdx: number;
+    slAtr: number;
+  };
+  srMinDistATR: number;
+  srMaxDistATR: number;
+  srBufferATR: number;
+  pullbackFibEnabled: boolean;
+  minScore: number;
+  h4ADXThreshold: number;
+  h4RequireConsecutive: number;
+};
 
-const breakoutRetestConfig = {
-  lookback: 50,
-  confirmWindow: 3,
-  distAtr: 0.5,
-  slAtr: 1.5,
-  tp1Atr: 2,
-  tp2Atr: 4
-} as const;
-
-const divergenceConfig = {
-  windowRecent: 15,
-  windowPrev: 15,
-  rsiBullThresh: 40,
-  rsiBearThresh: 60,
-  slAtr: 1,
-  tp1Atr: 2,
-  tp2Atr: 4
-} as const;
+function replayTraditionalConfig(cfg: StrategyConfig): ReplayTraditionalConfig {
+  return {
+    pullback: {
+      minAdx: cfg.pullbackMinADX,
+      rsiOverbought: cfg.pullbackRSIOverbought,
+      rsiOversold: cfg.pullbackRSIOversold,
+      distAtr: cfg.pullbackDistATR,
+      adxBonus: cfg.pullbackADXBonus,
+      slAtr: cfg.pullbackSLATR,
+      tp1Atr: cfg.pullbackTP1ATR,
+      tp2Atr: cfg.pullbackTP2ATR
+    },
+    breakoutRetest: {
+      lookback: cfg.breakoutRetestLookback,
+      confirmWindow: cfg.breakoutRetestConfirmWindow,
+      distAtr: cfg.breakoutRetestDistATR,
+      slAtr: cfg.breakoutRetestSLATR,
+      tp1Atr: cfg.breakoutRetestTP1ATR,
+      tp2Atr: cfg.breakoutRetestTP2ATR
+    },
+    divergence: {
+      windowRecent: cfg.divergenceWindowRecent,
+      windowPrev: cfg.divergenceWindowPrev,
+      rsiBullThresh: cfg.divergenceRSIBullThresh,
+      rsiBearThresh: cfg.divergenceRSIBearThresh,
+      slAtr: cfg.divergenceSLATR,
+      tp1Atr: cfg.divergenceTP1ATR,
+      tp2Atr: cfg.divergenceTP2ATR
+    },
+    breakoutPyramid: {
+      minAdx: cfg.breakoutPyramidMinADX,
+      slAtr: cfg.breakoutPyramidSLATR
+    },
+    srMinDistATR: cfg.srMinDistATR,
+    srMaxDistATR: cfg.srMaxDistATR,
+    srBufferATR: cfg.srBufferATR,
+    pullbackFibEnabled: cfg.pullbackFib.retracementEnabled,
+    minScore: cfg.minScore,
+    h4ADXThreshold: cfg.h4ADXThreshold,
+    h4RequireConsecutive: cfg.h4RequireConsecutive
+  };
+}
 
 type MomentumScalpConfig = {
   minAdx: number;
@@ -242,6 +321,8 @@ const defaultMomentumScalpConfig: MomentumScalpConfig = {
 
 export function runReplay(raw: unknown): ReplayResult {
   const snapshot = normalizeReplaySnapshot(raw);
+  const strategyConfig = getStrategyConfigBySymbol(baseSymbol(snapshot.symbol));
+  const traditionalConfig = replayTraditionalConfig(strategyConfig);
   const enrichedD1 = enrichBars(snapshot.bars.D1 ?? []);
   const enrichedH1 = enrichBars(snapshot.bars.H1 ?? []);
   const enrichedH4 = enrichBars(snapshot.bars.H4 ?? []);
@@ -249,6 +330,8 @@ export function runReplay(raw: unknown): ReplayResult {
   const enrichedM15 = enrichBars(snapshot.bars.M15 ?? []);
   const enrichedM5 = enrichBars(snapshot.bars.M5 ?? []);
   const enrichedM1 = enrichBars(snapshot.bars.M1 ?? []);
+  const smcContext = snapshot.smc ?? buildReplaySmcContext(enrichedH4, enrichedH1, enrichedM30, enrichedM15);
+  const harmonicContext = snapshot.harmonic ?? replayHarmonicFromCoreContext(buildHarmonicContext(enrichedH4, enrichedH1, enrichedM30));
   const currentPrice = snapshot.current_price ?? enrichedH1[enrichedH1.length - 1]?.close ?? 0;
   const momentumConfig = momentumScalpConfigForSymbol(snapshot.symbol);
   const pricePrecision = roundingPrecisionForSymbol(snapshot.symbol);
@@ -261,24 +344,29 @@ export function runReplay(raw: unknown): ReplayResult {
     enrichedM5,
     enrichedM1,
     currentPrice,
-    snapshot.smc,
+    smcContext,
+    traditionalConfig,
     momentumConfig,
     pricePrecision,
     snapshot.symbol ?? '',
     positions,
     snapshot.ai_result
   );
-  const h4FilterResult = applyH4FilterToCandidates(candidates, enrichedH4);
+  const h4FilterResult = applyH4FilterToCandidates(candidates, enrichedH4, traditionalConfig);
   const trendRatedCandidates = h4FilterResult.candidates.map((candidate) =>
     applyTrendRatingPenalty(candidate, enrichedD1, enrichedH4, enrichedH1, enrichedM30)
   ).filter((candidate): candidate is ReplaySignal => candidate != null);
-  const boostedCandidates = trendRatedCandidates
+  const m15BoostedCandidates = trendRatedCandidates
     .map((candidate) => applyM15ConfirmationBoost(candidate, enrichedM15, currentPrice))
     .filter((candidate): candidate is ReplaySignal => candidate != null);
+  const boostedCandidates = m15BoostedCandidates.map((candidate) =>
+    applyContextScoringBonuses(candidate, harmonicContext, smcContext, currentPrice, enrichedH1.length - 1)
+  );
   const boostedSignal = selectHighestScore(boostedCandidates);
   const rawSignal = selectRawCandidateFor(boostedSignal, candidates);
   const selectedSignal = boostedSignal == null ? null : withAllStrategies(boostedSignal, boostedCandidates);
-  const positionFilterResult = applyPositionConflictFilter(selectedSignal, positions);
+  const minScoreResult = applyMinScoreFilter(selectedSignal, traditionalConfig.minScore);
+  const positionFilterResult = applyPositionConflictFilter(minScoreResult.signal, positions);
   const aiStopLossResult = applyAIStopLossOverride(positionFilterResult.signal, snapshot.ai_result);
   const aiTakeProfitResult = applyAITakeProfitOverride(aiStopLossResult.signal, snapshot.ai_result);
   const positionReview = evaluateReplayPositionCommands(snapshot, enrichedH1, currentPrice);
@@ -289,6 +377,7 @@ export function runReplay(raw: unknown): ReplayResult {
       snapshot,
       enrichedH1,
       enrichedH4,
+      enrichedM30,
       enrichedM15,
       enrichedM5,
       enrichedM1,
@@ -297,9 +386,13 @@ export function runReplay(raw: unknown): ReplayResult {
       boostedSignal,
       aiTakeProfitResult.signal,
       h4FilterResult.logs,
+      minScoreResult.logs,
       positionFilterResult.logs,
       [...aiStopLossResult.logs, ...aiTakeProfitResult.logs],
-      momentumConfig
+      momentumConfig,
+      traditionalConfig,
+      smcContext,
+      smcContext
     ),
     position_commands: positionReview.commands.length === 0 ? null : positionReview.commands,
     position_states: positionReview.states,
@@ -316,6 +409,7 @@ function collectReplayCandidates(
   m1: EnrichedReplayBar[],
   price: number,
   smc: ReplaySmcContext | undefined,
+  traditionalConfig: ReplayTraditionalConfig,
   momentumConfig: MomentumScalpConfig,
   pricePrecision: number,
   symbol: string,
@@ -323,11 +417,11 @@ function collectReplayCandidates(
   aiResult?: ReplayAIResult
 ): ReplaySignal[] {
   return [
-    evaluatePullbackSignal(h1, h4, price, pricePrecision),
-    evaluateBreakoutRetestSignal(h1, price, pricePrecision),
-    evaluateDivergenceSignal(h1, price, pricePrecision),
-    evaluateCounterPullbackSignal(h1, price, smc, pricePrecision),
-    evaluateBreakoutPyramidSignal(h1, price, smc, pricePrecision),
+    evaluatePullbackSignal(h1, h4, price, pricePrecision, traditionalConfig),
+    evaluateBreakoutRetestSignal(h1, price, pricePrecision, traditionalConfig),
+    evaluateDivergenceSignal(h1, price, pricePrecision, traditionalConfig),
+    evaluateCounterPullbackSignal(h1, m30, m15, price, smc, pricePrecision, traditionalConfig),
+    evaluateBreakoutPyramidSignal(h1, price, smc, pricePrecision, traditionalConfig),
     // TODO: Add scale_in strategy integration
     // evaluateScaleInSignal(h1, price, positions, pricePrecision, symbol),
     // NOTE: momentum_scalp strategy disabled for intraday trading focus
@@ -335,12 +429,16 @@ function collectReplayCandidates(
   ].filter((signal): signal is ReplaySignal => signal != null);
 }
 
-function applyH4FilterToCandidates(candidates: ReplaySignal[], h4: EnrichedReplayBar[]): { candidates: ReplaySignal[]; logs: ReplayLog[] } {
+function applyH4FilterToCandidates(
+  candidates: ReplaySignal[],
+  h4: EnrichedReplayBar[],
+  config: ReplayTraditionalConfig
+): { candidates: ReplaySignal[]; logs: ReplayLog[] } {
   if (candidates.length === 0) {
     return { candidates, logs: [] };
   }
 
-  const filter = h4FilterDecision(h4);
+  const filter = h4FilterDecision(h4, config);
   if (filter.direction === 'BLOCK') {
     // NOTE: momentum_scalp strategy disabled, no special handling needed
     return {
@@ -349,7 +447,7 @@ function applyH4FilterToCandidates(candidates: ReplaySignal[], h4: EnrichedRepla
         {
           level: 'warn',
           strategy: 'H4过滤',
-          msg: `H4=震荡(ADX=${formatFixed(filter.adx, 1)}<30), 过滤所有信号`
+          msg: `H4=震荡(ADX=${formatFixed(filter.adx, 1)}<${formatFixed(config.h4ADXThreshold, 0)}), 过滤所有信号`
         }
       ]
     };
@@ -380,6 +478,25 @@ function applyH4FilterToCandidates(candidates: ReplaySignal[], h4: EnrichedRepla
     });
   }
   return { candidates: kept, logs };
+}
+
+function applyMinScoreFilter(signal: ReplaySignal | null, minScore: number): { signal: ReplaySignal | null; logs: ReplayLog[] } {
+  if (signal == null) {
+    return { signal, logs: [] };
+  }
+  if (signal.score >= minScore) {
+    return { signal, logs: [] };
+  }
+  return {
+    signal: null,
+    logs: [
+      {
+        level: 'info',
+        strategy: '汇总',
+        msg: `最优信号评分 ${signal.score} < 最低要求 ${minScore},过滤`
+      }
+    ]
+  };
 }
 
 function selectHighestScore(candidates: ReplaySignal[]): ReplaySignal | null {
@@ -419,9 +536,70 @@ function normalizeReplaySnapshot(raw: unknown): ReplaySnapshot {
     current_price: optionalNumberField(record, 'current_price'),
     bars: Object.fromEntries(Object.entries(bars).map(([timeframe, value]) => [timeframe, normalizeBars(value)])),
     smc: normalizeReplaySmc(record.smc),
+    harmonic: normalizeReplayHarmonic(record.harmonic ?? record.harmonic_context ?? record.harmonicContext),
     ai_result: normalizeReplayAIResult(record.ai_result ?? record.aiResult),
     positions: Array.isArray(record.positions) ? record.positions : [],
     position_states: Array.isArray(record.position_states) ? record.position_states : []
+  };
+}
+
+function buildReplaySmcContext(
+  h4: EnrichedReplayBar[],
+  h1: EnrichedReplayBar[],
+  m30: EnrichedReplayBar[],
+  m15: EnrichedReplayBar[]
+): ReplaySmcContext {
+  const ctx = buildSMCContext(h4, h1, m30, m15);
+  return replaySmcFromCoreContext(ctx);
+}
+
+function replaySmcFromCoreContext(ctx: SMCContext): ReplaySmcContext {
+  return {
+    h4_breaks: ctx.h4Breaks,
+    h4_sweeps: ctx.h4Sweeps,
+    h4_obs: ctx.h4OBs.map(replayOrderBlockFromCore),
+    h1_breaks: ctx.h1Breaks,
+    h1_sweeps: ctx.h1Sweeps,
+    h1_obs: ctx.h1OBs.map(replayOrderBlockFromCore),
+    h1_short_obs: ctx.h1ShortOBs.map(replayOrderBlockFromCore),
+    h1_fvgs: ctx.h1FVGs.map(replayFVGFromCore),
+    m30_breaks: ctx.m30Breaks,
+    m30_sweeps: ctx.m30Sweeps,
+    m30_obs: ctx.m30OBs.map(replayOrderBlockFromCore),
+    m30_fvgs: ctx.m30FVGs.map(replayFVGFromCore),
+    m15_breaks: ctx.m15Breaks,
+    m15_sweeps: ctx.m15Sweeps,
+    m15_obs: ctx.m15OBs.map(replayOrderBlockFromCore),
+    m15_fvgs: ctx.m15FVGs.map(replayFVGFromCore)
+  };
+}
+
+function replayHarmonicFromCoreContext(ctx: HarmonicContext): ReplayHarmonicContext {
+  return {
+    active_pattern: ctx.activePattern == null ? null : {
+      type: ctx.activePattern.type,
+      direction: ctx.activePattern.direction,
+      score: ctx.activePattern.score
+    }
+  };
+}
+
+function replayOrderBlockFromCore(ob: SMCContext['h1OBs'][number]): ReplayOrderBlock {
+  return {
+    index: ob.index,
+    side: ob.side,
+    high: ob.high,
+    low: ob.low,
+    valid: ob.valid
+  };
+}
+
+function replayFVGFromCore(fvg: SMCContext['h1FVGs'][number]): ReplayFVG {
+  return {
+    index: fvg.startIndex,
+    upper_bound: fvg.upperBound,
+    lower_bound: fvg.lowerBound,
+    filled: fvg.filled
   };
 }
 
@@ -437,17 +615,46 @@ function normalizeReplayAIResult(value: unknown): ReplayAIResult | undefined {
   };
 }
 
+function normalizeReplayHarmonic(value: unknown): ReplayHarmonicContext | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  const record = asRecord(value);
+  const active = record.active_pattern ?? record.activePattern ?? record.ActivePattern;
+  if (active == null) {
+    return { active_pattern: null };
+  }
+  const activeRecord = asRecord(active);
+  const direction = optionalStringField(activeRecord, 'direction') ?? optionalStringField(activeRecord, 'Direction') ?? '';
+  const type = optionalStringField(activeRecord, 'type') ?? optionalStringField(activeRecord, 'Type') ?? '';
+  const score = optionalNumberField(activeRecord, 'score') ?? optionalNumberField(activeRecord, 'Score') ?? 0;
+  return {
+    active_pattern: { type, direction, score }
+  };
+}
+
 function normalizeReplaySmc(value: unknown): ReplaySmcContext | undefined {
   if (value == null) {
     return undefined;
   }
   const record = asRecord(value);
   return {
+    h4_breaks: normalizeStructureBreaks(record.h4_breaks ?? record.h4Breaks ?? record.H4Breaks),
+    h4_sweeps: normalizeLiquiditySweeps(record.h4_sweeps ?? record.h4Sweeps ?? record.H4Sweeps),
+    h4_obs: normalizeOrderBlocks(record.h4_obs ?? record.h4OBs ?? record.H4OBs),
     h1_breaks: normalizeStructureBreaks(record.h1_breaks ?? record.h1Breaks ?? record.H1Breaks),
     h1_sweeps: normalizeLiquiditySweeps(record.h1_sweeps ?? record.h1Sweeps ?? record.H1Sweeps),
     h1_obs: normalizeOrderBlocks(record.h1_obs ?? record.h1OBs ?? record.H1OBs),
     h1_short_obs: normalizeOrderBlocks(record.h1_short_obs ?? record.h1ShortOBs ?? record.H1ShortOBs),
-    h1_fvgs: normalizeFVGs(record.h1_fvgs ?? record.h1FVGs ?? record.H1FVGs)
+    h1_fvgs: normalizeFVGs(record.h1_fvgs ?? record.h1FVGs ?? record.H1FVGs),
+    m30_breaks: normalizeStructureBreaks(record.m30_breaks ?? record.m30Breaks ?? record.M30Breaks),
+    m30_sweeps: normalizeLiquiditySweeps(record.m30_sweeps ?? record.m30Sweeps ?? record.M30Sweeps),
+    m30_obs: normalizeOrderBlocks(record.m30_obs ?? record.m30OBs ?? record.M30OBs ?? record.m30_order_blocks ?? record.m30OrderBlocks ?? record.M30OrderBlocks),
+    m30_fvgs: normalizeFVGs(record.m30_fvgs ?? record.m30FVGs ?? record.M30FVGs ?? record.m30_fair_value_gaps ?? record.m30FairValueGaps ?? record.M30FairValueGaps),
+    m15_breaks: normalizeStructureBreaks(record.m15_breaks ?? record.m15Breaks ?? record.M15Breaks),
+    m15_sweeps: normalizeLiquiditySweeps(record.m15_sweeps ?? record.m15Sweeps ?? record.M15Sweeps),
+    m15_obs: normalizeOrderBlocks(record.m15_obs ?? record.m15OBs ?? record.M15OBs ?? record.m15_order_blocks ?? record.m15OrderBlocks ?? record.M15OrderBlocks),
+    m15_fvgs: normalizeFVGs(record.m15_fvgs ?? record.m15FVGs ?? record.M15FVGs ?? record.m15_fair_value_gaps ?? record.m15FairValueGaps ?? record.M15FairValueGaps)
   };
 }
 
@@ -572,7 +779,12 @@ function normalizeBars(value: unknown): ReplayRawBar[] {
       Fib618: optionalNumberField(record, 'Fib618'),
       fib_786: optionalNumberField(record, 'fib_786'),
       fib786: optionalNumberField(record, 'fib786'),
-      Fib786: optionalNumberField(record, 'Fib786')
+      Fib786: optionalNumberField(record, 'Fib786'),
+      pp: optionalNumberField(record, 'pp') ?? optionalNumberField(record, 'PP'),
+      r1: optionalNumberField(record, 'r1') ?? optionalNumberField(record, 'R1'),
+      r2: optionalNumberField(record, 'r2') ?? optionalNumberField(record, 'R2'),
+      s1: optionalNumberField(record, 's1') ?? optionalNumberField(record, 'S1'),
+      s2: optionalNumberField(record, 's2') ?? optionalNumberField(record, 'S2')
     };
   });
 }
@@ -589,25 +801,39 @@ function enrichBars(bars: ReplayRawBar[]): EnrichedReplayBar[] {
   const adx14 = adx(highs, lows, closes, 14);
   const bb20 = bollinger(closes, 20, 2);
 
-  return bars.map((bar, index) => ({
-    ...bar,
-    ema20: bar.ema20 ?? ema20[index],
-    ema50: bar.ema50 ?? ema50[index],
-    atr: bar.atr ?? atr14[index],
-    rsi: bar.rsi ?? rsi14[index],
-    macd_hist: bar.macd_hist ?? bar.macdHist ?? macdResult.histogram[index],
-    macdHist: bar.macdHist ?? bar.macd_hist ?? macdResult.histogram[index],
-    adx: bar.adx ?? bar.ADX ?? adx14[index],
-    bb_upper: bar.bb_upper ?? bar.bbUpper ?? bar.BBUpper ?? bb20.upper[index],
-    bb_lower: bar.bb_lower ?? bar.bbLower ?? bar.BBLower ?? bb20.lower[index],
-    stoch_k: bar.stoch_k ?? bar.stochK ?? bar.StochK ?? 0,
-    stochK: bar.stochK ?? bar.stoch_k ?? bar.StochK ?? 0,
-    vol_sma: bar.vol_sma ?? bar.volSMA ?? bar.VolSMA,
-    volSMA: bar.volSMA ?? bar.vol_sma ?? bar.VolSMA,
-    fib382: bar.fib382 ?? bar.fib_382 ?? bar.Fib382,
-    fib618: bar.fib618 ?? bar.fib_618 ?? bar.Fib618,
-    fib786: bar.fib786 ?? bar.fib_786 ?? bar.Fib786
-  }));
+  return bars.map((bar, index) => {
+    const fibWindow = Math.min(50, bars.length);
+    const start = Math.max(0, index - fibWindow);
+    const windowHighs = highs.slice(start, index + 1);
+    const windowLows = lows.slice(start, index + 1);
+    const fib = fibonacci(windowHighs, windowLows, windowHighs.length);
+    const pivot = index > 0 ? pivotPoints(bars[index - 1].high, bars[index - 1].low, bars[index - 1].close) : undefined;
+
+    return {
+      ...bar,
+      ema20: bar.ema20 ?? ema20[index],
+      ema50: bar.ema50 ?? ema50[index],
+      atr: bar.atr ?? atr14[index],
+      rsi: bar.rsi ?? rsi14[index],
+      macd_hist: bar.macd_hist ?? bar.macdHist ?? macdResult.histogram[index],
+      macdHist: bar.macdHist ?? bar.macd_hist ?? macdResult.histogram[index],
+      adx: bar.adx ?? bar.ADX ?? adx14[index],
+      bb_upper: bar.bb_upper ?? bar.bbUpper ?? bar.BBUpper ?? bb20.upper[index],
+      bb_lower: bar.bb_lower ?? bar.bbLower ?? bar.BBLower ?? bb20.lower[index],
+      stoch_k: bar.stoch_k ?? bar.stochK ?? bar.StochK ?? 0,
+      stochK: bar.stochK ?? bar.stoch_k ?? bar.StochK ?? 0,
+      vol_sma: bar.vol_sma ?? bar.volSMA ?? bar.VolSMA,
+      volSMA: bar.volSMA ?? bar.vol_sma ?? bar.VolSMA,
+      fib382: bar.fib382 ?? bar.fib_382 ?? bar.Fib382 ?? fib.fib382,
+      fib618: bar.fib618 ?? bar.fib_618 ?? bar.Fib618 ?? fib.fib618,
+      fib786: bar.fib786 ?? bar.fib_786 ?? bar.Fib786 ?? fib.fib786,
+      pp: bar.pp ?? pivot?.pp,
+      r1: bar.r1 ?? pivot?.r1,
+      r2: bar.r2 ?? pivot?.r2,
+      s1: bar.s1 ?? pivot?.s1,
+      s2: bar.s2 ?? pivot?.s2
+    };
+  });
 }
 
 type ReplayPositionReview = {
@@ -723,6 +949,7 @@ function buildReplayLogs(
   snapshot: ReplaySnapshot,
   h1: EnrichedReplayBar[],
   h4: EnrichedReplayBar[],
+  m30: EnrichedReplayBar[],
   m15: EnrichedReplayBar[],
   m5: EnrichedReplayBar[],
   m1: EnrichedReplayBar[],
@@ -731,9 +958,13 @@ function buildReplayLogs(
   boostedSignal: ReplaySignal | null,
   finalSignal: ReplaySignal | null,
   h4FilterLogs: ReplayLog[],
+  minScoreFilterLogs: ReplayLog[],
   positionFilterLogs: ReplayLog[],
   aiOverrideLogs: ReplayLog[],
-  momentumConfig: MomentumScalpConfig
+  momentumConfig: MomentumScalpConfig,
+  traditionalConfig: ReplayTraditionalConfig,
+  smc: ReplaySmcContext | undefined,
+  counterLogSmc: ReplaySmcContext | undefined
 ): ReplayLog[] {
   if (price <= 0) {
     return [];
@@ -745,18 +976,18 @@ function buildReplayLogs(
   const logs: ReplayLog[] = [];
   if (h1.length > 0) {
     logs.push(
-      marketLog(h1, h4, price),
-      pullbackLog(h1, h4, price),
-      breakoutRetestLog(h1, price, rawSignal),
-      divergenceLog(h1, rawSignal),
-      ...counterPullbackLogs(snapshot.smc, h1, price, rawSignal),
-      breakoutPyramidLog(h1, price, rawSignal, snapshot.smc),
+      marketLog(h1, h4, price, traditionalConfig),
+      pullbackLog(h1, h4, price, traditionalConfig),
+      breakoutRetestLog(h1, price, rawSignal, traditionalConfig),
+      divergenceLog(h1, rawSignal, traditionalConfig),
+      ...counterPullbackLogs(counterLogSmc, h1, m30, m15, price, rawSignal),
+      breakoutPyramidLog(h1, price, rawSignal, smc, traditionalConfig),
       scaleInLog(snapshot.positions ?? [])
     );
   }
-  // NOTE: momentum_scalp disabled
-  // logs.push(momentumScalpLog(m15, m5, m1, price, rawSignal, momentumConfig));
+  logs.push(momentumScalpLog(m15, m5, m1, price, rawSignal, momentumConfig));
   logs.push(...h4FilterLogs);
+  logs.push(...minScoreFilterLogs);
   logs.push(...positionFilterLogs);
   logs.push(...aiOverrideLogs);
 
@@ -773,7 +1004,7 @@ function buildReplayLogs(
   return logs;
 }
 
-function marketLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: number): ReplayLog {
+function marketLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: number, config: ReplayTraditionalConfig): ReplayLog {
   const last = h1[h1.length - 1];
   const h4Adx = h4[h4.length - 1]?.adx ?? 0;
   return {
@@ -782,19 +1013,19 @@ function marketLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: numb
     msg:
       `Price=${formatFixed(price, 2)} | ATR=${formatFixed(last.atr, 2)} | RSI=${formatFixed(last.rsi, 1)} | ` +
       `ADX=${formatFixed(last.adx, 1)} | EMA趋势(H1)=${last.ema20 > last.ema50 ? '多头' : '空头'} | ` +
-      `H4=${h4TrendLabel(h4)}(ADX=${formatFixed(h4Adx, 1)}) | MACD柱=${formatFixed(last.macd_hist, 2)}`
+      `H4=${h4TrendLabel(h4, config)}(ADX=${formatFixed(h4Adx, 1)}) | MACD柱=${formatFixed(last.macd_hist, 2)}`
   };
 }
 
-function h4TrendLabel(h4: EnrichedReplayBar[]): string {
+function h4TrendLabel(h4: EnrichedReplayBar[], config: ReplayTraditionalConfig): string {
   if (h4.length < 20) {
     return '未知';
   }
   const last = h4[h4.length - 1];
-  if (last.adx < 30) {
+  if (last.adx < config.h4ADXThreshold) {
     return '震荡';
   }
-  const recent = h4.slice(-3);
+  const recent = h4.slice(-config.h4RequireConsecutive);
   if (recent.every((bar) => bar.ema20 > bar.ema50)) {
     return '强多头';
   }
@@ -804,20 +1035,23 @@ function h4TrendLabel(h4: EnrichedReplayBar[]): string {
   return '趋势不明';
 }
 
-function h4FilterDecision(h4: EnrichedReplayBar[]): { trend: string; direction: '' | 'BUY' | 'SELL' | 'BLOCK'; adx: number } {
+function h4FilterDecision(
+  h4: EnrichedReplayBar[],
+  config: ReplayTraditionalConfig
+): { trend: string; direction: '' | 'BUY' | 'SELL' | 'BLOCK'; adx: number } {
   if (h4.length < 50) {
     return { trend: '未知', direction: '', adx: 0 };
   }
 
   const last = h4[h4.length - 1];
   const adxValue = last.adx;
-  if (adxValue < 30) {
+  if (adxValue < config.h4ADXThreshold) {
     return { trend: '震荡', direction: 'BLOCK', adx: adxValue };
   }
 
   let direction: '' | 'BUY' | 'SELL' = '';
   let consecutive = 0;
-  const barsToCheck = Math.min(3, h4.length);
+  const barsToCheck = Math.min(config.h4RequireConsecutive, h4.length);
   for (let index = h4.length - 1; index >= h4.length - barsToCheck; index -= 1) {
     const bar = h4[index];
     if (bar.ema20 > bar.ema50 && bar.close > bar.ema20) {
@@ -835,21 +1069,21 @@ function h4FilterDecision(h4: EnrichedReplayBar[]): { trend: string; direction: 
     }
   }
 
-  if (consecutive >= 3) {
+  if (consecutive >= config.h4RequireConsecutive) {
     return { trend: direction === 'BUY' ? '强多头' : '强空头', direction, adx: adxValue };
   }
   return { trend: '趋势不明', direction: '', adx: adxValue };
 }
 
-function pullbackLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: number): ReplayLog {
+function pullbackLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: number, config: ReplayTraditionalConfig): ReplayLog {
   const last = h1[h1.length - 1];
   const dist = Math.abs(price - last.ema20);
-  const threshold = last.atr * pullbackConfig.distAtr;
+  const threshold = last.atr * config.pullback.distAtr;
   const nearEma = isNearEma20(h1, threshold);
   const name = '趋势回调';
 
-  if (last.adx < pullbackConfig.minAdx) {
-    return { level: 'info', strategy: name, msg: `ADX=${formatFixed(last.adx, 1)} < ${pullbackConfig.minAdx},趋势不明显 ⏭` };
+  if (last.adx < config.pullback.minAdx) {
+    return { level: 'info', strategy: name, msg: `ADX=${formatFixed(last.adx, 1)} < ${formatFixed(config.pullback.minAdx, 0)},趋势不明显 ⏭` };
   }
   if (last.ema20 > last.ema50 && price > last.ema50) {
     if (!nearEma && dist >= threshold) {
@@ -859,14 +1093,14 @@ function pullbackLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: nu
         msg: `多头趋势 | 价格距EMA20=${formatFixed(dist, 2)} > ${formatFixed(threshold, 2)},未回调到位 ⏭`
       };
     }
-    if (last.rsi >= pullbackConfig.rsiOverbought) {
-      return { level: 'info', strategy: name, msg: `多头趋势 | RSI=${formatFixed(last.rsi, 1)} ≥ ${pullbackConfig.rsiOverbought},超买 ⏭` };
+    if (last.rsi >= config.pullback.rsiOverbought) {
+      return { level: 'info', strategy: name, msg: `多头趋势 | RSI=${formatFixed(last.rsi, 1)} ≥ ${formatFixed(config.pullback.rsiOverbought, 0)},超买 ⏭` };
     }
-    const fibGate = evaluatePullbackFibGate('BUY', last, h4, price, 2);
+    const fibGate = evaluatePullbackFibGate('BUY', last, h4, price, 2, config.pullbackFibEnabled);
     if (fibGate.rejectLog != null) {
       return fibGate.rejectLog;
     }
-    const score = Math.min(pullbackScore('BUY', last, nearEma) + fibGate.scoreBonus, 10);
+    const score = Math.min(pullbackScore('BUY', last, nearEma, config) + fibGate.scoreBonus, 10);
     const details: string[] = [];
     if (last.macd_hist > 0) {
       details.push('MACD柱>0');
@@ -874,8 +1108,8 @@ function pullbackLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: nu
     if (last.rsi < 50) {
       details.push(`RSI=${formatFixed(last.rsi, 1)}<50`);
     }
-    if (last.adx > pullbackConfig.adxBonus) {
-      details.push(`ADX=${formatFixed(last.adx, 1)}>${pullbackConfig.adxBonus}`);
+    if (last.adx > config.pullback.adxBonus) {
+      details.push(`ADX=${formatFixed(last.adx, 1)}>${formatFixed(config.pullback.adxBonus, 0)}`);
     }
     if (nearEma) {
       details.push('连续2根回调到位');
@@ -891,14 +1125,14 @@ function pullbackLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: nu
         msg: `空头趋势 | 价格距EMA20=${formatFixed(dist, 2)} > ${formatFixed(threshold, 2)},未回调到位 ⏭`
       };
     }
-    if (last.rsi <= pullbackConfig.rsiOversold) {
-      return { level: 'info', strategy: name, msg: `空头趋势 | RSI=${formatFixed(last.rsi, 1)} ≤ ${pullbackConfig.rsiOversold},超卖 ⏭` };
+    if (last.rsi <= config.pullback.rsiOversold) {
+      return { level: 'info', strategy: name, msg: `空头趋势 | RSI=${formatFixed(last.rsi, 1)} ≤ ${formatFixed(config.pullback.rsiOversold, 0)},超卖 ⏭` };
     }
-    const fibGate = evaluatePullbackFibGate('SELL', last, h4, price, 2);
+    const fibGate = evaluatePullbackFibGate('SELL', last, h4, price, 2, config.pullbackFibEnabled);
     if (fibGate.rejectLog != null) {
       return fibGate.rejectLog;
     }
-    const score = Math.min(pullbackScore('SELL', last, nearEma) + fibGate.scoreBonus, 10);
+    const score = Math.min(pullbackScore('SELL', last, nearEma, config) + fibGate.scoreBonus, 10);
     const details: string[] = [];
     if (last.macd_hist < 0) {
       details.push('MACD柱<0');
@@ -906,8 +1140,8 @@ function pullbackLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: nu
     if (last.rsi > 50) {
       details.push(`RSI=${formatFixed(last.rsi, 1)}>50`);
     }
-    if (last.adx > pullbackConfig.adxBonus) {
-      details.push(`ADX=${formatFixed(last.adx, 1)}>${pullbackConfig.adxBonus}`);
+    if (last.adx > config.pullback.adxBonus) {
+      details.push(`ADX=${formatFixed(last.adx, 1)}>${formatFixed(config.pullback.adxBonus, 0)}`);
     }
     if (nearEma) {
       details.push('连续2根回调到位');
@@ -927,12 +1161,16 @@ function evaluatePullbackFibGate(
   last: EnrichedReplayBar,
   h4: EnrichedReplayBar[],
   price: number,
-  pricePrecision: number
+  pricePrecision: number,
+  enabled: boolean
 ): {
   scoreBonus: number;
   stopLoss?: number;
   rejectLog?: ReplayLog;
 } {
+  if (!enabled) {
+    return { scoreBonus: 0 };
+  }
   const fib = explicitPullbackFib(last);
   if (fib == null) {
     return { scoreBonus: 0 };
@@ -989,9 +1227,14 @@ function explicitPullbackFib(last: EnrichedReplayBar): { fib382: number; fib618:
   return undefined;
 }
 
-function breakoutRetestLog(h1: EnrichedReplayBar[], price: number, signal?: ReplaySignal | null): ReplayLog {
+function breakoutRetestLog(
+  h1: EnrichedReplayBar[],
+  price: number,
+  signal: ReplaySignal | null | undefined,
+  config: ReplayTraditionalConfig
+): ReplayLog {
   const name = '突破回踩';
-  const lookback = 50;
+  const lookback = config.breakoutRetest.lookback;
   if (h1.length < lookback + 5) {
     return { level: 'info', strategy: name, msg: `数据不足 ${h1.length}/${lookback + 5} ⏭` };
   }
@@ -1002,13 +1245,13 @@ function breakoutRetestLog(h1: EnrichedReplayBar[], price: number, signal?: Repl
   const support = Math.min(...recent.map((bar) => bar.low));
   const brokeUp = Math.max(...last5.map((bar) => bar.high)) > resistance;
   const brokeDown = Math.min(...last5.map((bar) => bar.low)) < support;
-  const threshold = h1[h1.length - 1].atr * pullbackConfig.distAtr;
+  const threshold = h1[h1.length - 1].atr * config.breakoutRetest.distAtr;
   const distRes = Math.abs(price - resistance);
   const distSup = Math.abs(price - support);
 
   if (signal?.strategy === 'breakout_retest') {
     const last = h1[h1.length - 1];
-    const detail = breakoutRetestDetails(signal.side, last, countBreakoutRetestTouches(h1, signal.side, resistance, support, threshold));
+    const detail = breakoutRetestDetails(signal.side, last, countBreakoutRetestTouches(h1, signal.side, resistance, support, threshold, config));
     if (signal.side === 'BUY') {
       return {
         level: 'signal',
@@ -1034,14 +1277,14 @@ function breakoutRetestLog(h1: EnrichedReplayBar[], price: number, signal?: Repl
   return { level: 'info', strategy: name, msg };
 }
 
-function divergenceLog(h1: EnrichedReplayBar[], signal?: ReplaySignal | null): ReplayLog {
+function divergenceLog(h1: EnrichedReplayBar[], signal: ReplaySignal | null | undefined, config: ReplayTraditionalConfig): ReplayLog {
   const name = 'RSI背离';
   if (h1.length < 30) {
     return { level: 'info', strategy: name, msg: '数据不足 ⏭' };
   }
 
   const last = h1[h1.length - 1];
-  const stats = divergenceStats(h1);
+  const stats = divergenceStats(h1, config);
   if (stats == null) {
     return { level: 'info', strategy: name, msg: '数据不足检测背离 ⏭' };
   }
@@ -1069,9 +1312,9 @@ function divergenceLog(h1: EnrichedReplayBar[], signal?: ReplaySignal | null): R
 
   let msg = `RSI=${formatFixed(last.rsi, 1)}`;
   if (bullDiv) {
-    msg += ` | 看涨背离检测到但RSI=${formatFixed(last.rsi, 1)} ≥ 40`;
+    msg += ` | 看涨背离检测到但RSI=${formatFixed(last.rsi, 1)} ≥ ${formatFixed(config.divergence.rsiBullThresh, 0)}`;
   } else if (bearDiv) {
-    msg += ` | 看跌背离检测到但RSI=${formatFixed(last.rsi, 1)} ≤ 60`;
+    msg += ` | 看跌背离检测到但RSI=${formatFixed(last.rsi, 1)} ≤ ${formatFixed(config.divergence.rsiBearThresh, 0)}`;
   } else {
     msg += ' | 无背离 ⏭';
   }
@@ -1093,13 +1336,13 @@ type DivergenceStats = {
   previousMacdHigh: number;
 };
 
-function divergenceStats(h1: EnrichedReplayBar[]): DivergenceStats | null {
-  const needed = divergenceConfig.windowRecent + divergenceConfig.windowPrev;
+function divergenceStats(h1: EnrichedReplayBar[], config: ReplayTraditionalConfig): DivergenceStats | null {
+  const needed = config.divergence.windowRecent + config.divergence.windowPrev;
   if (h1.length < needed) {
     return null;
   }
-  const recent = h1.slice(-divergenceConfig.windowRecent);
-  const previous = h1.slice(-needed, -divergenceConfig.windowRecent);
+  const recent = h1.slice(-config.divergence.windowRecent);
+  const previous = h1.slice(-needed, -config.divergence.windowRecent);
   return {
     recentLow: Math.min(...recent.map((bar) => bar.close)),
     previousLow: Math.min(...previous.map((bar) => bar.close)),
@@ -1119,57 +1362,64 @@ function divergenceStats(h1: EnrichedReplayBar[]): DivergenceStats | null {
 function counterPullbackLogs(
   smc: ReplaySmcContext | undefined,
   h1: EnrichedReplayBar[],
+  m30: EnrichedReplayBar[],
+  m15: EnrichedReplayBar[],
   price: number,
   signal?: ReplaySignal | null
 ): ReplayLog[] {
   if (smc == null && signal?.strategy !== 'counter_pullback') {
     return [];
   }
-  return [counterPullbackLog(smc, h1, price, signal)];
+  return [counterPullbackLog(smc, h1, m30, m15, price, signal)];
 }
 
 function counterPullbackLog(
   smc: ReplaySmcContext | undefined,
   h1: EnrichedReplayBar[],
+  m30: EnrichedReplayBar[],
+  m15: EnrichedReplayBar[],
   price: number,
   signal?: ReplaySignal | null
 ): ReplayLog {
   const name = '反转回调';
-  if (h1.length < 20) {
+  const context = selectCounterPullbackContext(m30, m15);
+  if (context == null || h1.length === 0) {
     return { level: 'info', strategy: name, msg: '数据不足 ⏭' };
   }
+  const { bars: signalBars, timeframe } = context;
 
-  const recentChoch = recentCounterPullbackChoch(smc);
+  const recentChoch = recentCounterPullbackChoch(smc, timeframe);
   if (recentChoch == null) {
     return { level: 'info', strategy: name, msg: '无CHoCH信号 ⏭' };
   }
 
-  const lastBarIndex = h1.length - 1;
+  const lastBarIndex = signalBars.length - 1;
   if (lastBarIndex - recentChoch.index > 10) {
     return { level: 'info', strategy: name, msg: `CHoCH在${lastBarIndex - recentChoch.index}根前,太旧 ⏭` };
   }
 
-  const recentSweep = recentCounterPullbackSweep(smc, recentChoch);
+  const recentSweep = recentCounterPullbackSweep(smc, recentChoch, timeframe);
   if (recentSweep == null) {
     return { level: 'info', strategy: name, msg: 'CHoCH无对应Sweep确认 ⏭' };
   }
 
-  const last = h1[h1.length - 1];
-  const atrValue = last.atr;
+  const last = signalBars[signalBars.length - 1];
+  const atrValue = h1[h1.length - 1].atr;
+  const timeframeLabel = timeframe.toUpperCase();
   if (recentChoch.direction === 'UP' && recentSweep.side === 'BULL') {
     const pullbackZone = recentSweep.level + atrValue * 0.5;
     if (price > pullbackZone) {
       return {
         level: 'info',
         strategy: name,
-        msg: `看涨CHoCH+Sweep | 价格${formatFixed(price, 2)} > 回调区${formatFixed(pullbackZone, 2)},未到位 ⏭`
+        msg: `${timeframeLabel} | 看涨CHoCH+Sweep | 价格${formatFixed(price, 2)} > 回调区${formatFixed(pullbackZone, 2)},未到位 ⏭`
       };
     }
-    const score = counterPullbackScore('BUY', last, smc, price, atrValue);
+    const score = counterPullbackScore('BUY', last, smc, timeframe, price, atrValue);
     return {
       level: 'signal',
       strategy: name,
-      msg: `🟢 BUY 评分=${score} | 看涨反转回调: CHoCH↑+Sweep@${formatFixed(recentSweep.level, 2)} | ${counterPullbackDetails('BUY', recentChoch, recentSweep, last, smc, price, atrValue).join(' | ')}`
+      msg: `🟢 BUY 评分=${score} | ${timeframeLabel} | 看涨反转回调: CHoCH↑+Sweep@${formatFixed(recentSweep.level, 2)} | ${counterPullbackDetails('BUY', recentChoch, recentSweep, last, smc, timeframe, price, atrValue).join(' | ')}`
     };
   }
 
@@ -1179,14 +1429,14 @@ function counterPullbackLog(
       return {
         level: 'info',
         strategy: name,
-        msg: `看跌CHoCH+Sweep | 价格${formatFixed(price, 2)} < 回调区${formatFixed(pullbackZone, 2)},未到位 ⏭`
+        msg: `${timeframeLabel} | 看跌CHoCH+Sweep | 价格${formatFixed(price, 2)} < 回调区${formatFixed(pullbackZone, 2)},未到位 ⏭`
       };
     }
-    const score = counterPullbackScore('SELL', last, smc, price, atrValue);
+    const score = counterPullbackScore('SELL', last, smc, timeframe, price, atrValue);
     return {
       level: 'signal',
       strategy: name,
-      msg: `🔴 SELL 评分=${score} | 看跌反转回调: CHoCH↓+Sweep@${formatFixed(recentSweep.level, 2)} | ${counterPullbackDetails('SELL', recentChoch, recentSweep, last, smc, price, atrValue).join(' | ')}`
+      msg: `🔴 SELL 评分=${score} | ${timeframeLabel} | 看跌反转回调: CHoCH↓+Sweep@${formatFixed(recentSweep.level, 2)} | ${counterPullbackDetails('SELL', recentChoch, recentSweep, last, smc, timeframe, price, atrValue).join(' | ')}`
     };
   }
 
@@ -1196,16 +1446,17 @@ function counterPullbackLog(
 function breakoutPyramidLog(
   h1: EnrichedReplayBar[],
   price: number,
-  signal?: ReplaySignal | null,
-  smc?: ReplaySmcContext
+  signal: ReplaySignal | null | undefined,
+  smc: ReplaySmcContext | undefined,
+  config: ReplayTraditionalConfig
 ): ReplayLog {
   const name = '突破加仓';
   if (h1.length < 30) {
     return { level: 'info', strategy: name, msg: '数据不足 ⏭' };
   }
   const last = h1[h1.length - 1];
-  if (last.adx < 30) {
-    return { level: 'info', strategy: name, msg: `ADX=${formatFixed(last.adx, 1)} < 30,趋势不够强 ⏭` };
+  if (last.adx < config.breakoutPyramid.minAdx) {
+    return { level: 'info', strategy: name, msg: `ADX=${formatFixed(last.adx, 1)} < ${formatFixed(config.breakoutPyramid.minAdx, 0)},趋势不够强 ⏭` };
   }
 
   if (signal?.strategy === 'breakout_pyramid') {
@@ -1543,6 +1794,9 @@ function momentumScalpLog(
   momentumConfig: MomentumScalpConfig
 ): ReplayLog {
   // NOTE: momentum_scalp strategy disabled for intraday trading focus
+  if (m5.length < 12) {
+    return { level: 'info', strategy: '动量剥头皮', msg: `M5数据不足: ${m5.length}/12 ⏭` };
+  }
   return { level: 'info', strategy: '动量剥头皮', msg: '动量剥头皮策略已禁用 ⏭' };
   /*
   // @ts-expect-error momentum_scalp disabled
@@ -1605,6 +1859,57 @@ function applyM15ConfirmationBoost(signal: ReplaySignal | null, m15: EnrichedRep
     score: boostedScore,
     all_strategies: signal.all_strategies.map((entry) => ({ ...entry, score: boostedScore }))
   };
+}
+
+function applyContextScoringBonuses(
+  signal: ReplaySignal,
+  harmonic: ReplayHarmonicContext | undefined,
+  smc: ReplaySmcContext | undefined,
+  price: number,
+  lastH1Index: number
+): ReplaySignal {
+  let boostedScore = signal.score;
+
+  const harmonicBoost = calculateHarmonicBonus(harmonic, signal.side);
+  if (harmonicBoost > 0) {
+    boostedScore = Math.min(boostedScore + harmonicBoost, 10);
+  }
+
+  const smcBoost = calculateSMCBonus(smc, signal.side, price, signal.atr, 'h1', lastH1Index);
+  if (smcBoost > 0) {
+    boostedScore = Math.min(boostedScore + smcBoost, 10);
+  }
+
+  if (boostedScore === signal.score) {
+    return signal;
+  }
+  return {
+    ...signal,
+    score: boostedScore,
+    all_strategies: signal.all_strategies.map((entry) => ({ ...entry, score: boostedScore }))
+  };
+}
+
+function calculateHarmonicBonus(harmonic: ReplayHarmonicContext | undefined, side: 'BUY' | 'SELL'): number {
+  const pattern = harmonic?.active_pattern;
+  if (pattern == null || pattern.score < 5) {
+    return 0;
+  }
+  if (harmonicDirectionToSide(pattern.direction) !== side) {
+    return 0;
+  }
+  return pattern.score >= 8 ? 2 : 1;
+}
+
+function harmonicDirectionToSide(direction: string): 'BUY' | 'SELL' | undefined {
+  const normalized = direction.toUpperCase();
+  if (normalized === 'BUY' || normalized === 'BULL' || normalized === 'BULLISH') {
+    return 'BUY';
+  }
+  if (normalized === 'SELL' || normalized === 'BEAR' || normalized === 'BEARISH') {
+    return 'SELL';
+  }
+  return undefined;
 }
 
 function applyPositionConflictFilter(
@@ -1768,10 +2073,14 @@ function trendRating(
   m30: EnrichedReplayBar[]
 ): { penalty: number } {
   const consensus = trendConsensus(d1, h4, h1, m30);
+  const signalDirection = signalSideToTrendDirection(signal.side);
+  if (consensus.strength >= 0.3 && consensus.direction !== 'NEUTRAL' && consensus.direction !== signalDirection) {
+    return { penalty: 2 };
+  }
   if (consensus.strength >= 0.3) {
     return { penalty: 0 };
   }
-  if (consensus.h4Direction !== 'NEUTRAL' && consensus.h4Direction !== signalSideToTrendDirection(signal.side)) {
+  if (consensus.h4Direction !== 'NEUTRAL' && consensus.h4Direction !== signalDirection) {
     return { penalty: 2 };
   }
   return { penalty: 1 };
@@ -1782,7 +2091,7 @@ function trendConsensus(
   h4: EnrichedReplayBar[],
   h1: EnrichedReplayBar[],
   m30: EnrichedReplayBar[]
-): { strength: number; h4Direction: 'BULL' | 'BEAR' | 'NEUTRAL' } {
+): { direction: 'BULL' | 'BEAR' | 'NEUTRAL'; strength: number; h4Direction: 'BULL' | 'BEAR' | 'NEUTRAL' } {
   const d1Direction = timeframeDirection(d1);
   const h4Direction = timeframeDirection(h4);
   const h1Direction = timeframeDirection(h1);
@@ -1805,10 +2114,14 @@ function trendConsensus(
     (m30Direction === 'BEAR' ? 0.35 : 0);
 
   const strength = d1Strength + h4Strength + h1Strength + m30Strength;
-  void bullWeight;
-  void bearWeight;
+  let direction: 'BULL' | 'BEAR' | 'NEUTRAL' = 'NEUTRAL';
+  if (bullWeight > bearWeight) {
+    direction = 'BULL';
+  } else if (bearWeight > bullWeight) {
+    direction = 'BEAR';
+  }
 
-  return { strength, h4Direction };
+  return { direction, strength, h4Direction };
 }
 
 function timeframeDirection(bars: EnrichedReplayBar[]): 'BULL' | 'BEAR' | 'NEUTRAL' {
@@ -1847,7 +2160,13 @@ function signalSideToTrendDirection(side: 'BUY' | 'SELL'): 'BULL' | 'BEAR' {
   return side === 'SELL' ? 'BEAR' : 'BULL';
 }
 
-function evaluatePullbackSignal(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: number, pricePrecision: number): ReplaySignal | null {
+function evaluatePullbackSignal(
+  h1: EnrichedReplayBar[],
+  h4: EnrichedReplayBar[],
+  price: number,
+  pricePrecision: number,
+  config: ReplayTraditionalConfig
+): ReplaySignal | null {
   if (h1.length < 50 || price <= 0) {
     return null;
   }
@@ -1856,11 +2175,11 @@ function evaluatePullbackSignal(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[]
   if (atrValue <= 0 || Number.isNaN(atrValue) || Number.isNaN(last.adx)) {
     return null;
   }
-  if (last.adx < pullbackConfig.minAdx) {
+  if (last.adx < config.pullback.minAdx) {
     return null;
   }
 
-  const threshold = atrValue * pullbackConfig.distAtr;
+  const threshold = atrValue * config.pullback.distAtr;
   const nearEma = isNearEma20(h1, threshold);
 
   if (last.ema20 > last.ema50 && price > last.ema50) {
@@ -1868,11 +2187,16 @@ function evaluatePullbackSignal(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[]
     if (!nearEma && dist >= threshold) {
       return null;
     }
-    if (last.rsi >= pullbackConfig.rsiOverbought) {
+    if (last.rsi >= config.pullback.rsiOverbought) {
       return null;
     }
-    const signal = buildPullbackSignal('BUY', price, atrValue, pullbackScore('BUY', last, nearEma), pricePrecision);
-    const fibGate = evaluatePullbackFibGate('BUY', last, h4, price, pricePrecision);
+    const signal = applyPickSLTP(
+      buildPullbackSignal('BUY', price, atrValue, pullbackScore('BUY', last, nearEma, config), pricePrecision, config),
+      last,
+      pricePrecision,
+      config
+    );
+    const fibGate = evaluatePullbackFibGate('BUY', last, h4, price, pricePrecision, config.pullbackFibEnabled);
     if (fibGate.rejectLog != null) {
       return null;
     }
@@ -1890,11 +2214,16 @@ function evaluatePullbackSignal(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[]
     if (!nearEma && dist >= threshold) {
       return null;
     }
-    if (last.rsi <= pullbackConfig.rsiOversold) {
+    if (last.rsi <= config.pullback.rsiOversold) {
       return null;
     }
-    const signal = buildPullbackSignal('SELL', price, atrValue, pullbackScore('SELL', last, nearEma), pricePrecision);
-    const fibGate = evaluatePullbackFibGate('SELL', last, h4, price, pricePrecision);
+    const signal = applyPickSLTP(
+      buildPullbackSignal('SELL', price, atrValue, pullbackScore('SELL', last, nearEma, config), pricePrecision, config),
+      last,
+      pricePrecision,
+      config
+    );
+    const fibGate = evaluatePullbackFibGate('SELL', last, h4, price, pricePrecision, config.pullbackFibEnabled);
     if (fibGate.rejectLog != null) {
       return null;
     }
@@ -1910,8 +2239,8 @@ function evaluatePullbackSignal(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[]
   return null;
 }
 
-function evaluateBreakoutRetestSignal(h1: EnrichedReplayBar[], price: number, pricePrecision: number): ReplaySignal | null {
-  if (h1.length < breakoutRetestConfig.lookback + 5 || price <= 0) {
+function evaluateBreakoutRetestSignal(h1: EnrichedReplayBar[], price: number, pricePrecision: number, config: ReplayTraditionalConfig): ReplaySignal | null {
+  if (h1.length < config.breakoutRetest.lookback + 5 || price <= 0) {
     return null;
   }
   const last = h1[h1.length - 1];
@@ -1920,31 +2249,60 @@ function evaluateBreakoutRetestSignal(h1: EnrichedReplayBar[], price: number, pr
     return null;
   }
 
-  const { resistance, support, last5High, last5Low } = breakoutRetestLevels(h1);
-  const threshold = atrValue * breakoutRetestConfig.distAtr;
+  const { resistance, support, last5High, last5Low } = breakoutRetestLevels(h1, config);
+  const threshold = atrValue * config.breakoutRetest.distAtr;
   const brokeUp = last5High > resistance;
   const brokeDown = last5Low < support;
-  const touchCount = countBreakoutRetestTouches(h1, brokeUp ? 'BUY' : 'SELL', resistance, support, threshold);
+  const touchCount = countBreakoutRetestTouches(h1, brokeUp ? 'BUY' : 'SELL', resistance, support, threshold, config);
 
   if (brokeUp) {
     const dist = Math.abs(price - resistance);
     if (dist < threshold && touchCount >= 1) {
-      return buildBreakoutRetestSignal('BUY', price, atrValue, resistance, breakoutRetestScore('BUY', last, touchCount), pricePrecision);
+      return applyPickSLTP(
+        buildBreakoutRetestSignal('BUY', price, atrValue, resistance, breakoutRetestScore('BUY', last, touchCount), pricePrecision, config),
+        last,
+        pricePrecision,
+        config
+      );
     }
   }
 
   if (brokeDown) {
     const dist = Math.abs(price - support);
     if (dist < threshold && touchCount >= 1) {
-      return buildBreakoutRetestSignal('SELL', price, atrValue, support, breakoutRetestScore('SELL', last, touchCount), pricePrecision);
+      return applyPickSLTP(
+        buildBreakoutRetestSignal('SELL', price, atrValue, support, breakoutRetestScore('SELL', last, touchCount), pricePrecision, config),
+        last,
+        pricePrecision,
+        config
+      );
     }
   }
 
   return null;
 }
 
-function breakoutRetestLevels(h1: EnrichedReplayBar[]): { resistance: number; support: number; last5High: number; last5Low: number } {
-  const recent = h1.slice(h1.length - breakoutRetestConfig.lookback - 5, h1.length - 5);
+function applyPickSLTP(
+  signal: ReplaySignal,
+  last: EnrichedReplayBar,
+  pricePrecision: number,
+  config: ReplayTraditionalConfig
+): ReplaySignal {
+  const sr = pickSLTP(signal.side, signal.entry, last, signal.atr, pricePrecision, config);
+  if (!sr.usedSR) {
+    return signal;
+  }
+  return {
+    ...signal,
+    stop_loss: sr.sl,
+    tp1: sr.tp1,
+    tp2: sr.tp2,
+    all_strategies: signal.all_strategies.map((entry) => ({ ...entry, stop_loss: sr.sl }))
+  };
+}
+
+function breakoutRetestLevels(h1: EnrichedReplayBar[], config: ReplayTraditionalConfig): { resistance: number; support: number; last5High: number; last5Low: number } {
+  const recent = h1.slice(h1.length - config.breakoutRetest.lookback - 5, h1.length - 5);
   const last5 = h1.slice(-5);
   return {
     resistance: Math.max(...recent.map((bar) => bar.high)),
@@ -1959,10 +2317,11 @@ function countBreakoutRetestTouches(
   side: 'BUY' | 'SELL',
   resistance: number,
   support: number,
-  threshold: number
+  threshold: number,
+  config: ReplayTraditionalConfig
 ): number {
   let count = 0;
-  for (const bar of h1.slice(-breakoutRetestConfig.confirmWindow)) {
+  for (const bar of h1.slice(-config.breakoutRetest.confirmWindow)) {
     if (side === 'BUY' && Math.abs(bar.low - resistance) < threshold) {
       count += 1;
     }
@@ -2023,25 +2382,35 @@ function breakoutRetestDetails(side: 'BUY' | 'SELL', last: EnrichedReplayBar, to
   return details;
 }
 
-function evaluateDivergenceSignal(h1: EnrichedReplayBar[], price: number, pricePrecision: number): ReplaySignal | null {
+function evaluateDivergenceSignal(h1: EnrichedReplayBar[], price: number, pricePrecision: number, config: ReplayTraditionalConfig): ReplaySignal | null {
   if (h1.length < 30 || price <= 0) {
     return null;
   }
   const last = h1[h1.length - 1];
   const atrValue = last.atr;
-  const stats = divergenceStats(h1);
+  const stats = divergenceStats(h1, config);
   if (stats == null || atrValue <= 0 || Number.isNaN(atrValue)) {
     return null;
   }
 
   const bullDiv = stats.recentLow < stats.previousLow && stats.recentRsiLow > stats.previousRsiLow;
-  if (bullDiv && last.rsi < divergenceConfig.rsiBullThresh) {
-    return buildDivergenceSignal('BUY', price, atrValue, stats.recentLow, divergenceBuyScore(h1, stats), pricePrecision);
+  if (bullDiv && last.rsi < config.divergence.rsiBullThresh) {
+    return applyPickSLTP(
+      buildDivergenceSignal('BUY', price, atrValue, stats.recentLow, divergenceBuyScore(h1, stats), pricePrecision, config),
+      last,
+      pricePrecision,
+      config
+    );
   }
 
   const bearDiv = stats.recentHigh > stats.previousHigh && stats.recentRsiHigh < stats.previousRsiHigh;
-  if (bearDiv && last.rsi > divergenceConfig.rsiBearThresh) {
-    return buildDivergenceSignal('SELL', price, atrValue, stats.recentHigh, divergenceSellScore(h1, stats), pricePrecision);
+  if (bearDiv && last.rsi > config.divergence.rsiBearThresh) {
+    return applyPickSLTP(
+      buildDivergenceSignal('SELL', price, atrValue, stats.recentHigh, divergenceSellScore(h1, stats), pricePrecision, config),
+      last,
+      pricePrecision,
+      config
+    );
   }
 
   return null;
@@ -2133,28 +2502,33 @@ function divergenceSellDetails(h1: EnrichedReplayBar[], stats: DivergenceStats):
 
 function evaluateCounterPullbackSignal(
   h1: EnrichedReplayBar[],
+  m30: EnrichedReplayBar[],
+  m15: EnrichedReplayBar[],
   price: number,
   smc: ReplaySmcContext | undefined,
-  pricePrecision: number
+  pricePrecision: number,
+  config: ReplayTraditionalConfig
 ): ReplaySignal | null {
-  if (h1.length < 20 || price <= 0 || smc == null) {
+  const context = selectCounterPullbackContext(m30, m15);
+  if (context == null || h1.length === 0 || price <= 0 || smc == null) {
     return null;
   }
-  const last = h1[h1.length - 1];
-  const atrValue = last.atr;
+  const { bars: signalBars, timeframe } = context;
+  const last = signalBars[signalBars.length - 1];
+  const atrValue = h1[h1.length - 1].atr;
   if (atrValue <= 0 || Number.isNaN(atrValue)) {
     return null;
   }
 
-  const recentChoch = recentCounterPullbackChoch(smc);
+  const recentChoch = recentCounterPullbackChoch(smc, timeframe);
   if (recentChoch == null) {
     return null;
   }
-  if (h1.length - 1 - recentChoch.index > 10) {
+  if (signalBars.length - 1 - recentChoch.index > 10) {
     return null;
   }
 
-  const recentSweep = recentCounterPullbackSweep(smc, recentChoch);
+  const recentSweep = recentCounterPullbackSweep(smc, recentChoch, timeframe);
   if (recentSweep == null) {
     return null;
   }
@@ -2164,13 +2538,18 @@ function evaluateCounterPullbackSignal(
     if (price > pullbackZone) {
       return null;
     }
-    return buildCounterPullbackSignal(
-      'BUY',
-      price,
-      atrValue,
-      recentSweep.level,
-      counterPullbackScore('BUY', last, smc, price, atrValue),
-      pricePrecision
+    return applyPickSLTP(
+      buildCounterPullbackSignal(
+        'BUY',
+        price,
+        atrValue,
+        recentSweep.level,
+        counterPullbackScore('BUY', last, smc, timeframe, price, atrValue),
+        pricePrecision
+      ),
+      last,
+      pricePrecision,
+      config
     );
   }
 
@@ -2179,28 +2558,49 @@ function evaluateCounterPullbackSignal(
     if (price < pullbackZone) {
       return null;
     }
-    return buildCounterPullbackSignal(
-      'SELL',
-      price,
-      atrValue,
-      recentSweep.level,
-      counterPullbackScore('SELL', last, smc, price, atrValue),
-      pricePrecision
+    return applyPickSLTP(
+      buildCounterPullbackSignal(
+        'SELL',
+        price,
+        atrValue,
+        recentSweep.level,
+        counterPullbackScore('SELL', last, smc, timeframe, price, atrValue),
+        pricePrecision
+      ),
+      last,
+      pricePrecision,
+      config
     );
   }
 
   return null;
 }
 
-function recentCounterPullbackChoch(smc: ReplaySmcContext | undefined): ReplayStructureBreak | undefined {
-  return [...(smc?.h1_breaks ?? [])].reverse().find((entry) => entry.type === 'CHoCH');
+function selectCounterPullbackContext(
+  m30: EnrichedReplayBar[],
+  m15: EnrichedReplayBar[]
+): { bars: EnrichedReplayBar[]; timeframe: CounterPullbackTimeframe } | null {
+  if (m30.length >= 20) {
+    return { bars: m30, timeframe: 'm30' };
+  }
+  if (m15.length >= 20) {
+    return { bars: m15, timeframe: 'm15' };
+  }
+  return null;
+}
+
+function recentCounterPullbackChoch(smc: ReplaySmcContext | undefined, timeframe: CounterPullbackTimeframe): ReplayStructureBreak | undefined {
+  const breaks = timeframe === 'm30' ? smc?.m30_breaks : smc?.m15_breaks;
+  return [...(breaks ?? [])].reverse().find((entry) => entry.type === 'CHoCH');
 }
 
 function recentCounterPullbackSweep(
   smc: ReplaySmcContext | undefined,
-  choch: ReplayStructureBreak
+  choch: ReplayStructureBreak,
+  timeframe: CounterPullbackTimeframe
 ): ReplayLiquiditySweep | undefined {
-  return [...(smc?.h1_sweeps ?? [])].reverse().find((entry) => {
+  const sweeps = timeframe === 'm30' ? smc?.m30_sweeps : smc?.m15_sweeps;
+  return [...(sweeps ?? [])].reverse().find((entry) => {
     return (choch.direction === 'UP' && entry.side === 'BULL') || (choch.direction === 'DOWN' && entry.side === 'BEAR');
   });
 }
@@ -2209,6 +2609,7 @@ function counterPullbackScore(
   side: 'BUY' | 'SELL',
   last: EnrichedReplayBar,
   smc?: ReplaySmcContext,
+  timeframe?: CounterPullbackTimeframe,
   price = 0,
   atr = 0
 ): number {
@@ -2219,7 +2620,7 @@ function counterPullbackScore(
   if (side === 'SELL' && last.rsi > 55) {
     score += 1;
   }
-  if (hasCounterPullbackOrderBlock(side, smc, price, atr)) {
+  if (hasCounterPullbackOrderBlock(side, smc, timeframe, price, atr)) {
     score += 1;
   }
   if (side === 'BUY' && last.macd_hist > 0) {
@@ -2228,7 +2629,7 @@ function counterPullbackScore(
   if (side === 'SELL' && last.macd_hist < 0) {
     score += 1;
   }
-  if (hasCounterPullbackFVG(smc, price, atr)) {
+  if (hasCounterPullbackFVG(smc, timeframe, price, atr)) {
     score += 1;
   }
   return Math.min(score, 10);
@@ -2240,6 +2641,7 @@ function counterPullbackDetails(
   sweep: ReplayLiquiditySweep,
   last: EnrichedReplayBar,
   smc?: ReplaySmcContext,
+  timeframe?: CounterPullbackTimeframe,
   price = 0,
   atr = 0
 ): string[] {
@@ -2250,7 +2652,7 @@ function counterPullbackDetails(
   if (side === 'SELL' && last.rsi > 55) {
     details.push(`RSI=${formatFixed(last.rsi, 1)}`);
   }
-  if (hasCounterPullbackOrderBlock(side, smc, price, atr)) {
+  if (hasCounterPullbackOrderBlock(side, smc, timeframe, price, atr)) {
     details.push('OB确认');
   }
   if (side === 'BUY' && last.macd_hist > 0) {
@@ -2259,24 +2661,26 @@ function counterPullbackDetails(
   if (side === 'SELL' && last.macd_hist < 0) {
     details.push('MACD<0');
   }
-  if (hasCounterPullbackFVG(smc, price, atr)) {
+  if (hasCounterPullbackFVG(smc, timeframe, price, atr)) {
     details.push('FVG确认');
   }
   return details;
 }
 
-function hasCounterPullbackOrderBlock(side: 'BUY' | 'SELL', smc: ReplaySmcContext | undefined, price: number, atr: number): boolean {
+function hasCounterPullbackOrderBlock(side: 'BUY' | 'SELL', smc: ReplaySmcContext | undefined, timeframe: CounterPullbackTimeframe | undefined, price: number, atr: number): boolean {
   if (price <= 0 || atr <= 0) {
     return false;
   }
-  return (smc?.h1_obs ?? []).some((ob) => ob.side === side && ob.valid && zoneNearPrice(ob.low, ob.high, price, atr));
+  const orderBlocks = timeframe === 'm30' ? smc?.m30_obs : timeframe === 'm15' ? smc?.m15_obs : [];
+  return (orderBlocks ?? []).some((ob) => ob.side === side && ob.valid && zoneNearPrice(ob.low, ob.high, price, atr));
 }
 
-function hasCounterPullbackFVG(smc: ReplaySmcContext | undefined, price: number, atr: number): boolean {
+function hasCounterPullbackFVG(smc: ReplaySmcContext | undefined, timeframe: CounterPullbackTimeframe | undefined, price: number, atr: number): boolean {
   if (price <= 0 || atr <= 0) {
     return false;
   }
-  return (smc?.h1_fvgs ?? []).some((fvg) => !fvg.filled && zoneNearPrice(fvg.lower_bound, fvg.upper_bound, price, atr));
+  const fvgs = timeframe === 'm30' ? smc?.m30_fvgs : timeframe === 'm15' ? smc?.m15_fvgs : [];
+  return (fvgs ?? []).some((fvg) => !fvg.filled && zoneNearPrice(fvg.lower_bound, fvg.upper_bound, price, atr));
 }
 
 function zoneNearPrice(low: number, high: number, price: number, threshold: number): boolean {
@@ -2287,14 +2691,15 @@ function evaluateBreakoutPyramidSignal(
   h1: EnrichedReplayBar[],
   price: number,
   smc: ReplaySmcContext | undefined,
-  pricePrecision: number
+  pricePrecision: number,
+  config: ReplayTraditionalConfig
 ): ReplaySignal | null {
   if (h1.length < 30 || price <= 0) {
     return null;
   }
   const last = h1[h1.length - 1];
   const atrValue = last.atr;
-  if (last.adx < 30 || atrValue <= 0 || Number.isNaN(atrValue)) {
+  if (last.adx < config.breakoutPyramid.minAdx || atrValue <= 0 || Number.isNaN(atrValue)) {
     return null;
   }
 
@@ -2302,14 +2707,14 @@ function evaluateBreakoutPyramidSignal(
     if (breakoutPyramidBlockingOrderBlock(h1, 'BUY', smc) != null) {
       return null;
     }
-    return buildBreakoutPyramidSignal('BUY', price, atrValue, last, breakoutPyramidScore('BUY', last), pricePrecision);
+    return buildBreakoutPyramidSignal('BUY', price, atrValue, last, breakoutPyramidScore('BUY', last), pricePrecision, config);
   }
 
   if (last.close < last.bb_lower && last.ema20 < last.ema50) {
     if (breakoutPyramidBlockingOrderBlock(h1, 'SELL', smc) != null) {
       return null;
     }
-    return buildBreakoutPyramidSignal('SELL', price, atrValue, last, breakoutPyramidScore('SELL', last), pricePrecision);
+    return buildBreakoutPyramidSignal('SELL', price, atrValue, last, breakoutPyramidScore('SELL', last), pricePrecision, config);
   }
 
   return null;
@@ -2511,16 +2916,17 @@ function buildBreakoutRetestSignal(
   atrValue: number,
   brokenLevel: number,
   score: number,
-  pricePrecision: number
+  pricePrecision: number,
+  config: ReplayTraditionalConfig
 ): ReplaySignal {
   const direction = side === 'BUY' ? 1 : -1;
-  const stopLoss = roundToPrecision(brokenLevel - direction * atrValue * breakoutRetestConfig.slAtr, pricePrecision);
+  const stopLoss = roundToPrecision(brokenLevel - direction * atrValue * config.breakoutRetest.slAtr, pricePrecision);
   return {
     side,
     entry,
     stop_loss: stopLoss,
-    tp1: roundToPrecision(entry + direction * atrValue * breakoutRetestConfig.tp1Atr, pricePrecision),
-    tp2: roundToPrecision(entry + direction * atrValue * breakoutRetestConfig.tp2Atr, pricePrecision),
+    tp1: roundToPrecision(entry + direction * atrValue * config.breakoutRetest.tp1Atr, pricePrecision),
+    tp2: roundToPrecision(entry + direction * atrValue * config.breakoutRetest.tp2Atr, pricePrecision),
     score,
     strategy: 'breakout_retest',
     atr: roundToSignificantDigits(atrValue, 16),
@@ -2542,19 +2948,20 @@ function buildDivergenceSignal(
   atrValue: number,
   pivotClose: number,
   score: number,
-  pricePrecision: number
+  pricePrecision: number,
+  config: ReplayTraditionalConfig
 ): ReplaySignal {
   const direction = side === 'BUY' ? 1 : -1;
   const stopLoss = roundToPrecision(
-    side === 'BUY' ? pivotClose - atrValue * divergenceConfig.slAtr : pivotClose + atrValue * divergenceConfig.slAtr,
+    side === 'BUY' ? pivotClose - atrValue * config.divergence.slAtr : pivotClose + atrValue * config.divergence.slAtr,
     pricePrecision
   );
   return {
     side,
     entry,
     stop_loss: stopLoss,
-    tp1: roundToPrecision(entry + direction * atrValue * divergenceConfig.tp1Atr, pricePrecision),
-    tp2: roundToPrecision(entry + direction * atrValue * divergenceConfig.tp2Atr, pricePrecision),
+    tp1: roundToPrecision(entry + direction * atrValue * config.divergence.tp1Atr, pricePrecision),
+    tp2: roundToPrecision(entry + direction * atrValue * config.divergence.tp2Atr, pricePrecision),
     score,
     strategy: 'divergence',
     atr: roundToSignificantDigits(atrValue, 16),
@@ -2610,10 +3017,11 @@ function buildBreakoutPyramidSignal(
   atrValue: number,
   last: EnrichedReplayBar,
   score: number,
-  pricePrecision: number
+  pricePrecision: number,
+  config: ReplayTraditionalConfig
 ): ReplaySignal {
   const direction = side === 'BUY' ? 1 : -1;
-  const stopLoss = roundToPrecision(last.ema20 - direction * atrValue * 1.5, pricePrecision);
+  const stopLoss = roundToPrecision(last.ema20 - direction * atrValue * config.breakoutPyramid.slAtr, pricePrecision);
   return {
     side,
     entry,
@@ -2795,7 +3203,7 @@ function isNearEma20(h1: EnrichedReplayBar[], threshold: number): boolean {
   return Math.abs(previous.close - previous.ema20) < threshold && Math.abs(last.close - last.ema20) < threshold;
 }
 
-function pullbackScore(side: 'BUY' | 'SELL', last: EnrichedReplayBar, nearEma: boolean): number {
+function pullbackScore(side: 'BUY' | 'SELL', last: EnrichedReplayBar, nearEma: boolean, config: ReplayTraditionalConfig): number {
   let score = 5;
   if (side === 'BUY' && last.macd_hist > 0) {
     score += 1;
@@ -2809,7 +3217,7 @@ function pullbackScore(side: 'BUY' | 'SELL', last: EnrichedReplayBar, nearEma: b
   if (side === 'SELL' && last.rsi > 50) {
     score += 1;
   }
-  if (last.adx > pullbackConfig.adxBonus) {
+  if (last.adx > config.pullback.adxBonus) {
     score += 1;
   }
   if (nearEma) {
@@ -2818,16 +3226,23 @@ function pullbackScore(side: 'BUY' | 'SELL', last: EnrichedReplayBar, nearEma: b
   return Math.min(score, 10);
 }
 
-function buildPullbackSignal(side: 'BUY' | 'SELL', entry: number, atrValue: number, score: number, pricePrecision: number): ReplaySignal {
+function buildPullbackSignal(
+  side: 'BUY' | 'SELL',
+  entry: number,
+  atrValue: number,
+  score: number,
+  pricePrecision: number,
+  config: ReplayTraditionalConfig
+): ReplaySignal {
   const direction = side === 'BUY' ? 1 : -1;
-  const stopLoss = roundToPrecision(entry - direction * atrValue * pullbackConfig.slAtr, pricePrecision);
+  const stopLoss = roundToPrecision(entry - direction * atrValue * config.pullback.slAtr, pricePrecision);
   const oracleAtr = roundToSignificantDigits(atrValue, 16);
   const signal: ReplaySignal = {
     side,
     entry,
     stop_loss: stopLoss,
-    tp1: roundToPrecision(entry + direction * atrValue * pullbackConfig.tp1Atr, pricePrecision),
-    tp2: roundToPrecision(entry + direction * atrValue * pullbackConfig.tp2Atr, pricePrecision),
+    tp1: roundToPrecision(entry + direction * atrValue * config.pullback.tp1Atr, pricePrecision),
+    tp2: roundToPrecision(entry + direction * atrValue * config.pullback.tp2Atr, pricePrecision),
     score,
     strategy: 'pullback',
     atr: oracleAtr,
