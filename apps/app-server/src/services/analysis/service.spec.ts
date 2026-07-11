@@ -11,12 +11,7 @@ describe('AnalysisService', () => {
       bid: 95,
       ask: 95
     });
-    await store.saveBars({
-      account_id: '90011087',
-      symbol: 'XAUUSD',
-      timeframe: 'H1',
-      bars: pullbackBuyBars()
-    });
+    await seedPullbackBars(store);
     await store.saveAIResult('90011087', 'XAUUSD', {
       suggested_sl: 93
     });
@@ -33,12 +28,7 @@ describe('AnalysisService', () => {
 
   it('uses the latest H1 close for replay analysis when no current tick exists', async () => {
     const store = createInMemoryEaStore();
-    await store.saveBars({
-      account_id: '90011087',
-      symbol: 'XAUUSD',
-      timeframe: 'H1',
-      bars: pullbackBuyBars()
-    });
+    await seedPullbackBars(store);
 
     const result = await new AnalysisService(store, () => '2026-04-16T12:00:00.000Z').analyzeAccountSymbol('90011087', 'XAUUSD');
 
@@ -57,12 +47,7 @@ describe('AnalysisService', () => {
       bid: 95,
       ask: 95
     });
-    await store.saveBars({
-      account_id: '90011087',
-      symbol: 'XAUUSD',
-      timeframe: 'H1',
-      bars: pullbackBuyBars()
-    });
+    await seedPullbackBars(store);
     await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -75,7 +60,7 @@ describe('AnalysisService', () => {
     expect(result.replay.signal).toMatchObject({
       strategy: 'pullback',
       side: 'BUY',
-      score: 8
+      score: 9
     });
   });
 
@@ -87,12 +72,7 @@ describe('AnalysisService', () => {
       bid: 95,
       ask: 95
     });
-    await store.saveBars({
-      account_id: '90011087',
-      symbol: 'XAUUSD',
-      timeframe: 'H1',
-      bars: pullbackBuyBars()
-    });
+    await seedPullbackBars(store);
     await store.savePositions({
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -108,6 +88,21 @@ describe('AnalysisService', () => {
     });
   });
 });
+
+async function seedPullbackBars(store: ReturnType<typeof createInMemoryEaStore>) {
+  await store.saveBars({
+    account_id: '90011087',
+    symbol: 'XAUUSD',
+    timeframe: 'H1',
+    bars: pullbackBuyBars()
+  });
+  await store.saveBars({
+    account_id: '90011087',
+    symbol: 'XAUUSD',
+    timeframe: 'H4',
+    bars: pullbackFibH4BarsUp()
+  });
+}
 
 function pullbackBuyBars() {
   const bars = Array.from({ length: 50 }, (_, index) => ({
@@ -135,6 +130,19 @@ function pullbackBuyBars() {
     open: 95
   };
   return bars;
+}
+
+function pullbackFibH4BarsUp() {
+  return Array.from({ length: 5 }, (_, index) => ({
+    time: `2026-04-15T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 90 + index,
+    high: 100 + index,
+    low: 88 + index,
+    close: 95 + index,
+    adx: 30,
+    ema20: 110,
+    ema50: 100
+  }));
 }
 
 function d1TrendBars() {
