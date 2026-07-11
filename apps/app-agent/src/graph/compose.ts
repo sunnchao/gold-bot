@@ -394,7 +394,6 @@ export function composeFinalSignal(state: AnalysisGraphStateType): AISignalResul
 
     if (multiTfAlign) baseThreshold -= 5;
 
-    if (currentPositionPnL < -20) baseThreshold += 15;
 
     return Math.max(35, Math.min(75, baseThreshold));
   }
