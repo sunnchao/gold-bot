@@ -427,8 +427,14 @@ export async function createPostgresEaStore(dsn: string): Promise<EaStore | null
     },
 
     async getBars(accountIdValue: string, symbol: string, timeframe: string): Promise<EaRecord[]> {
-      const rows = await queryRows(q, "SELECT payload_json FROM ea_snapshots WHERE kind = 'bars' AND account_id = $1 AND symbol = $2 AND timeframe = $3 ORDER BY id ASC", [accountIdValue, symbol, timeframe]);
-      return rows.map((row) => recordFromJson(asString(row.payload_json)) as EaRecord);
+      // Persist the full EA bars payload, but return only the inner bar array so
+      // Postgres matches the SQLite/in-memory contract used by replay + risk gates.
+      const row = await queryOne(q, "SELECT payload_json FROM ea_snapshots WHERE kind = 'bars' AND account_id = $1 AND symbol = $2 AND timeframe = $3", [accountIdValue, symbol, timeframe]);
+      if (!row) {
+        return [];
+      }
+      const payload = recordFromJson(asString(row.payload_json)) as EaRecord;
+      return Array.isArray(payload.bars) ? (payload.bars as EaRecord[]) : [];
     },
 
     async savePositions(payload: EaRecord): Promise<void> {

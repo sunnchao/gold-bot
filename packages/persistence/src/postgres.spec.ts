@@ -82,7 +82,17 @@ describePostgres('createPostgresEaStore', () => {
       expect(await store.getRegistration('90011087')).toMatchObject({ broker: 'Demo Broker' });
       expect(await store.getHeartbeat('90011087')).toMatchObject({ equity: 1100.25, max_spread: 62 });
       expect(await store.getLatestTick('90011087', 'XAUUSD')).toMatchObject({ ask: 3335.8 });
-      expect(await store.getBars('90011087', 'XAUUSD', 'H1')).toHaveLength(1);
+      const bars = await store.getBars('90011087', 'XAUUSD', 'H1');
+      expect(bars).toHaveLength(1);
+      expect(bars[0]).toMatchObject({
+        time: '2026.04.13 07:00',
+        open: 3331.25,
+        high: 3337.1,
+        low: 3330.9,
+        close: 3335.75
+      });
+      expect(bars[0]).not.toHaveProperty('bars');
+      expect(bars[0]).not.toHaveProperty('account_id');
       expect(await store.getPositions('90011087')).toHaveLength(1);
       expect(await store.getOrderResults('90011087')).toEqual([
         {
@@ -92,6 +102,31 @@ describePostgres('createPostgresEaStore', () => {
           ticket: 1001
         }
       ]);
+    });
+  });
+
+  it('returns the inner bars array, not the snapshot wrapper', async () => {
+    await withStore(async (store) => {
+      await store.saveBars({
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        timeframe: 'H1',
+        bars: [
+          { time: '2026.04.13 07:00', open: 3331.25, high: 3337.1, low: 3330.9, close: 3335.75 },
+          { time: '2026.04.13 08:00', open: 3335.75, high: 3340.0, low: 3334.5, close: 3338.25 },
+          { time: '2026.04.13 09:00', open: 3338.25, high: 3342.5, low: 3337.0, close: 3341.0 }
+        ]
+      });
+
+      const bars = await store.getBars('90011087', 'XAUUSD', 'H1');
+      expect(bars).toHaveLength(3);
+      expect(bars.map((bar) => bar.time)).toEqual([
+        '2026.04.13 07:00',
+        '2026.04.13 08:00',
+        '2026.04.13 09:00'
+      ]);
+      expect(bars.every((bar) => !('bars' in bar) && !('account_id' in bar))).toBe(true);
+      expect(await store.getBars('90011087', 'XAUUSD', 'M15')).toEqual([]);
     });
   });
 
