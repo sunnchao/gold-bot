@@ -927,7 +927,7 @@ describe('app-server scaffold', () => {
     expect(await store.getPositions('90011087')).toEqual([]);
   });
 
-  it('normalizes Go-compatible nested EA payloads before persistence', async () => {
+  it('normalizes empty strategy from GB_ comment, never from magic', async () => {
     const store = createInMemoryEaStore();
     const server = await createAppServer({ store });
 
@@ -944,23 +944,138 @@ describe('app-server scaffold', () => {
     expect(bars.statusCode).toBe(200);
     expect((await store.getBars('90011087', 'XAUUSD', 'H1'))[0]).toMatchObject({ time: '1712971200' });
 
-    await store.saveRegistration({
-      account_id: '90011087',
-      strategy_mapping: {
-        '20250238': 'ai_signal'
-      }
-    });
-
+    // Magic intentionally set to a value that would historically map to ai_signal;
+    // with comment-first recovery, strategy must come from comment only.
     const positions = await server.inject({
       method: 'POST',
       url: '/positions',
       body: {
         account_id: '90011087',
-        positions: [{ ticket: 123, symbol: 'XAUUSD', type: 'BUY', lots: 0.1, open_price: 3300, magic: 20250238, strategy: '' }]
+        positions: [{
+          ticket: 123,
+          symbol: 'XAUUSD',
+          type: 'BUY',
+          lots: 0.1,
+          open_price: 3300,
+          magic: 20250238,
+          strategy: '',
+          comment: 'GB_divergence_S8_A'
+        }]
       }
     });
     expect(positions.statusCode).toBe(200);
-    expect((await store.getPositions('90011087'))[0]).toMatchObject({ strategy: 'ai_signal' });
+    expect((await store.getPositions('90011087'))[0]).toMatchObject({
+      strategy: 'divergence',
+      comment: 'GB_divergence_S8_A'
+    });
+
+    // Custom magic + no usable comment → unknown (do not invent from magic).
+    const unknownPos = await server.inject({
+      method: 'POST',
+      url: '/positions',
+      body: {
+        account_id: '90011087',
+        positions: [{
+          ticket: 456,
+          symbol: 'XAUUSD',
+          type: 'SELL',
+          lots: 0.05,
+          open_price: 3301,
+          magic: 99999999,
+          strategy: '',
+          comment: ''
+        }]
+      }
+    });
+    expect(unknownPos.statusCode).toBe(200);
+    const stored = await store.getPositions('90011087');
+    const ticket456 = stored.find((p) => Number(p.ticket) === 456);
+    expect(ticket456).toMatchObject({ strategy: 'unknown' });
+  });
+
+  it('analysis_payload backfills empty strategy from comment for agent schema', async () => {
+    const store = createInMemoryEaStore();
+    const server = await createAppServer({
+      store,
+      validTokens: ['test-token'],
+      tokenAccounts: { 'test-token': ['90011087'] },
+      adminTokens: ['test-token'],
+      nowUnix: () => 1713000000
+    });
+    const headers = { 'X-API-Token': 'test-token' };
+
+    await server.inject({
+      method: 'POST',
+      url: '/register',
+      body: {
+        account_id: '90011087',
+        broker: 'Demo',
+        currency: 'USD',
+        leverage: 100,
+        server_name: 'Demo'
+      }
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/heartbeat',
+      body: {
+        account_id: '90011087',
+        balance: 10000,
+        equity: 10000,
+        free_margin: 9000,
+        margin: 1000,
+        market_open: true,
+        is_trade_allowed: true,
+        server_time: '2026.04.13 08:00:00'
+      }
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/tick',
+      body: {
+        account_id: '90011087',
+        symbol: 'GBPJPY',
+        bid: 216.5,
+        ask: 216.55,
+        spread: 5,
+        time: '08:00:00'
+      }
+    });
+    // Persist with empty strategy but recoverable comment (simulates historical dirty store).
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      positions: [{
+        ticket: 42275446,
+        symbol: 'GBPJPY',
+        type: 'BUY',
+        lots: 0.03,
+        open_price: 216.4,
+        magic: 202502333,
+        strategy: '',
+        comment: 'GB_divergence_S8_A',
+        profit: 1.2
+      }]
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v2/analysis_payload/90011087/GBPJPY',
+      headers
+    });
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      positions?: Array<{ ticket?: number; strategy?: string; comment?: string }>;
+    };
+    expect(body.positions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ticket: 42275446,
+          strategy: 'divergence',
+          comment: 'GB_divergence_S8_A'
+        })
+      ])
+    );
   });
 
   it('rejects nested EA payload type mismatches like the Go decoder', async () => {

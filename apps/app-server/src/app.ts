@@ -693,7 +693,7 @@ function normalizeBarsPayload(body: EaRecord): string | null {
   return null;
 }
 
-async function normalizePositionsPayload(body: EaRecord, store: EaStore): Promise<string | null> {
+async function normalizePositionsPayload(body: EaRecord, _store: EaStore): Promise<string | null> {
   if (hasInvalidOptionalString(body, ['symbol'])) {
     return 'invalid JSON';
   }
@@ -704,11 +704,6 @@ async function normalizePositionsPayload(body: EaRecord, store: EaStore): Promis
   if (!Array.isArray(body.positions)) {
     return 'invalid JSON';
   }
-  const registration = await store.getRegistration(stringFieldOrEmpty(body, 'account_id').trim()) ?? {};
-  const mapping = {
-    ...analysisStrategyMapping(recordField(registration, 'strategy_mapping') ?? {}),
-    ...analysisStrategyMapping(recordField(body, 'strategy_mapping') ?? {})
-  };
   for (const position of body.positions) {
     if (!isRecord(position)) {
       return 'invalid JSON';
@@ -722,12 +717,8 @@ async function normalizePositionsPayload(body: EaRecord, store: EaStore): Promis
     if (hasInvalidOptionalString(position, ['symbol', 'type', 'comment', 'strategy'])) {
       return 'invalid JSON';
     }
-    if (stringFieldOrEmpty(position, 'strategy') === '') {
-      const strategy = mapping[String(numberField(position, 'magic'))] ?? DEFAULT_STRATEGY_MAPPING[String(numberField(position, 'magic'))];
-      if (typeof strategy === 'string') {
-        position.strategy = strategy;
-      }
-    }
+    // Strategy identity comes from strategy/comment only — MagicNumber is user-customizable.
+    position.strategy = resolvePositionStrategy(position);
   }
   return null;
 }
@@ -2130,10 +2121,45 @@ function normalizeAnalysisPosition(position: EaRecord, latestTick: EaRecord, tim
     pnl_percent: numberField(position, 'pnl_percent') || pnlPercent(profit, entryPrice, lots),
     profit,
     sl: numberField(position, 'sl'),
-    strategy: stringFieldOrEmpty(position, 'strategy'),
+    // Prefer explicit strategy; if empty, recover from GB_<strategy>_* comment (never from magic).
+    strategy: resolvePositionStrategy(position),
     ticket: numberField(position, 'ticket'),
     tp: numberField(position, 'tp')
   };
+}
+
+/** Resolve strategy from position.strategy or GB_<strategy>_* comment. Magic is never used. */
+function resolvePositionStrategy(position: EaRecord): string {
+  const existing = stringFieldOrEmpty(position, 'strategy').trim();
+  if (existing.length > 0) {
+    return existing;
+  }
+  const fromComment = strategyFromComment(stringFieldOrEmpty(position, 'comment'));
+  return fromComment.length > 0 ? fromComment : 'unknown';
+}
+
+/**
+ * Parse strategy from EA comment like:
+ * - GB_divergence_S8_A
+ * - GB_breakout_retest_S6
+ * - GB_ai_signal_S65
+ */
+function strategyFromComment(comment: string): string {
+  const text = comment.trim();
+  if (!text.startsWith('GB_')) {
+    return '';
+  }
+  const rest = text.slice(3);
+  // Longest match first so breakout_retest wins over breakout, etc.
+  const names = [...Object.values(DEFAULT_STRATEGY_MAPPING), 'momentum_scalp', 'scale_in']
+    .filter((name, index, all): name is string => typeof name === 'string' && all.indexOf(name) === index)
+    .sort((a, b) => b.length - a.length);
+  for (const name of names) {
+    if (rest === name || rest.startsWith(`${name}_`)) {
+      return name;
+    }
+  }
+  return '';
 }
 
 function analysisStrategyMapping(mapping: EaRecord): EaRecord {
