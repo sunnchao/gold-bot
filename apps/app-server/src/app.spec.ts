@@ -1078,6 +1078,108 @@ describe('app-server scaffold', () => {
     );
   });
 
+  it('re-parses truncated strategy like ai from GB_ai_signal comment', async () => {
+    const store = createInMemoryEaStore();
+    const server = await createAppServer({
+      store,
+      validTokens: ['test-token'],
+      tokenAccounts: { 'test-token': ['90011087'] },
+      adminTokens: ['test-token'],
+      nowUnix: () => 1713000000
+    });
+    const headers = { 'X-API-Token': 'test-token' };
+
+    await server.inject({
+      method: 'POST',
+      url: '/register',
+      body: {
+        account_id: '90011087',
+        broker: 'Demo',
+        currency: 'USD',
+        leverage: 100,
+        server_name: 'Demo'
+      }
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/heartbeat',
+      body: {
+        account_id: '90011087',
+        balance: 10000,
+        equity: 10000,
+        free_margin: 9000,
+        margin: 1000,
+        market_open: true,
+        is_trade_allowed: true,
+        server_time: '2026.04.13 08:00:00'
+      }
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/tick',
+      body: {
+        account_id: '90011087',
+        symbol: 'XAGUSD',
+        bid: 58.5,
+        ask: 58.55,
+        spread: 5,
+        time: '08:00:00'
+      }
+    });
+
+    const post = await server.inject({
+      method: 'POST',
+      url: '/positions',
+      headers,
+      body: {
+        account_id: '90011087',
+        symbol: 'XAGUSD',
+        positions: [{
+          ticket: 42275433,
+          symbol: 'XAGUSD',
+          type: 'SELL_LIMIT',
+          order_class: 'pending',
+          lots: 0.05,
+          open_price: 59.5,
+          strategy: 'ai',
+          comment: 'GB_ai_signal_S78',
+          profit: 0,
+          tp: 58.36,
+          sl: 59.5
+        }]
+      }
+    });
+    expect(post.statusCode).toBe(200);
+
+    const stored = await store.getPositions('90011087');
+    const pending = stored.find((p) => Number(p.ticket) === 42275433);
+    expect(pending).toMatchObject({
+      strategy: 'ai_signal',
+      order_class: 'pending',
+      type: 'SELL_LIMIT'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v2/analysis_payload/90011087/XAGUSD',
+      headers
+    });
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      positions?: Array<{ ticket?: number; strategy?: string; order_class?: string; direction?: string }>;
+    };
+    expect(body.positions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ticket: 42275433,
+          strategy: 'ai_signal',
+          order_class: 'pending',
+          direction: 'SELL_LIMIT'
+        })
+      ])
+    );
+  });
+
   it('rejects nested EA payload type mismatches like the Go decoder', async () => {
     const store = createInMemoryEaStore();
     const server = await createAppServer({ store });

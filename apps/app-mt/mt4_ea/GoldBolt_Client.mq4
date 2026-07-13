@@ -814,15 +814,39 @@ bool IsPendingOrderType(int ot)
    return (ot == OP_BUYLIMIT || ot == OP_BUYSTOP || ot == OP_SELLLIMIT || ot == OP_SELLSTOP);
 }
 
-// comment: GB_<strategy>_... → strategy 名（与服务端 comment 回填规则一致）
+// comment: GB_<strategy>_... → strategy 名
+// 注意：策略名可能含下划线（ai_signal / breakout_retest / breakout_pyramid / counter_pullback / momentum_scalp）
+// 不能只取第一个 '_' 段，否则 GB_ai_signal_S78 → "ai"
 string StrategyFromComment(string comment)
 {
    if(StringLen(comment) < 4) return "";
    if(StringFind(comment, "GB_") != 0) return "";
-   int start = 3;
-   int end = StringFind(comment, "_", start);
-   if(end <= start) return "";
-   return StringSubstr(comment, start, end - start);
+   string rest = StringSubstr(comment, 3);
+
+   // 已知策略（长名优先）
+   string names[9];
+   names[0] = "breakout_pyramid";
+   names[1] = "counter_pullback";
+   names[2] = "breakout_retest";
+   names[3] = "momentum_scalp";
+   names[4] = "ai_signal";
+   names[5] = "divergence";
+   names[6] = "pullback";
+   names[7] = "scale_in";
+   names[8] = "range";
+
+   for(int i = 0; i < 9; i++)
+   {
+      string n = names[i];
+      int nlen = StringLen(n);
+      if(StringLen(rest) < nlen) continue;
+      if(StringFind(rest, n) != 0) continue;
+      // 精确匹配，或后接 '_' / 数字段（Sxx）
+      if(StringLen(rest) == nlen) return n;
+      string next = StringSubstr(rest, nlen, 1);
+      if(next == "_" || next == "") return n;
+   }
+   return "";
 }
 
 void SendPositions()

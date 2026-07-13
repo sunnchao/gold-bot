@@ -2154,11 +2154,20 @@ function resolveOrderClassField(position: EaRecord): 'market' | 'pending' {
 /** Resolve strategy from position.strategy or GB_<strategy>_* comment. Magic is never used. */
 function resolvePositionStrategy(position: EaRecord): string {
   const existing = stringFieldOrEmpty(position, 'strategy').trim();
-  if (existing.length > 0) {
+  // Accept only known strategy names. Truncated values like "ai" from old EA parsers
+  // must be re-derived from GB_<strategy>_* comment.
+  if (existing.length > 0 && isEaStrategyName(existing)) {
     return existing;
   }
   const fromComment = strategyFromComment(stringFieldOrEmpty(position, 'comment'));
-  return fromComment.length > 0 ? fromComment : 'unknown';
+  if (fromComment.length > 0) {
+    return fromComment;
+  }
+  // Keep non-empty unknown existing for observability only when comment also fails.
+  if (existing.length > 0) {
+    return existing;
+  }
+  return 'unknown';
 }
 
 /**
