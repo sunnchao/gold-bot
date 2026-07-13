@@ -714,11 +714,13 @@ async function normalizePositionsPayload(body: EaRecord, _store: EaStore): Promi
     if (hasInvalidOptionalNumber(position, ['lots', 'open_price', 'sl', 'tp', 'profit'])) {
       return 'invalid JSON';
     }
-    if (hasInvalidOptionalString(position, ['symbol', 'type', 'comment', 'strategy'])) {
+    if (hasInvalidOptionalString(position, ['symbol', 'type', 'comment', 'strategy', 'order_class', 'orderClass'])) {
       return 'invalid JSON';
     }
     // Strategy identity comes from strategy/comment only — MagicNumber is user-customizable.
     position.strategy = resolvePositionStrategy(position);
+    // Explicit order_class preferred; otherwise infer from type (BUY/SELL=market, *LIMIT/*STOP=pending).
+    position.order_class = resolveOrderClassField(position);
   }
   return null;
 }
@@ -2109,6 +2111,7 @@ function normalizeAnalysisPosition(position: EaRecord, latestTick: EaRecord, tim
   const profit = numberField(position, 'profit');
   const lots = numberField(position, 'lots');
   const holdSeconds = holdSecondsFromOpenTime(numberField(position, 'open_time'), timestamp);
+  const orderClass = resolveOrderClassField(position);
   return {
     comment: stringFieldOrEmpty(position, 'comment'),
     current_price: currentPrice,
@@ -2118,6 +2121,7 @@ function normalizeAnalysisPosition(position: EaRecord, latestTick: EaRecord, tim
     hold_seconds: holdSeconds,
     lots,
     magic: numberField(position, 'magic'),
+    order_class: orderClass,
     pnl_percent: numberField(position, 'pnl_percent') || pnlPercent(profit, entryPrice, lots),
     profit,
     sl: numberField(position, 'sl'),
@@ -2126,6 +2130,25 @@ function normalizeAnalysisPosition(position: EaRecord, latestTick: EaRecord, tim
     ticket: numberField(position, 'ticket'),
     tp: numberField(position, 'tp')
   };
+}
+
+function resolveOrderClassField(position: EaRecord): 'market' | 'pending' {
+  const explicit = stringFieldOrEmpty(position, 'order_class') || stringFieldOrEmpty(position, 'orderClass');
+  const normalized = explicit.trim().toLowerCase();
+  if (normalized === 'pending') {
+    return 'pending';
+  }
+  if (normalized === 'market') {
+    return 'market';
+  }
+  const type = stringFieldOrEmpty(position, 'type').trim().toUpperCase();
+  if (type === 'BUY' || type === 'SELL') {
+    return 'market';
+  }
+  if (type.includes('LIMIT') || type.includes('STOP')) {
+    return 'pending';
+  }
+  return 'pending';
 }
 
 /** Resolve strategy from position.strategy or GB_<strategy>_* comment. Magic is never used. */

@@ -797,6 +797,34 @@ void SendBars(string baseSymbol, string tf_str, int tf_period)
 //+------------------------------------------------------------------+
 // 发送持仓信息（按品种分别发送）
 //+------------------------------------------------------------------+
+// 订单类型 → 服务端可读字符串（区分市价仓/挂单）
+string OrderTypeToString(int ot)
+{
+   if(ot == OP_BUY)       return "BUY";
+   if(ot == OP_SELL)      return "SELL";
+   if(ot == OP_BUYLIMIT)  return "BUY_LIMIT";
+   if(ot == OP_BUYSTOP)   return "BUY_STOP";
+   if(ot == OP_SELLLIMIT) return "SELL_LIMIT";
+   if(ot == OP_SELLSTOP)  return "SELL_STOP";
+   return "UNKNOWN";
+}
+
+bool IsPendingOrderType(int ot)
+{
+   return (ot == OP_BUYLIMIT || ot == OP_BUYSTOP || ot == OP_SELLLIMIT || ot == OP_SELLSTOP);
+}
+
+// comment: GB_<strategy>_... → strategy 名（与服务端 comment 回填规则一致）
+string StrategyFromComment(string comment)
+{
+   if(StringLen(comment) < 4) return "";
+   if(StringFind(comment, "GB_") != 0) return "";
+   int start = 3;
+   int end = StringFind(comment, "_", start);
+   if(end <= start) return "";
+   return StringSubstr(comment, start, end - start);
+}
+
 void SendPositions()
 {
    // 动态初始化 MagicNumber 数组
@@ -820,7 +848,7 @@ void SendPositions()
       {
          if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
          {
-            // 品种匹配：仅当前品种的持仓
+            // 品种匹配：仅当前品种的持仓/挂单
             string orderSym = OrderSymbol();
             if(orderSym != baseSymbol && orderSym != GetBrokerSymbol(baseSymbol))
                continue;
@@ -836,17 +864,22 @@ void SendPositions()
                }
             }
             if(!isOurOrder) continue;
+
+            int ot = OrderType();
+            string typeStr = OrderTypeToString(ot);
+            string orderClass = IsPendingOrderType(ot) ? "pending" : "market";
+            string strategy = StrategyFromComment(OrderComment());
             
             if(positions != "") positions += ",";
             positions += StringFormat(
-               "{\"ticket\":%d,\"symbol\":\"%s\",\"type\":\"%s\",\"lots\":%.2f,\"open_price\":%.5f,"
-               "\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"open_time\":%d,\"comment\":\"%s\",\"magic\":%d}",
+               "{\"ticket\":%d,\"symbol\":\"%s\",\"type\":\"%s\",\"order_class\":\"%s\",\"lots\":%.2f,\"open_price\":%.5f,"
+               "\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"open_time\":%d,\"comment\":\"%s\",\"magic\":%d,\"strategy\":\"%s\"}",
                OrderTicket(), OrderSymbol(),
-               (OrderType() == OP_BUY ? "BUY" : "SELL"),
+               typeStr, orderClass,
                OrderLots(), OrderOpenPrice(),
                OrderStopLoss(), OrderTakeProfit(),
                OrderProfit(), OrderOpenTime(), OrderComment(),
-               OrderMagicNumber()
+               OrderMagicNumber(), strategy
             );
             count++;
          }
@@ -1511,10 +1544,25 @@ void ExecuteClose(string cmd, string cmd_id)
       return;
    }
 
-   double closePrice = (OrderType() == OP_BUY) ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK);
+   int ot = OrderType();
+   // 挂单必须走 CANCEL_PENDING / OrderDelete，禁止 OrderClose（会 4108）
+   if(IsPendingOrderType(ot))
+   {
+      Print("❌ 平仓拒绝：#", ticket, " 是挂单 ", OrderTypeToString(ot), "，应使用 CANCEL_PENDING");
+      ReportResult(cmd_id, "ERROR", 0, "not_market");
+      return;
+   }
+   if(ot != OP_BUY && ot != OP_SELL)
+   {
+      Print("❌ 平仓拒绝：#", ticket, " 非市价仓 type=", ot);
+      ReportResult(cmd_id, "ERROR", 0, "not_market");
+      return;
+   }
+
+   double closePrice = (ot == OP_BUY) ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK);
    
    bool result = OrderClose(ticket, OrderLots(), closePrice, Slippage,
-                            (OrderType() == OP_BUY) ? clrRed : clrGreen);
+                            (ot == OP_BUY) ? clrRed : clrGreen);
    if(result)
    {
       Print("✅ 平仓成功");

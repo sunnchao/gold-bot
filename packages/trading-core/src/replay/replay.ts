@@ -196,7 +196,7 @@ type EnrichedReplayBar = ReplayRawBar & {
 };
 
 export type ReplayPositionCommand = {
-  action: 'CLOSE' | 'MODIFY';
+  action: 'CLOSE' | 'MODIFY' | 'CANCEL_PENDING';
   ticket: number;
   lots?: number;
   new_sl?: number;
@@ -891,10 +891,13 @@ function normalizePositionManagerPositions(values: unknown[]): PositionManagerPo
       ticket: optionalNumberField(record, 'ticket'),
       symbol: optionalStringField(record, 'symbol'),
       type: optionalStringField(record, 'type'),
+      order_class: optionalStringField(record, 'order_class') ?? optionalStringField(record, 'orderClass'),
+      orderClass: optionalStringField(record, 'orderClass') ?? optionalStringField(record, 'order_class'),
       lots: optionalNumberField(record, 'lots'),
       openPrice: optionalNumberField(record, 'openPrice'),
       open_price: optionalNumberField(record, 'open_price'),
       sl: optionalNumberField(record, 'sl'),
+      tp: optionalNumberField(record, 'tp'),
       profit: optionalNumberField(record, 'profit'),
       comment: optionalStringField(record, 'comment'),
       strategy: optionalStringField(record, 'strategy'),
@@ -937,10 +940,18 @@ function toReplayPositionCommand(advisory: PositionManagerCommandAdvisory): Repl
       reason: advisory.reason
     };
   }
+  if (advisory.action === 'CANCEL_PENDING') {
+    return {
+      action: 'CANCEL_PENDING',
+      ticket: advisory.ticket,
+      reason: advisory.reason
+    };
+  }
+  // CLOSE variants
   return {
-    action: advisory.action,
+    action: 'CLOSE',
     ticket: advisory.ticket,
-    lots: advisory.lots,
+    lots: 'lots' in advisory ? advisory.lots : undefined,
     reason: advisory.reason
   };
 }

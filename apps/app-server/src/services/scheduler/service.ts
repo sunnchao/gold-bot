@@ -211,6 +211,11 @@ export class SchedulerService {
       };
     }
     if (command.action === 'CLOSE') {
+      // 仅对市价仓入队 CLOSE；挂单应走 CANCEL_PENDING
+      const position = positions.find((candidate) => numberField(candidate, 'ticket') === ticket);
+      if (position != null && isPendingPositionRecord(position)) {
+        return undefined;
+      }
       return {
         command_id: commandId,
         action: 'CLOSE',
@@ -218,6 +223,18 @@ export class SchedulerService {
         symbol,
         ticket,
         lots: command.lots,
+        reason: command.reason,
+        trigger_time: nowIso,
+        analysis_mode: 'positions'
+      };
+    }
+    if (command.action === 'CANCEL_PENDING') {
+      return {
+        command_id: commandId,
+        action: 'CANCEL_PENDING',
+        source: 'position_manager',
+        symbol,
+        ticket,
         reason: command.reason,
         trigger_time: nowIso,
         analysis_mode: 'positions'
@@ -402,6 +419,19 @@ function positionManagerCommandId(accountId: string, symbol: string, command: Re
 
 function commandIdPart(value: string): string {
   return value.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48);
+}
+
+/** 识别挂单记录：order_class=pending 或 type 为 *_LIMIT/*_STOP */
+function isPendingPositionRecord(position: EaRecord): boolean {
+  const orderClass = stringField(position, 'order_class') || stringField(position, 'orderClass');
+  if (orderClass.toLowerCase() === 'pending') {
+    return true;
+  }
+  if (orderClass.toLowerCase() === 'market') {
+    return false;
+  }
+  const type = stringField(position, 'type').toUpperCase();
+  return type.includes('LIMIT') || type.includes('STOP');
 }
 
 function aiDecisionId(aiResult: EaRecord): string {

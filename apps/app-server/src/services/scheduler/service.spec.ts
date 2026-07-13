@@ -266,6 +266,61 @@ describe('SchedulerService', () => {
     });
   });
 
+  it('queues CANCEL_PENDING and skips CLOSE for pending orders', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAGUSD',
+      positions: [
+        {
+          ticket: 42275433,
+          symbol: 'XAGUSD',
+          type: 'SELL_LIMIT',
+          order_class: 'pending',
+          open_price: 59.5,
+          lots: 0.05,
+          sl: 59.5,
+          tp: 58.36
+        }
+      ]
+    });
+    const commandLifecycle = new CommandLifecycleService(store);
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: null,
+              position_commands: [
+                { action: 'CLOSE', ticket: 42275433, lots: 0.05, reason: 'trail_tp2_dd2.1' },
+                { action: 'CANCEL_PENDING', ticket: 42275433, reason: 'pending_tp_reached_58.36' }
+              ]
+            }
+          };
+        }
+      } as never,
+      commandLifecycle,
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+
+    await scheduler.enqueuePositionReview('90011087', 'XAGUSD');
+
+    const commands = await store.listCommands('90011087');
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      action: 'CANCEL_PENDING',
+      source: 'position_manager',
+      status: 'queued',
+      symbol: 'XAGUSD',
+      ticket: 42275433,
+      reason: 'pending_tp_reached_58.36'
+    });
+  });
+
   it('publishes position-triggered replay signals with positions analysis mode', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');

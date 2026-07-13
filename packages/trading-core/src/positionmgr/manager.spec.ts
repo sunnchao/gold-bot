@@ -1188,3 +1188,149 @@ describe('position manager Analyze orchestration parity slice', () => {
     );
   });
 });
+
+describe('position manager pending vs market separation', () => {
+  const h1Bars = Array.from({ length: 6 }, (_, index) => ({
+    time: `2026-04-13T0${index}:00:00.000Z`,
+    open: 3340,
+    high: 3342,
+    low: 3338,
+    close: 3340,
+    atr: 2,
+    ema20: 3340,
+    ema50: 3335,
+    rsi: 50,
+    adx: 25,
+    macdHist: 0
+  }));
+
+  it('excludes pending orders from open position summary', () => {
+    const summary = summarizePositions({
+      accountId: '90011087',
+      symbol: 'XAGUSD',
+      positions: [
+        {
+          ticket: 42275433,
+          symbol: 'XAGUSD',
+          type: 'SELL_LIMIT',
+          order_class: 'pending',
+          lots: 0.05,
+          openPrice: 59.5,
+          profit: 0,
+          strategy: 'ai_signal'
+        },
+        {
+          ticket: 99,
+          symbol: 'XAGUSD',
+          type: 'SELL',
+          order_class: 'market',
+          lots: 0.02,
+          openPrice: 59.1,
+          profit: 1.2,
+          strategy: 'ai_signal'
+        }
+      ]
+    });
+
+    expect(summary.totalOpenPositions).toBe(1);
+    expect(summary.sellLots).toBe(0.02);
+  });
+
+  it('does not run trail/tp close on pending orders', () => {
+    const result = evaluatePositionManagerCommands({
+      now: '2026-04-13T08:00:00.000Z',
+      currentPrice: 58.4,
+      currentAtr: 0.5,
+      avgAtr: 0.5,
+      h1Bars,
+      positions: [
+        {
+          ticket: 42275433,
+          type: 'SELL_LIMIT',
+          order_class: 'pending',
+          lots: 0.05,
+          openPrice: 59.5,
+          open_price: 59.5,
+          sl: 59.5,
+          tp: 57.0,
+          profit: 0,
+          strategy: 'ai_signal'
+        }
+      ],
+      states: [
+        {
+          ticket: 42275433,
+          tp1Hit: true,
+          tp2Hit: true,
+          maxProfitAtr: 3.6,
+          beMoved: true,
+          openTime: '2026-04-12T23:00:00.000Z'
+        }
+      ]
+    });
+
+    expect(result.advisories.filter((a) => a.action === 'CLOSE')).toEqual([]);
+    expect(result.advisories.filter((a) => a.action === 'MODIFY')).toEqual([]);
+  });
+
+  it('cancels pending order when market price has reached its TP', () => {
+    const result = evaluatePositionManagerCommands({
+      now: '2026-04-13T08:00:00.000Z',
+      currentPrice: 58.36,
+      currentAtr: 0.5,
+      avgAtr: 0.5,
+      h1Bars,
+      positions: [
+        {
+          ticket: 42275433,
+          type: 'SELL_LIMIT',
+          order_class: 'pending',
+          lots: 0.05,
+          openPrice: 59.5,
+          open_price: 59.5,
+          sl: 59.5,
+          tp: 58.36,
+          profit: 0,
+          strategy: 'ai_signal'
+        }
+      ],
+      states: []
+    });
+
+    expect(result.advisories).toEqual([
+      {
+        action: 'CANCEL_PENDING',
+        ticket: 42275433,
+        reason: 'pending_tp_reached_58.36'
+      }
+    ]);
+  });
+
+  it('infers pending from type when order_class is missing', () => {
+    const result = evaluatePositionManagerCommands({
+      now: '2026-04-13T08:00:00.000Z',
+      currentPrice: 3350,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      positions: [
+        {
+          ticket: 88,
+          type: 'BUY_STOP',
+          lots: 0.1,
+          openPrice: 3340,
+          tp: 3350,
+          profit: 0
+        }
+      ]
+    });
+
+    expect(result.advisories).toEqual([
+      {
+        action: 'CANCEL_PENDING',
+        ticket: 88,
+        reason: 'pending_tp_reached_3350'
+      }
+    ]);
+  });
+});

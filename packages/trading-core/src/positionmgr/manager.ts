@@ -3,14 +3,20 @@ import { ema } from '../indicators/index.js';
 export type PositionSide = 'BUY' | 'SELL';
 export type NetPositionSide = PositionSide | 'FLAT';
 
+export type PositionOrderClass = 'market' | 'pending';
+
 export type PositionManagerPosition = {
   ticket?: number;
   symbol?: string;
   type?: string;
+  /** market=已成交持仓；pending=未成交挂单。缺省时按 type 推断 */
+  order_class?: PositionOrderClass | string;
+  orderClass?: PositionOrderClass | string;
   lots?: number;
   openPrice?: number;
   open_price?: number;
   sl?: number;
+  tp?: number;
   profit?: number;
   comment?: string;
   strategy?: string;
@@ -259,6 +265,12 @@ export type PositionManagerCommandsInput = {
   equity?: number;
 };
 
+export type PositionPendingCancelAdvisory = {
+  action: 'CANCEL_PENDING';
+  ticket: number;
+  reason: string;
+};
+
 export type PositionManagerCommandAdvisory =
   | PositionTimeStopAdvisory
   | PositionBreakevenAdvisory
@@ -267,7 +279,8 @@ export type PositionManagerCommandAdvisory =
   | PositionKeyLevelAdvisory
   | PositionTrendReversalAdvisory
   | PositionDynamicTrailingAdvisory
-  | PositionMomentumScalpExitAdvisory;
+  | PositionMomentumScalpExitAdvisory
+  | PositionPendingCancelAdvisory;
 
 export type PositionManagerCommandsResult = {
   advisories: PositionManagerCommandAdvisory[];
@@ -290,6 +303,7 @@ export function summarizePositions(input: PositionSummaryInput): PositionSummary
   const symbol = baseSymbol(input.symbol ?? '');
   const openPositions = input.positions
     .filter((position) => symbol === '' || baseSymbol(position.symbol ?? input.symbol ?? '') === symbol)
+    .filter((position) => resolveOrderClass(position) === 'market')
     .map(toOpenPosition)
     .filter((position): position is OpenPosition => position != null);
 
@@ -583,9 +597,23 @@ export function evaluatePositionManagerCommands(input: PositionManagerCommandsIn
     return result;
   }
 
+  // 挂单：不参与 TP/trail/BE；现价已到未成交挂单 TP → CANCEL_PENDING
+  for (const raw of input.positions) {
+    if (resolveOrderClass(raw) !== 'pending') {
+      continue;
+    }
+    const cancel = pendingTpCancelAdvisory(raw, input.currentPrice);
+    if (cancel != null) {
+      result.advisories.push(cancel);
+    }
+  }
+
   const now = input.now == null ? new Date() : new Date(input.now);
   const inputStates = new Map((input.states ?? []).map((state) => [state.ticket, state]));
-  const openPositions = input.positions.map(toOpenPosition).filter((position): position is OpenPosition => position != null);
+  const openPositions = input.positions
+    .filter((position) => resolveOrderClass(position) === 'market')
+    .map(toOpenPosition)
+    .filter((position): position is OpenPosition => position != null);
   const stateByTicket = new Map<number, PositionManagerState>();
   const preTP1Hit = new Map<number, boolean>();
   const preTP2Hit = new Map<number, boolean>();
@@ -1531,6 +1559,10 @@ function weightedAverageEntry(side: NetPositionSide, buyWeightedEntrySum: number
 }
 
 function toOpenPosition(position: PositionManagerPosition): OpenPosition | null {
+  // 仅市价仓进入持仓管理；挂单在 evaluatePositionManagerCommands 单独处理
+  if (resolveOrderClass(position) !== 'market') {
+    return null;
+  }
   const side = positionSide(position.type ?? '');
   const lots = position.lots ?? 0;
   const openPrice = position.openPrice ?? position.open_price ?? 0;
@@ -1547,6 +1579,72 @@ function toOpenPosition(position: PositionManagerPosition): OpenPosition | null 
     comment: position.comment ?? '',
     strategy: position.strategy == null || position.strategy.length === 0 ? 'unknown' : position.strategy
   };
+}
+
+/** 解析订单类别：显式 order_class 优先，否则按 type 推断 */
+export function resolveOrderClass(position: PositionManagerPosition): PositionOrderClass {
+  const explicit = String(position.order_class ?? position.orderClass ?? '').trim().toLowerCase();
+  if (explicit === 'pending') {
+    return 'pending';
+  }
+  if (explicit === 'market') {
+    return 'market';
+  }
+  const type = String(position.type ?? '').trim().toUpperCase();
+  if (type === 'BUY' || type === 'SELL') {
+    return 'market';
+  }
+  if (
+    type === 'BUY_LIMIT' ||
+    type === 'BUY_STOP' ||
+    type === 'SELL_LIMIT' ||
+    type === 'SELL_STOP' ||
+    type === 'BUYLIMIT' ||
+    type === 'BUYSTOP' ||
+    type === 'SELLLIMIT' ||
+    type === 'SELLSTOP'
+  ) {
+    return 'pending';
+  }
+  // 未知类型宁可不进市价持仓管理
+  return 'pending';
+}
+
+/**
+ * 未成交挂单：现价已触及 TP 价位 → 取消（避免“到 TP 却仍挂着”）
+ * BUY 挂单：bid >= tp；SELL 挂单：ask/price <= tp（统一用 currentPrice 近似）
+ */
+function pendingTpCancelAdvisory(
+  position: PositionManagerPosition,
+  currentPrice: number
+): PositionPendingCancelAdvisory | null {
+  const ticket = position.ticket ?? 0;
+  const tp = position.tp ?? 0;
+  if (ticket <= 0 || tp <= 0 || currentPrice <= 0) {
+    return null;
+  }
+  const side = pendingSide(position.type ?? '');
+  if (side == null) {
+    return null;
+  }
+  if (side === 'BUY' && currentPrice >= tp) {
+    return { action: 'CANCEL_PENDING', ticket, reason: `pending_tp_reached_${tp}` };
+  }
+  if (side === 'SELL' && currentPrice <= tp) {
+    return { action: 'CANCEL_PENDING', ticket, reason: `pending_tp_reached_${tp}` };
+  }
+  return null;
+}
+
+function pendingSide(type: string): PositionSide | null {
+  const t = type.trim().toUpperCase();
+  if (t === 'BUY' || t === 'BUY_LIMIT' || t === 'BUY_STOP' || t === 'BUYLIMIT' || t === 'BUYSTOP') {
+    return 'BUY';
+  }
+  if (t === 'SELL' || t === 'SELL_LIMIT' || t === 'SELL_STOP' || t === 'SELLLIMIT' || t === 'SELLSTOP') {
+    return 'SELL';
+  }
+  return null;
 }
 
 function isMomentumScalpPosition(position: OpenPosition): boolean {
