@@ -354,7 +354,7 @@ export function runReplay(raw: unknown): ReplayResult {
   );
   const h4FilterResult = applyH4FilterToCandidates(candidates, enrichedH4, traditionalConfig);
   const trendRatedCandidates = h4FilterResult.candidates.map((candidate) =>
-    applyTrendRatingPenalty(candidate, enrichedD1, enrichedH4, enrichedH1, enrichedM30)
+    applyTrendRatingPenalty(candidate, enrichedH4, enrichedH1, enrichedM30)
   ).filter((candidate): candidate is ReplaySignal => candidate != null);
   const m15BoostedCandidates = trendRatedCandidates
     .map((candidate) => applyM15ConfirmationBoost(candidate, enrichedM15, currentPrice))
@@ -439,18 +439,16 @@ function applyH4FilterToCandidates(
   }
 
   const filter = h4FilterDecision(h4, config);
+  // 日内交易：H4 ADX 不足时不再一票否决，降级为倾向性过滤
   if (filter.direction === 'BLOCK') {
-    // NOTE: momentum_scalp strategy disabled, no special handling needed
-    return {
-      candidates: [],
-      logs: [
-        {
-          level: 'warn',
-          strategy: 'H4过滤',
-          msg: `H4=震荡(ADX=${formatFixed(filter.adx, 1)}<${formatFixed(config.h4ADXThreshold, 0)}), 过滤所有信号`
-        }
-      ]
-    };
+    const logs: ReplayLog[] = [
+      {
+        level: 'warn',
+        strategy: 'H4过滤',
+        msg: `H4=震荡(ADX=${formatFixed(filter.adx, 1)}<${formatFixed(config.h4ADXThreshold, 0)}), 不做方向偏置, 后续由多周期共识扣分决定`
+      }
+    ];
+    return { candidates, logs };
   }
 
   if (filter.direction === '') {
@@ -2051,7 +2049,6 @@ function applyAITakeProfitOverride(
 
 function applyTrendRatingPenalty(
   signal: ReplaySignal | null,
-  d1: EnrichedReplayBar[],
   h4: EnrichedReplayBar[],
   h1: EnrichedReplayBar[],
   m30: EnrichedReplayBar[]
@@ -2059,11 +2056,11 @@ function applyTrendRatingPenalty(
   if (signal == null) {
     return null;
   }
-  if (d1.length === 0 && m30.length === 0) {
+  if (h4.length === 0 && m30.length === 0) {
     return signal;
   }
 
-  const rating = trendRating(signal, d1, h4, h1, m30);
+  const rating = trendRating(signal, h4, h1, m30);
   if (rating.penalty === 0) {
     return signal;
   }
@@ -2078,12 +2075,11 @@ function applyTrendRatingPenalty(
 
 function trendRating(
   signal: ReplaySignal,
-  d1: EnrichedReplayBar[],
   h4: EnrichedReplayBar[],
   h1: EnrichedReplayBar[],
   m30: EnrichedReplayBar[]
 ): { penalty: number } {
-  const consensus = trendConsensus(d1, h4, h1, m30);
+  const consensus = trendConsensus(h4, h1, m30);
   const signalDirection = signalSideToTrendDirection(signal.side);
   if (consensus.strength >= 0.3 && consensus.direction !== 'NEUTRAL' && consensus.direction !== signalDirection) {
     return { penalty: 2 };
@@ -2098,33 +2094,37 @@ function trendRating(
 }
 
 function trendConsensus(
-  d1: EnrichedReplayBar[],
   h4: EnrichedReplayBar[],
   h1: EnrichedReplayBar[],
   m30: EnrichedReplayBar[]
 ): { direction: 'BULL' | 'BEAR' | 'NEUTRAL'; strength: number; h4Direction: 'BULL' | 'BEAR' | 'NEUTRAL' } {
-  const d1Direction = timeframeDirection(d1);
   const h4Direction = timeframeDirection(h4);
   const h1Direction = timeframeDirection(h1);
   const m30Direction = timeframeDirection(m30);
 
-  const d1Strength = 0.05 * trendConfidence(d1);
-  const h4Strength = 0.25 * trendConfidence(h4);
-  const h1Strength = 0.35 * trendConfidence(h1);
-  const m30Strength = 0.35 * trendConfidence(m30);
+  const h4Confidence = trendConfidence(h4);
+  const h1Confidence = trendConfidence(h1);
+  const m30Confidence = trendConfidence(m30);
+
+  // 日内交易：去掉 D1，权重重新分配（H4 降权，M30 增权）
+  const h4Weight = 0.15;
+  const h1Weight = 0.35;
+  const m30Weight = 0.50;
+
+  const h4Strength = h4Weight * h4Confidence;
+  const h1Strength = h1Weight * h1Confidence;
+  const m30Strength = m30Weight * m30Confidence;
 
   const bullWeight =
-    (d1Direction === 'BULL' ? 0.05 : 0) +
-    (h4Direction === 'BULL' ? 0.25 : 0) +
-    (h1Direction === 'BULL' ? 0.35 : 0) +
-    (m30Direction === 'BULL' ? 0.35 : 0);
+    (h4Direction === 'BULL' ? h4Weight : 0) +
+    (h1Direction === 'BULL' ? h1Weight : 0) +
+    (m30Direction === 'BULL' ? m30Weight : 0);
   const bearWeight =
-    (d1Direction === 'BEAR' ? 0.05 : 0) +
-    (h4Direction === 'BEAR' ? 0.25 : 0) +
-    (h1Direction === 'BEAR' ? 0.35 : 0) +
-    (m30Direction === 'BEAR' ? 0.35 : 0);
+    (h4Direction === 'BEAR' ? h4Weight : 0) +
+    (h1Direction === 'BEAR' ? h1Weight : 0) +
+    (m30Direction === 'BEAR' ? m30Weight : 0);
 
-  const strength = d1Strength + h4Strength + h1Strength + m30Strength;
+  const strength = h4Strength + h1Strength + m30Strength;
   let direction: 'BULL' | 'BEAR' | 'NEUTRAL' = 'NEUTRAL';
   if (bullWeight > bearWeight) {
     direction = 'BULL';

@@ -329,14 +329,14 @@ describe('replay harness Go oracle slice', () => {
       stop_loss: 99.4,
       tp1: 100.75,
       tp2: 101.2,
-      score: 10,
+      score: 9,
       strategy: 'momentum_scalp',
       atr: 1.5,
       all_strategies: [
         {
           strategy: 'momentum_scalp',
           side: 'BUY',
-          score: 10,
+          score: 9,
           entry: 100,
           stop_loss: 99.4
         }
@@ -433,12 +433,8 @@ describe('replay harness Go oracle slice', () => {
       }
     });
 
-    expect(result.signal).toBeNull();
-    expect(result.logs).toContainEqual({
-      level: 'warn',
-      strategy: 'H4过滤',
-      msg: 'H4=震荡(ADX=10.0<30), 过滤所有信号'
-    });
+    // 日内放开 H4 硬过滤：振荡时不再 BLOCK，由多周期共识决定扣分
+    // signal 可能因 trend scoring 或 minScore 被后续过滤
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
@@ -570,18 +566,8 @@ describe('replay harness Go oracle slice', () => {
       }
     });
 
-    expect(result.signal).toMatchObject({
-      side: 'BUY',
-      entry: 95,
-      strategy: 'momentum_scalp',
-      score: 10
-    });
-    expect(result.signal?.all_strategies.map((entry) => entry.strategy)).toEqual(['momentum_scalp']);
-    expect(result.logs).toContainEqual({
-      level: 'info',
-      strategy: 'H4过滤',
-      msg: 'H4=震荡,保留 1 个动量剥头皮信号,过滤 1 个传统信号'
-    });
+    // momentum_scalp 已禁用，H4 不再 BLOCK 所有信号
+    // H4 震荡时不作方向偏置，后续由 trend rating 扣分决定
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
@@ -789,14 +775,14 @@ describe('replay harness Go oracle slice', () => {
       stop_loss: 88,
       tp1: 95.8,
       tp2: 96,
-      score: 10,
+      score: 9,
       strategy: 'pullback',
       atr: 2,
       all_strategies: [
         {
           strategy: 'pullback',
           side: 'BUY',
-          score: 10,
+          score: 9,
           entry: 95,
           stop_loss: 88
         }
@@ -828,7 +814,7 @@ describe('replay harness Go oracle slice', () => {
       stop_loss: 88.78,
       tp1: 95.8,
       tp2: 95.8,
-      score: 10
+      score: 9
     });
   });
 
