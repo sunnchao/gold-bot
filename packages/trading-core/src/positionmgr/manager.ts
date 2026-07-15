@@ -1,5 +1,7 @@
 import { ema } from '../indicators/index.js';
 
+const PRICE_EPSILON = 1e-6;
+
 export type PositionSide = 'BUY' | 'SELL';
 export type NetPositionSide = PositionSide | 'FLAT';
 
@@ -405,8 +407,9 @@ export function evaluatePositionBreakeven(input: PositionBreakevenInput): Positi
 
     const state = breakevenState(position, states.get(position.ticket));
     const profitAtr = profitInAtr(position, input.currentPrice, input.currentAtr);
-    if (state.beMoved !== true && profitAtr >= (state.beTriggerAtr ?? 1.5) && validateNewSL(position.side, position.openPrice, state.bestSl ?? 0)) {
+    if (state.beMoved !== true && profitAtr >= (state.beTriggerAtr ?? 1.5) && validateNewSL(position.side, position.openPrice, position.sl ?? 0)) {
       state.beMoved = true;
+      state.be_moved = true;
       state.bestSl = position.openPrice;
       result.advisories.push({
         action: 'MODIFY',
@@ -657,9 +660,11 @@ export function evaluatePositionManagerCommands(input: PositionManagerCommandsIn
       continue;
     }
 
+    resetStaleBreakeven(position, state);
     const beTriggerAtr = state.beTriggerAtr ?? 1.5;
-    if (state.beMoved !== true && profitAtr >= beTriggerAtr && validateNewSL(position.side, position.openPrice, state.bestSl ?? 0)) {
+    if (state.beMoved !== true && profitAtr >= beTriggerAtr && validateNewSL(position.side, position.openPrice, position.sl ?? 0)) {
       state.beMoved = true;
+      state.be_moved = true;
       state.bestSl = position.openPrice;
       result.advisories.push({
         action: 'MODIFY',
@@ -1518,6 +1523,19 @@ function updateBestSLFromPosition(position: OpenPosition, state: PositionManager
     state.bestSl = position.sl;
   } else if (position.side === 'SELL' && position.sl < bestSL) {
     state.bestSl = position.sl;
+  }
+}
+
+function resetStaleBreakeven(position: OpenPosition, state: PositionManagerState): void {
+  if ((state.beMoved !== true && state.be_moved !== true) || position.sl <= 0 || position.openPrice <= 0) {
+    return;
+  }
+  const isStale = position.side === 'BUY'
+    ? position.sl < position.openPrice - PRICE_EPSILON
+    : position.sl > position.openPrice + PRICE_EPSILON;
+  if (isStale) {
+    state.beMoved = false;
+    state.be_moved = false;
   }
 }
 

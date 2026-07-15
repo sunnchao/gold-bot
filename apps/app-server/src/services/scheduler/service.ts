@@ -1,11 +1,26 @@
 import { createHash } from 'node:crypto';
 import type { CommandCandidate, EaRecord, EaStore } from '@gold-bot/persistence';
-import type { ReplayPositionCommand } from '@gold-bot/trading-core';
+import { atr, type ReplayPositionCommand } from '@gold-bot/trading-core';
 import { AnalysisService } from '../analysis/service.js';
 import { CommandLifecycleService } from '../command-lifecycle/service.js';
 import type { ShadowService } from '../shadow/service.js';
 
 const AI_STOP_LOSS_MODIFY_COOLDOWN_MS = 5 * 60 * 1000;
+const AI_STOP_LOSS_PROFIT_ATR_GATE = 1.5;
+const DEFAULT_AI_TRAIL_SYMBOLS = 'GBPJPY';
+const MODIFY_DISTANCE_EPSILON = 1e-9;
+
+type AIStopLossSkipReason =
+  | 'suggested_sl_le_zero'
+  | 'ai_result_missing'
+  | 'atr_le_zero'
+  | 'price_le_zero'
+  | 'symbol_ai_trail_disabled'
+  | 'not_be_or_profit_ready'
+  | 'price_magnitude'
+  | 'candidate_null'
+  | 'command_exists'
+  | 'cooldown_active';
 
 export class SchedulerService {
   private readonly aiStopLossQueuedAtMs = new Map<string, number>();
@@ -14,7 +29,7 @@ export class SchedulerService {
     private readonly analysis: AnalysisService,
     private readonly commandLifecycle: CommandLifecycleService,
     private readonly shadow?: ShadowService,
-    private readonly store?: Pick<EaStore, 'getHeartbeat' | 'getLatestTick' | 'getBars' | 'getCommand' | 'getPositions' | 'getAIResults'>,
+    private readonly store?: Pick<EaStore, 'getHeartbeat' | 'getLatestTick' | 'getBars' | 'getCommand' | 'getPositions' | 'getAIResults' | 'loadPositionStates'>,
     private readonly nowIso: () => string = () => new Date().toISOString()
   ) {}
 
@@ -121,27 +136,74 @@ export class SchedulerService {
   }
 
   private async queueAIStopLossAdjust(accountId: string, symbol: string): Promise<void> {
+    if (!isAIStopLossTrailSymbolEnabled(symbol)) {
+      this.logAIStopLossSkip(accountId, symbol, 'symbol_ai_trail_disabled');
+      return;
+    }
     const aiResult = await this.latestAIResult(accountId, symbol);
-    const aiSL = numberField(aiResult ?? {}, 'suggested_sl') || numberField(aiResult ?? {}, 'suggestedSL');
-    if (aiResult == null || aiSL <= 0) {
+    if (aiResult == null) {
+      this.logAIStopLossSkip(accountId, symbol, 'ai_result_missing');
+      return;
+    }
+    const aiSL = numberField(aiResult, 'suggested_sl') || numberField(aiResult, 'suggestedSL');
+    if (aiSL <= 0) {
+      this.logAIStopLossSkip(accountId, symbol, 'suggested_sl_le_zero', { suggested_sl: aiSL });
       return;
     }
     const bars = await this.barsByTimeframe(accountId, symbol);
     const atr = latestAtr(bars.H1);
     if (atr <= 0) {
+      this.logAIStopLossSkip(accountId, symbol, 'atr_le_zero', { atr });
       return;
     }
     const currentPrice = liveCurrentPrice((await this.store?.getLatestTick(accountId, symbol)) ?? {}, bars);
     if (currentPrice <= 0) {
+      this.logAIStopLossSkip(accountId, symbol, 'price_le_zero', { price: currentPrice });
+      return;
+    }
+    if (aiSL < currentPrice * 0.3 || aiSL > currentPrice * 2.0) {
+      this.logAIStopLossSkip(accountId, symbol, 'price_magnitude', {
+        suggested_sl: aiSL,
+        price: currentPrice
+      });
       return;
     }
     const decisionId = aiDecisionId(aiResult);
+    const statesByTicket = new Map(
+      ((await this.store?.loadPositionStates(accountId, symbol)) ?? []).map((state) => [state.ticket, state])
+    );
     for (const position of (await this.store?.getPositions?.(accountId, symbol)) ?? []) {
+      const ticket = numberField(position, 'ticket');
+      const beMoved = statesByTicket.get(ticket)?.be_moved === true;
+      const profitAtr = aiStopLossProfitAtr(position, atr, currentPrice);
+      if (!beMoved && profitAtr != null && profitAtr < AI_STOP_LOSS_PROFIT_ATR_GATE) {
+        this.logAIStopLossSkip(accountId, symbol, 'not_be_or_profit_ready', {
+          ticket,
+          profit_atr: profitAtr,
+          be_moved: beMoved
+        });
+        continue;
+      }
       const candidate = this.aiStopLossCommandCandidate(accountId, symbol, position, aiSL, atr, currentPrice, decisionId);
-      if (candidate == null || (await this.store?.getCommand(candidate.command_id ?? '')) != null) {
+      if (candidate == null) {
+        this.logAIStopLossSkip(accountId, symbol, 'candidate_null', {
+          ticket: numberField(position, 'ticket'),
+          decision_id: decisionId
+        });
+        continue;
+      }
+      if ((await this.store?.getCommand(candidate.command_id ?? '')) != null) {
+        this.logAIStopLossSkip(accountId, symbol, 'command_exists', {
+          ticket: numberField(candidate, 'ticket'),
+          command_id: candidate.command_id ?? ''
+        });
         continue;
       }
       if (this.isAIStopLossCooldownActive(accountId, symbol, candidate)) {
+        this.logAIStopLossSkip(accountId, symbol, 'cooldown_active', {
+          ticket: numberField(candidate, 'ticket'),
+          command_id: candidate.command_id ?? ''
+        });
         continue;
       }
       await this.commandLifecycle.acceptCandidate(accountId, candidate);
@@ -191,6 +253,9 @@ export class SchedulerService {
       }
       const oldSL = numberField(position, 'sl');
       if (oldSL <= 0) {
+        return undefined;
+      }
+      if (Math.abs(newSL - oldSL) < MODIFY_DISTANCE_EPSILON) {
         return undefined;
       }
       return {
@@ -289,21 +354,21 @@ export class SchedulerService {
     const tp = numberField(position, 'tp');
     const openPrice = numberField(position, 'open_price') || numberField(position, 'openPrice');
     const side = stringField(position, 'type').toUpperCase();
-    if (ticket <= 0 || oldSL === 0 || tp === 0 || openPrice <= 0) {
+    if (ticket <= 0 || oldSL <= 0 || tp <= 0 || openPrice <= 0) {
       return undefined;
     }
     if (side === 'BUY') {
-      if (currentPrice > openPrice && newSL < oldSL) {
+      if (newSL < oldSL) {
         return undefined;
       }
-      if (newSL >= openPrice) {
+      if (newSL >= currentPrice) {
         return undefined;
       }
     } else if (side === 'SELL') {
-      if (currentPrice < openPrice && newSL > oldSL) {
+      if (newSL > oldSL) {
         return undefined;
       }
-      if (newSL <= openPrice) {
+      if (newSL <= currentPrice) {
         return undefined;
       }
     } else {
@@ -333,6 +398,15 @@ export class SchedulerService {
       candidate.decision_id = decisionId;
     }
     return candidate;
+  }
+
+  private logAIStopLossSkip(
+    accountId: string,
+    symbol: string,
+    reason: AIStopLossSkipReason,
+    details: Record<string, unknown> = {}
+  ): void {
+    console.log(`[AI] stop_loss_skip ${JSON.stringify({ account_id: accountId, symbol, reason, ...details })}`);
   }
 
   private async barsByTimeframe(accountId: string, symbol: string): Promise<Record<string, EaRecord[]>> {
@@ -479,7 +553,67 @@ function liveCurrentPrice(tick: EaRecord, bars: Record<string, EaRecord[]>): num
 
 function latestAtr(bars: EaRecord[]): number {
   const last = bars.at(-1);
-  return last == null ? 0 : numberField(last, 'atr') || numberField(last, 'ATR');
+  if (last != null) {
+    const lowerAtr = numberField(last, 'atr');
+    if (lowerAtr > 0) {
+      return lowerAtr;
+    }
+    const upperAtr = numberField(last, 'ATR');
+    if (upperAtr > 0) {
+      return upperAtr;
+    }
+  }
+
+  const ohlcBars = bars.filter((bar) =>
+    numberField(bar, 'open') > 0 &&
+    numberField(bar, 'high') > 0 &&
+    numberField(bar, 'low') > 0 &&
+    numberField(bar, 'close') > 0
+  );
+  if (ohlcBars.length < 14) {
+    return 0;
+  }
+  const atrValues = atr(
+    ohlcBars.map((bar) => numberField(bar, 'high')),
+    ohlcBars.map((bar) => numberField(bar, 'low')),
+    ohlcBars.map((bar) => numberField(bar, 'close')),
+    14
+  );
+  for (let index = atrValues.length - 1; index >= 0; index -= 1) {
+    const value = atrValues[index];
+    if (Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+function isAIStopLossTrailSymbolEnabled(symbol: string): boolean {
+  return aiTrailSymbols().has(normalizeAIStopLossSymbol(symbol));
+}
+
+function aiTrailSymbols(): Set<string> {
+  const raw = process.env.GB_AI_TRAIL_SYMBOLS ?? DEFAULT_AI_TRAIL_SYMBOLS;
+  return new Set(raw.split(',').map(normalizeAIStopLossSymbol).filter((symbol) => symbol.length > 0));
+}
+
+function normalizeAIStopLossSymbol(symbol: string): string {
+  return symbol.trim().toUpperCase();
+}
+
+function aiStopLossProfitAtr(position: EaRecord, atrValue: number, currentPrice: number): number | undefined {
+  const openPrice = numberField(position, 'open_price') || numberField(position, 'openPrice');
+  if (atrValue <= 0 || currentPrice <= 0 || openPrice <= 0) {
+    return undefined;
+  }
+  const side = stringField(position, 'type').toUpperCase();
+  if (side === 'BUY') {
+    return (currentPrice - openPrice) / atrValue;
+  }
+  if (side === 'SELL') {
+    return (openPrice - currentPrice) / atrValue;
+  }
+  return undefined;
 }
 
 function orderTypeForSignal(price: number, entry: number, atr: number, side: string): string {

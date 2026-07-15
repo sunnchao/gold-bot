@@ -166,7 +166,26 @@ describe('position manager breakeven advisory parity slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
-  it('does not move BUY stop loss backward when tracked BestSL is already better', () => {
+  it('allows BUY breakeven when tracked BestSL is polluted but current SL is still worse', () => {
+    const result = evaluatePositionBreakeven({
+      currentPrice: 3344,
+      currentAtr: 2,
+      positions: [{ ticket: 705, type: 'BUY', lots: 0.5, openPrice: 3340, sl: 3338 }],
+      states: [{ ticket: 705, beTriggerAtr: 1.5, bestSl: 3342 }]
+    });
+
+    expect(result.advisories).toEqual([{ action: 'MODIFY', ticket: 705, newSL: 3340, reason: 'breakeven_2.0ATR' }]);
+    expect(result.nextStates).toEqual([
+      expect.objectContaining({
+        ticket: 705,
+        beMoved: true,
+        bestSl: 3340
+      })
+    ]);
+    expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('does not move BUY stop loss backward when current position SL is already better', () => {
     const result = evaluatePositionBreakeven({
       currentPrice: 3344,
       currentAtr: 2,
@@ -185,7 +204,7 @@ describe('position manager breakeven advisory parity slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
-  it('does not move SELL stop loss backward when tracked BestSL is already better', () => {
+  it('does not move SELL stop loss backward when current position SL is already better', () => {
     const result = evaluatePositionBreakeven({
       currentPrice: 3336,
       currentAtr: 2,
@@ -985,6 +1004,52 @@ describe('position manager Analyze orchestration parity slice', () => {
     ]);
     expect(result.nextStates[0]?.maxProfitAtr).toBeCloseTo(1.6);
     expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('emits direct breakeven against own SL when same-side BestSL is polluted', () => {
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 3343.2,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      positions: [
+        { ticket: 606, type: 'BUY', openPrice: 3340, lots: 0.5, sl: 3338 },
+        { ticket: 607, type: 'BUY', openPrice: 3342, lots: 0.3, sl: 3342 }
+      ],
+      states: [
+        { ticket: 606, openTime: '2026-04-13T06:00:00.000Z', beTriggerAtr: 1.5, beMoved: false, bestSl: 3342 },
+        { ticket: 607, openTime: '2026-04-13T06:00:00.000Z', beTriggerAtr: 1.5, beMoved: true, bestSl: 3342 }
+      ]
+    });
+
+    expect(result.advisories).toContainEqual(
+      { action: 'MODIFY', ticket: 606, newSL: 3340, reason: 'breakeven_1.6ATR' }
+    );
+    expect(result.nextStates).toContainEqual(
+      expect.objectContaining({ ticket: 606, beMoved: true })
+    );
+  });
+
+  it('re-emits breakeven when beMoved is stale and EA SL is still below open', () => {
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 3343.2,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      positions: [{ ticket: 608, type: 'BUY', openPrice: 3340, lots: 0.5, sl: 3338 }],
+      states: [
+        { ticket: 608, openTime: '2026-04-13T06:00:00.000Z', beTriggerAtr: 1.5, be_moved: true, bestSl: 3340 }
+      ]
+    });
+
+    expect(result.advisories).toContainEqual(
+      { action: 'MODIFY', ticket: 608, newSL: 3340, reason: 'breakeven_1.6ATR' }
+    );
+    expect(result.nextStates).toEqual([
+      expect.objectContaining({ ticket: 608, beMoved: true, be_moved: true, bestSl: 3340 })
+    ]);
   });
 
   it('short-circuits later rules when momentum scalp time stop wins', () => {

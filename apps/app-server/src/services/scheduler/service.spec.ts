@@ -266,6 +266,44 @@ describe('SchedulerService', () => {
     });
   });
 
+  it('skips position manager MODIFY commands when the new stop equals the current stop', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      positions: [{ ticket: 778, symbol: 'XAUUSD', type: 'BUY', open_price: 3320, lots: 0.1, sl: 3330, tp: 3345 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: null,
+              position_commands: [
+                { action: 'MODIFY', ticket: 778, new_sl: 3330, reason: 'breakeven_2.2ATR' }
+              ]
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(await store.listCommands('90011087')).toEqual([]);
+  });
+
   it('queues CANCEL_PENDING and skips CLOSE for pending orders', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
@@ -371,24 +409,24 @@ describe('SchedulerService', () => {
     });
   });
 
-  it('queues AI stop-loss modify commands during position review when no replay signal is produced', async () => {
+  it('queues GBPJPY AI stop-loss lock-profit commands with ATR derived from H1 OHLC', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
     await saveTradeableHeartbeat(store);
-    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3333.9, ask: 3334.1 });
+    await store.saveTick({ account_id: '90011087', symbol: 'GBPJPY', bid: 219.99, ask: 220.01 });
     await store.saveBars({
       account_id: '90011087',
-      symbol: 'XAUUSD',
+      symbol: 'GBPJPY',
       timeframe: 'H1',
-      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3333, high: 3335, low: 3330, close: 3334, atr: 1.5 }]
+      bars: gbpJpyH1BarsWithoutAtr(20)
     });
     await store.savePositions({
       account_id: '90011087',
-      symbol: 'XAUUSD',
-      positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY', open_price: 3333, lots: 0.2, sl: 3331, tp: 3344 }]
+      symbol: 'GBPJPY',
+      positions: [{ ticket: 123456, symbol: 'GBPJPY', type: 'BUY', open_price: 218.4, lots: 0.2, sl: 218.7, tp: 222 }]
     });
-    await store.saveAIResult('90011087', 'XAUUSD', {
-      suggested_sl: 3332.8,
+    await store.saveAIResult('90011087', 'GBPJPY', {
+      suggested_sl: 219.77,
       trade_plan: { decision_id: 'tpv1_modify_sl' }
     });
     const scheduler = new SchedulerService(
@@ -407,49 +445,153 @@ describe('SchedulerService', () => {
       store,
       () => '2026-04-13T08:02:00.000Z'
     );
+    const restoreAITrailSymbols = useDefaultAITrailSymbols();
 
-    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
-    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    try {
+      await scheduler.enqueuePositionReview('90011087', 'GBPJPY');
+      await scheduler.enqueuePositionReview('90011087', 'GBPJPY');
 
-    const commands = await store.listCommands('90011087');
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({
-      command_id: expect.stringMatching(/^mod_[0-9a-f]{16}$/),
-      action: 'MODIFY',
-      source: 'ai_stop_loss',
-      status: 'queued',
+      const commands = await store.listCommands('90011087');
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).toMatchObject({
+        command_id: expect.stringMatching(/^mod_[0-9a-f]{16}$/),
+        action: 'MODIFY',
+        source: 'ai_stop_loss',
+        status: 'queued',
+        symbol: 'GBPJPY',
+        ticket: 123456,
+        new_sl: 219.77,
+        sl: 219.77,
+        tp: 222,
+        old_sl: 218.7,
+        distance: expect.closeTo(1.07, 10),
+        atr: expect.closeTo(0.5, 10),
+        decision_id: 'tpv1_modify_sl',
+        trigger_time: '2026-04-13T08:02:00.000Z',
+        analysis_mode: 'positions'
+      });
+    } finally {
+      restoreAITrailSymbols();
+    }
+  });
+
+  it('does not queue AI stop-loss commands for non-canary symbols by default', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3339.9, ask: 3340.1 });
+    await store.saveBars({
+      account_id: '90011087',
       symbol: 'XAUUSD',
-      ticket: 123456,
-      new_sl: 3332.8,
-      sl: 3332.8,
-      tp: 3344,
-      old_sl: 3331,
-      distance: expect.closeTo(1.8, 10),
-      atr: 1.5,
-      decision_id: 'tpv1_modify_sl',
-      trigger_time: '2026-04-13T08:02:00.000Z',
-      analysis_mode: 'positions'
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3338, high: 3341, low: 3337, close: 3340, atr: 2 }]
     });
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      positions: [{ ticket: 123457, symbol: 'XAUUSD', type: 'BUY', open_price: 3335, lots: 0.2, sl: 3336, tp: 3355 }]
+    });
+    await store.saveAIResult('90011087', 'XAUUSD', {
+      suggested_sl: 3338.8,
+      trade_plan: { decision_id: 'xau_disabled' }
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: null,
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:02:00.000Z'
+    );
+    const restoreAITrailSymbols = useDefaultAITrailSymbols();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('"reason":"symbol_ai_trail_disabled"'));
+    } finally {
+      log.mockRestore();
+      restoreAITrailSymbols();
+    }
+
+    expect(await store.listCommands('90011087')).toEqual([]);
+  });
+
+  it('does not queue BUY AI stop-loss commands that loosen below the current stop', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.saveTick({ account_id: '90011087', symbol: 'GBPJPY', bid: 219.99, ask: 220.01 });
+    await store.saveBars({
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 219.8, high: 220.2, low: 219.7, close: 220, atr: 0.5 }]
+    });
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      positions: [{ ticket: 123458, symbol: 'GBPJPY', type: 'BUY', open_price: 218.4, lots: 0.2, sl: 219.2, tp: 222 }]
+    });
+    await store.saveAIResult('90011087', 'GBPJPY', {
+      suggested_sl: 219.0,
+      trade_plan: { decision_id: 'loosen_rejected' }
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: null,
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:02:00.000Z'
+    );
+    const restoreAITrailSymbols = useDefaultAITrailSymbols();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await scheduler.enqueuePositionReview('90011087', 'GBPJPY');
+    } finally {
+      log.mockRestore();
+      restoreAITrailSymbols();
+    }
+
+    expect(await store.listCommands('90011087')).toEqual([]);
   });
 
   it('suppresses AI stop-loss modify commands for the same ticket inside the five-minute cooldown', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
     await saveTradeableHeartbeat(store);
-    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3333.9, ask: 3334.1 });
+    await store.saveTick({ account_id: '90011087', symbol: 'GBPJPY', bid: 219.99, ask: 220.01 });
     await store.saveBars({
       account_id: '90011087',
-      symbol: 'XAUUSD',
+      symbol: 'GBPJPY',
       timeframe: 'H1',
-      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3333, high: 3335, low: 3330, close: 3334, atr: 1.5 }]
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 219.8, high: 220.2, low: 219.7, close: 220, atr: 0.5 }]
     });
     await store.savePositions({
       account_id: '90011087',
-      symbol: 'XAUUSD',
-      positions: [{ ticket: 123456, symbol: 'XAUUSD', type: 'BUY', open_price: 3333, lots: 0.2, sl: 3331, tp: 3344 }]
+      symbol: 'GBPJPY',
+      positions: [{ ticket: 123456, symbol: 'GBPJPY', type: 'BUY', open_price: 218.4, lots: 0.2, sl: 218.7, tp: 222 }]
     });
-    await store.saveAIResult('90011087', 'XAUUSD', {
-      suggested_sl: 3332.8,
+    await store.saveAIResult('90011087', 'GBPJPY', {
+      suggested_sl: 219.77,
       trade_plan: { decision_id: 'tpv1_modify_sl' }
     });
     let now = '2026-04-13T08:02:00.000Z';
@@ -469,12 +611,17 @@ describe('SchedulerService', () => {
       store,
       () => now
     );
+    const restoreAITrailSymbols = useDefaultAITrailSymbols();
 
-    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
-    now = '2026-04-13T08:04:00.000Z';
-    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
-    now = '2026-04-13T08:07:00.000Z';
-    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    try {
+      await scheduler.enqueuePositionReview('90011087', 'GBPJPY');
+      now = '2026-04-13T08:04:00.000Z';
+      await scheduler.enqueuePositionReview('90011087', 'GBPJPY');
+      now = '2026-04-13T08:07:00.000Z';
+      await scheduler.enqueuePositionReview('90011087', 'GBPJPY');
+    } finally {
+      restoreAITrailSymbols();
+    }
 
     const commands = (await store.listCommands('90011087')).filter((command) => command.source === 'ai_stop_loss');
     expect(commands).toHaveLength(2);
@@ -542,6 +689,32 @@ function flatH1Bars(count: number) {
     low: 3339,
     close: 3340
   }));
+}
+
+function gbpJpyH1BarsWithoutAtr(count: number) {
+  return Array.from({ length: count }, (_, index) => {
+    const close = 219 + index * 0.02;
+    return {
+      time: `2026-04-13T${String(index).padStart(2, '0')}:00:00.000Z`,
+      open: close - 0.01,
+      high: close + 0.25,
+      low: close - 0.25,
+      close,
+      volume: 1000 + index
+    };
+  });
+}
+
+function useDefaultAITrailSymbols(): () => void {
+  const original = process.env.GB_AI_TRAIL_SYMBOLS;
+  delete process.env.GB_AI_TRAIL_SYMBOLS;
+  return () => {
+    if (original == null) {
+      delete process.env.GB_AI_TRAIL_SYMBOLS;
+      return;
+    }
+    process.env.GB_AI_TRAIL_SYMBOLS = original;
+  };
 }
 
 async function saveTradeableHeartbeat(store: ReturnType<typeof createInMemoryEaStore>) {
