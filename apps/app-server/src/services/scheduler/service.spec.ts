@@ -210,6 +210,7 @@ describe('SchedulerService', () => {
       positions: [{ ticket: 777, symbol: 'XAUUSD', type: 'BUY', open_price: 3320, lots: 0.1, sl: 3325, tp: 3345 }]
     });
     const commandLifecycle = new CommandLifecycleService(store);
+    let now = '2026-04-13T08:00:00.000Z';
     const scheduler = new SchedulerService(
       {
         analyzeAccountSymbol() {
@@ -227,16 +228,17 @@ describe('SchedulerService', () => {
       commandLifecycle,
       undefined,
       store,
-      () => '2026-04-13T08:00:00.000Z'
+      () => now
     );
 
     await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    now = '2026-04-13T08:00:30.000Z';
     await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
 
     const commands = await store.listCommands('90011087');
     expect(commands).toHaveLength(2);
     expect(commands[0]).toMatchObject({
-      command_id: expect.stringMatching(/^pm_90011087_XAUUSD_777_modify_breakeven_2_2ATR_20260413080000000$/),
+      command_id: expect.stringMatching(/^pm_90011087_XAUUSD_777_modify_breakeven_2_2ATR_202604130800$/),
       action: 'MODIFY',
       source: 'position_manager',
       status: 'queued',
@@ -253,7 +255,7 @@ describe('SchedulerService', () => {
       analysis_mode: 'positions'
     });
     expect(commands[1]).toMatchObject({
-      command_id: expect.stringMatching(/^pm_90011087_XAUUSD_777_close_TP1_2_2ATR_20260413080000000$/),
+      command_id: expect.stringMatching(/^pm_90011087_XAUUSD_777_close_TP1_2_2ATR_202604130800$/),
       action: 'CLOSE',
       source: 'position_manager',
       status: 'queued',
@@ -283,6 +285,44 @@ describe('SchedulerService', () => {
               signal: null,
               position_commands: [
                 { action: 'MODIFY', ticket: 778, new_sl: 3330, reason: 'breakeven_2.2ATR' }
+              ]
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(await store.listCommands('90011087')).toEqual([]);
+  });
+
+  it('does not queue position manager CLOSE commands for missing tickets', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      positions: []
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: null,
+              position_commands: [
+                { action: 'CLOSE', ticket: 779, lots: 0.04, reason: 'TP1_2.2ATR' }
               ]
             }
           };

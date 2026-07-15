@@ -1,6 +1,10 @@
 import { ema } from '../indicators/index.js';
 
 const PRICE_EPSILON = 1e-6;
+const LOCK_L1_PROFIT_ATR = 2.0;
+const LOCK_L1_OFFSET_ATR = 0.3;
+const LOCK_L2_PROFIT_ATR = 2.5;
+const LOCK_L2_OFFSET_ATR = 0.6;
 
 export type PositionSide = 'BUY' | 'SELL';
 export type NetPositionSide = PositionSide | 'FLAT';
@@ -299,6 +303,11 @@ type OpenPosition = {
   profit: number;
   comment: string;
   strategy: string;
+};
+
+type ProfitLockTarget = {
+  newSL: number;
+  reason: string;
 };
 
 export function summarizePositions(input: PositionSummaryInput): PositionSummary {
@@ -661,16 +670,22 @@ export function evaluatePositionManagerCommands(input: PositionManagerCommandsIn
     }
 
     resetStaleBreakeven(position, state);
-    const beTriggerAtr = state.beTriggerAtr ?? 1.5;
-    if (state.beMoved !== true && profitAtr >= beTriggerAtr && validateNewSL(position.side, position.openPrice, position.sl ?? 0)) {
-      state.beMoved = true;
-      state.be_moved = true;
-      state.bestSl = position.openPrice;
+    const lockTarget = profitLockTarget(position.side, position.openPrice, input.currentAtr, profitAtr, state.beTriggerAtr ?? 1.5);
+    if (
+      lockTarget != null &&
+      validateNewSL(position.side, lockTarget.newSL, position.sl) &&
+      isStopBetterThanCurrent(position.side, lockTarget.newSL, position.sl)
+    ) {
+      if (isBreakevenOrBetter(position.side, lockTarget.newSL, position.openPrice)) {
+        state.beMoved = true;
+        state.be_moved = true;
+      }
+      state.bestSl = lockTarget.newSL;
       result.advisories.push({
         action: 'MODIFY',
         ticket: position.ticket,
-        newSL: position.openPrice,
-        reason: `breakeven_${formatAtr(profitAtr)}ATR`
+        newSL: lockTarget.newSL,
+        reason: lockTarget.reason
       });
     }
 
@@ -1547,6 +1562,49 @@ function validateNewSL(side: PositionSide, newSL: number, bestSL: number): boole
     return newSL >= bestSL;
   }
   return newSL <= bestSL;
+}
+
+function profitLockTarget(
+  side: PositionSide,
+  openPrice: number,
+  currentAtr: number,
+  profitAtr: number,
+  beTriggerAtr: number
+): ProfitLockTarget | null {
+  if (openPrice <= 0 || currentAtr <= 0 || profitAtr < beTriggerAtr) {
+    return null;
+  }
+  if (profitAtr >= LOCK_L2_PROFIT_ATR) {
+    return {
+      newSL: side === 'BUY' ? openPrice + LOCK_L2_OFFSET_ATR * currentAtr : openPrice - LOCK_L2_OFFSET_ATR * currentAtr,
+      reason: `lock_l2_${formatAtr(profitAtr)}ATR`
+    };
+  }
+  if (profitAtr >= LOCK_L1_PROFIT_ATR) {
+    return {
+      newSL: side === 'BUY' ? openPrice + LOCK_L1_OFFSET_ATR * currentAtr : openPrice - LOCK_L1_OFFSET_ATR * currentAtr,
+      reason: `lock_l1_${formatAtr(profitAtr)}ATR`
+    };
+  }
+  return {
+    newSL: openPrice,
+    reason: `breakeven_${formatAtr(profitAtr)}ATR`
+  };
+}
+
+function isStopBetterThanCurrent(side: PositionSide, newSL: number, currentSL: number): boolean {
+  if (currentSL === 0) {
+    return true;
+  }
+  return side === 'BUY'
+    ? newSL > currentSL + PRICE_EPSILON
+    : newSL < currentSL - PRICE_EPSILON;
+}
+
+function isBreakevenOrBetter(side: PositionSide, newSL: number, openPrice: number): boolean {
+  return side === 'BUY'
+    ? newSL >= openPrice - PRICE_EPSILON
+    : newSL <= openPrice + PRICE_EPSILON;
 }
 
 function profitInAtr(position: OpenPosition, currentPrice: number, currentAtr: number): number {

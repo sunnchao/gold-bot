@@ -853,16 +853,7 @@ describe('position manager momentum-scalp exit advisory parity slice', () => {
       states: [{ ticket: 1303, openTime: '2026-04-13T07:39:00.000Z' }]
     });
 
-    expect(result.advisories).toEqual([
-      { action: 'CLOSE', ticket: 1303, lots: 0.5, reason: 'momentum_scalp_time_stop_0.2ATR' }
-    ]);
-    expect(result.nextStates).toEqual([
-      expect.objectContaining({
-        ticket: 1303,
-        rsiTp75Triggered: false
-      })
-    ]);
-    expect(result.canProduceLiveCommands).toBe(false);
+    expect(result).toEqual({ advisories: [], nextStates: [], canProduceLiveCommands: false });
   });
 
   it('mirrors the Go one-time RSI 75 partial close and state update', () => {
@@ -876,14 +867,7 @@ describe('position manager momentum-scalp exit advisory parity slice', () => {
       states: [{ ticket: 1304, openTime: '2026-04-13T07:55:00.000Z', rsiTp75Triggered: false }]
     });
 
-    expect(result.advisories).toEqual([{ action: 'CLOSE', ticket: 1304, lots: 0.25, reason: 'momentum_scalp_rsi_tp75' }]);
-    expect(result.nextStates).toEqual([
-      expect.objectContaining({
-        ticket: 1304,
-        rsiTp75Triggered: true
-      })
-    ]);
-    expect(result.canProduceLiveCommands).toBe(false);
+    expect(result).toEqual({ advisories: [], nextStates: [], canProduceLiveCommands: false });
   });
 
   it('does not repeat the RSI 75 partial close once state is triggered', () => {
@@ -897,14 +881,7 @@ describe('position manager momentum-scalp exit advisory parity slice', () => {
       states: [{ ticket: 1305, openTime: '2026-04-13T07:55:00.000Z', rsiTp75Triggered: true }]
     });
 
-    expect(result.advisories).toEqual([]);
-    expect(result.nextStates).toEqual([
-      expect.objectContaining({
-        ticket: 1305,
-        rsiTp75Triggered: true
-      })
-    ]);
-    expect(result.canProduceLiveCommands).toBe(false);
+    expect(result).toEqual({ advisories: [], nextStates: [], canProduceLiveCommands: false });
   });
 
   it('mirrors the Go RSI extreme full close', () => {
@@ -918,14 +895,7 @@ describe('position manager momentum-scalp exit advisory parity slice', () => {
       states: [{ ticket: 1306, openTime: '2026-04-13T07:55:00.000Z', rsiTp75Triggered: true }]
     });
 
-    expect(result.advisories).toEqual([{ action: 'CLOSE', ticket: 1306, lots: 0.5, reason: 'momentum_scalp_rsi_extreme' }]);
-    expect(result.nextStates).toEqual([
-      expect.objectContaining({
-        ticket: 1306,
-        rsiTp75Triggered: true
-      })
-    ]);
-    expect(result.canProduceLiveCommands).toBe(false);
+    expect(result).toEqual({ advisories: [], nextStates: [], canProduceLiveCommands: false });
   });
 
   it('mirrors the Go M5 EMA structure-break full close', () => {
@@ -948,10 +918,7 @@ describe('position manager momentum-scalp exit advisory parity slice', () => {
       states: [{ ticket: 1307, openTime: '2026-04-13T07:55:00.000Z' }]
     });
 
-    expect(result.advisories).toEqual([
-      { action: 'CLOSE', ticket: 1307, lots: 0.5, reason: 'momentum_scalp_m5_structure_break' }
-    ]);
-    expect(result.canProduceLiveCommands).toBe(false);
+    expect(result).toEqual({ advisories: [], nextStates: [], canProduceLiveCommands: false });
   });
 
   it('does not run momentum scalp exits for non-scalp comments', () => {
@@ -1006,6 +973,104 @@ describe('position manager Analyze orchestration parity slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
+  it('upgrades BUY stop to lock_l1 at 2.0 ATR profit', () => {
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 3344,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      positions: [{ ticket: 12001, type: 'BUY', openPrice: 3340, lots: 0.5, sl: 3338 }],
+      states: [{ ticket: 12001, openTime: '2026-04-13T06:00:00.000Z', beTriggerAtr: 1.5 }]
+    });
+
+    expect(result.advisories).toContainEqual({
+      action: 'MODIFY',
+      ticket: 12001,
+      newSL: 3340.6,
+      reason: 'lock_l1_2.0ATR'
+    });
+    expect(result.nextStates).toEqual([
+      expect.objectContaining({
+        ticket: 12001,
+        beMoved: true,
+        bestSl: 3340.6
+      })
+    ]);
+  });
+
+  it('upgrades BUY stop to lock_l2 at 2.5 ATR profit', () => {
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 3345,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      positions: [{ ticket: 12002, type: 'BUY', openPrice: 3340, lots: 0.5, sl: 3338 }],
+      states: [{ ticket: 12002, openTime: '2026-04-13T06:00:00.000Z', beTriggerAtr: 1.5 }]
+    });
+
+    expect(result.advisories).toContainEqual({
+      action: 'MODIFY',
+      ticket: 12002,
+      newSL: 3341.2,
+      reason: 'lock_l2_2.5ATR'
+    });
+    expect(result.nextStates).toEqual([
+      expect.objectContaining({
+        ticket: 12002,
+        beMoved: true,
+        bestSl: 3341.2
+      })
+    ]);
+  });
+
+  it('mirrors lock_l1 stop upgrades for SELL positions', () => {
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 3336,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      positions: [{ ticket: 12003, type: 'SELL', openPrice: 3340, lots: 0.5, sl: 3342 }],
+      states: [{ ticket: 12003, openTime: '2026-04-13T06:00:00.000Z', beTriggerAtr: 1.5 }]
+    });
+
+    expect(result.advisories).toContainEqual({
+      action: 'MODIFY',
+      ticket: 12003,
+      newSL: 3339.4,
+      reason: 'lock_l1_2.0ATR'
+    });
+    expect(result.nextStates).toEqual([
+      expect.objectContaining({
+        ticket: 12003,
+        beMoved: true,
+        bestSl: 3339.4
+      })
+    ]);
+  });
+
+  it('does not emit a lock advisory when the current stop is already better', () => {
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 3345,
+      currentAtr: 2,
+      avgAtr: 2,
+      h1Bars,
+      positions: [{ ticket: 12004, type: 'BUY', openPrice: 3340, lots: 0.5, sl: 3341.2 }],
+      states: [{ ticket: 12004, openTime: '2026-04-13T06:00:00.000Z', beTriggerAtr: 1.5, bestSl: 3341.2 }]
+    });
+
+    expect(result.advisories.filter((advisory) => advisory.action === 'MODIFY')).toEqual([]);
+    expect(result.nextStates).toEqual([
+      expect.objectContaining({
+        ticket: 12004,
+        bestSl: 3341.2
+      })
+    ]);
+  });
+
   it('emits direct breakeven against own SL when same-side BestSL is polluted', () => {
     const result = evaluatePositionManagerCommands({
       now,
@@ -1052,7 +1117,7 @@ describe('position manager Analyze orchestration parity slice', () => {
     ]);
   });
 
-  it('short-circuits later rules when momentum scalp time stop wins', () => {
+  it('does not run disabled momentum scalp exits during orchestration', () => {
     const result = evaluatePositionManagerCommands({
       now,
       currentPrice: 100.15,
@@ -1074,13 +1139,10 @@ describe('position manager Analyze orchestration parity slice', () => {
       states: [{ ticket: 404, openTime: '2026-04-13T07:39:00.000Z', beTriggerAtr: 1.5 }]
     });
 
-    expect(result.advisories).toEqual([
-      { action: 'CLOSE', ticket: 404, lots: 0.5, reason: 'momentum_scalp_time_stop_0.2ATR' }
-    ]);
+    expect(result.advisories).toEqual([]);
     expect(result.nextStates).toEqual([
       expect.objectContaining({
         ticket: 404,
-        rsiTp75Triggered: false,
         maxProfitAtr: 0.15000000000000568
       })
     ]);
@@ -1104,6 +1166,7 @@ describe('position manager Analyze orchestration parity slice', () => {
     });
 
     expect(result.advisories).toEqual([
+      { action: 'MODIFY', ticket: 901, newSL: 3331.2, reason: 'lock_l2_6.5ATR' },
       { action: 'CLOSE', ticket: 901, lots: 0.2, reason: 'TP1_6.5ATR' },
       { action: 'CLOSE', ticket: 902, lots: 0.12, reason: 'group_tp1_BUY' }
     ]);
@@ -1131,7 +1194,7 @@ describe('position manager Analyze orchestration parity slice', () => {
     });
 
     expect(result.advisories).toEqual([
-      { action: 'MODIFY', ticket: 1001, newSL: 3330, reason: 'breakeven_6.6ATR' },
+      { action: 'MODIFY', ticket: 1001, newSL: 3331.2, reason: 'lock_l2_6.6ATR' },
       { action: 'CLOSE', ticket: 1001, lots: 0.2, reason: 'TP1_6.6ATR' },
       { action: 'MODIFY', ticket: 1002, newSL: 3340, reason: 'breakeven_1.6ATR' },
       { action: 'CLOSE', ticket: 1002, lots: 0.12, reason: 'TP1_1.6ATR' },
@@ -1164,7 +1227,7 @@ describe('position manager Analyze orchestration parity slice', () => {
     );
     expect(result.nextStates).toEqual([
       expect.objectContaining({ ticket: 2001, bestSl: 3340 }),
-      expect.objectContaining({ ticket: 2002, bestSl: 3340 })
+      expect.objectContaining({ ticket: 2002, bestSl: 3341.2 })
     ]);
   });
 

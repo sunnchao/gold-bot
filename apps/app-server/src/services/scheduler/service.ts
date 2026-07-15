@@ -278,7 +278,10 @@ export class SchedulerService {
     if (command.action === 'CLOSE') {
       // 仅对市价仓入队 CLOSE；挂单应走 CANCEL_PENDING
       const position = positions.find((candidate) => numberField(candidate, 'ticket') === ticket);
-      if (position != null && isPendingPositionRecord(position)) {
+      if (position == null) {
+        return undefined;
+      }
+      if (isPendingPositionRecord(position)) {
         return undefined;
       }
       return {
@@ -479,7 +482,7 @@ function aiStopLossCommandId(accountId: string, symbol: string, ticket: number, 
 }
 
 function positionManagerCommandId(accountId: string, symbol: string, command: ReplayPositionCommand, nowIso: string): string {
-  const timestampKey = nowIso.replace(/[^0-9]/g, '') || String(Date.now());
+  const timestampKey = utcMinuteKey(nowIso);
   return [
     'pm',
     commandIdPart(accountId),
