@@ -12,8 +12,8 @@
 #include <Trade/Trade.mqh>
 
 // ============ 版本信息 ============
-#define EA_VERSION  "2.8.3"
-#define EA_BUILD    9
+#define EA_VERSION  "2.8.4"
+#define EA_BUILD    10
 
 CTrade trade;
 
@@ -34,7 +34,8 @@ input double   MaxSpread       = 5.0;      // 最大点差（points）
 input int      MaxSameDir      = 3;        // 同方向最大持仓数
 input double   MaxFloatLoss    = 3.0;      // 最大浮亏 %
 input bool     UseFixedLots    = true;     // 优先固定手数
-input double   FixedLots       = 0.10;     // 固定手数（UseFixedLots=true 时生效）
+input double   FixedLots       = 0.10;     // 固定手数（UseFixedLots=true 时生效；SymbolLotsMap 未命中时回退）
+input string   SymbolLotsMap   = "";       // 按品种手数：XAUUSD:0.10,US100:0.05（空=全部用 FixedLots）
 
 //+------------------------------------------------------------------+
 //| 策略启用配置（EA 端控制）                                           |
@@ -95,6 +96,9 @@ datetime lastBarTime       = 0;
 double   dailyStartEquity  = 0;
 int      httpTimeout       = 2000;
 bool     spreadSymbolsReady = false;  // 原油品种是否可用
+string   g_lotMapSymbols[];           // SymbolLotsMap 解析后的品种 key
+double   g_lotMapValues[];            // SymbolLotsMap 解析后的手数
+int      g_lotMapCount = 0;
 
 // ========== 连接状态跟踪（v2.8 新增） ==========
 bool     gbConnected      = false;        // 当前连接状态
@@ -195,6 +199,117 @@ bool IsAllowedSymbol(string symbol)
 bool IsTrackedSymbol(string symbol)
 {
    return IsAllowedSymbol(symbol);
+}
+
+// 解析 SymbolLotsMap: "XAUUSD:0.10,US100:0.05"
+void ParseSymbolLotsMap(string map)
+{
+   g_lotMapCount = 0;
+   ArrayResize(g_lotMapSymbols, 0);
+   ArrayResize(g_lotMapValues, 0);
+
+   string remaining = map;
+   StringTrimLeft(remaining);
+   StringTrimRight(remaining);
+   if(StringLen(remaining) == 0)
+      return;
+
+   while(StringLen(remaining) > 0)
+   {
+      int pos = StringFind(remaining, ",");
+      string token;
+      if(pos < 0)
+      {
+         token = remaining;
+         remaining = "";
+      }
+      else
+      {
+         token = StringSubstr(remaining, 0, pos);
+         remaining = StringSubstr(remaining, pos + 1);
+      }
+
+      StringTrimLeft(token);
+      StringTrimRight(token);
+      if(StringLen(token) == 0)
+         continue;
+
+      int colon = StringFind(token, ":");
+      if(colon <= 0)
+      {
+         Print("⚠️ SymbolLotsMap 无效项（需 SYMBOL:LOTS）: ", token);
+         continue;
+      }
+
+      string sym = StringSubstr(token, 0, colon);
+      string lotsStr = StringSubstr(token, colon + 1);
+      StringTrimLeft(sym);
+      StringTrimRight(sym);
+      StringTrimLeft(lotsStr);
+      StringTrimRight(lotsStr);
+
+      double lots = StringToDouble(lotsStr);
+      if(StringLen(sym) == 0 || lots <= 0.0)
+      {
+         Print("⚠️ SymbolLotsMap 无效项: ", token);
+         continue;
+      }
+
+      ArrayResize(g_lotMapSymbols, g_lotMapCount + 1);
+      ArrayResize(g_lotMapValues, g_lotMapCount + 1);
+      g_lotMapSymbols[g_lotMapCount] = sym;
+      g_lotMapValues[g_lotMapCount] = lots;
+      g_lotMapCount++;
+   }
+}
+
+// 按品种取固定手数：精确匹配优先，其次最长前缀匹配
+double GetFixedLotsForSymbol(string symbol, double defaultLots)
+{
+   if(g_lotMapCount <= 0 || StringLen(symbol) == 0)
+      return defaultLots;
+
+   double bestLots = defaultLots;
+   int bestLen = -1;
+   for(int i = 0; i < g_lotMapCount; i++)
+   {
+      string key = g_lotMapSymbols[i];
+      if(StringLen(key) == 0)
+         continue;
+
+      bool matched = false;
+      if(symbol == key)
+         matched = true;
+      else if(StringFind(symbol, key) == 0)
+         matched = true;
+      else if(StringFind(key, symbol) == 0)
+         matched = true;
+
+      if(!matched)
+         continue;
+
+      int len = StringLen(key);
+      if(len > bestLen)
+      {
+         bestLen = len;
+         bestLots = g_lotMapValues[i];
+      }
+   }
+   return bestLots;
+}
+
+string FormatSymbolLotsMap()
+{
+   if(g_lotMapCount <= 0)
+      return "(空，全部用 FixedLots)";
+
+   string out = "";
+   for(int i = 0; i < g_lotMapCount; i++)
+   {
+      if(i > 0) out = out + ", ";
+      out = out + g_lotMapSymbols[i] + ":" + DoubleToString(g_lotMapValues[i], 2);
+   }
+   return out;
 }
 
 //+------------------------------------------------------------------+
@@ -542,15 +657,18 @@ int OnInit()
    Print("=== Gold Bolt Client v", EA_VERSION, " (Build ", EA_BUILD, ") ===");
    Print("服务器：", ServerURL);
    Print("账户 ID: ", AccountID);
+   ParseSymbolLotsMap(SymbolLotsMap);
    Print("策略Magic: 趋势回调=", PullbackMagic, " 突破回踩=", BreakoutMagic,
          " RSI背离=", DivergenceMagic, " 突破加仓=", PyramidMagic,
          " 反向回调=", CounterMagic, " 震荡区间=", RangeMagic,
          " 动量剥头皮=", MomentumScalpMagic, " AI信号=", AISignalMagic,
          " 浮亏加仓=", ScaleInMagic);
    Print("风控：",
-         (UseFixedLots ? ("固定手数=" + DoubleToString(FixedLots, 2)) : ("风险=" + DoubleToString(MaxRiskPercent, 1) + "%")),
+         (UseFixedLots ? ("固定手数默认=" + DoubleToString(FixedLots, 2)) : ("风险=" + DoubleToString(MaxRiskPercent, 1) + "%")),
          " | 持仓上限", MaxPositions,
          " | 日亏损", MaxDailyLoss, "% | 浮亏", MaxFloatLoss, "%");
+   Print("品种手数映射：", FormatSymbolLotsMap(),
+         " | 主品种 lots=", DoubleToString(GetFixedLotsForSymbol(Symbol_, FixedLots), 2));
    Print("动量剥头皮：",
          (EnableMomentumScalp ? "启用" : "禁用"),
          " | ",
@@ -1850,36 +1968,55 @@ bool CheckRisk(string type_str)
 }
 
 // ============================================================
-// 计算手数（基于固定手数或风险百分比）
+// 计算手数（基于固定手数或风险百分比；固定手数可按品种映射）
 // ============================================================
-double CalcLotsWithConfig(bool useFixedLots, double fixedLots, double riskPercent, double sl_distance)
+// tradeSymbol: 用于 map 查找；volume/tick 用 brokerSymbol（默认 Symbol_）
+// applySymbolMap: 是否套用 SymbolLotsMap（策略独立手数如 momentum_scalp 应传 false）
+double CalcLotsWithConfig(bool useFixedLots, double fixedLots, double riskPercent,
+                          double sl_distance, string tradeSymbol, bool applySymbolMap = true)
 {
+   string brokerSymbol = Symbol_;
+   if(StringLen(tradeSymbol) == 0)
+      tradeSymbol = brokerSymbol;
+
    if(useFixedLots)
-      return NormalizeVolume(Symbol_, fixedLots);
+   {
+      double mapped = fixedLots;
+      if(applySymbolMap)
+      {
+         mapped = GetFixedLotsForSymbol(tradeSymbol, fixedLots);
+         if(mapped == fixedLots && tradeSymbol != brokerSymbol)
+            mapped = GetFixedLotsForSymbol(brokerSymbol, fixedLots);
+      }
+      return NormalizeVolume(brokerSymbol, mapped);
+   }
 
    double riskAmount = AccountInfoDouble(ACCOUNT_EQUITY) * (riskPercent / 100.0);
-   double tickValue = SymbolInfoDouble(Symbol_, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize = SymbolInfoDouble(Symbol_, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(brokerSymbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize = SymbolInfoDouble(brokerSymbol, SYMBOL_TRADE_TICK_SIZE);
 
    if(tickValue <= 0 || tickSize <= 0 || sl_distance <= 0)
-      return NormalizeVolume(Symbol_, 0.01);
+      return NormalizeVolume(brokerSymbol, 0.01);
 
    double lots = riskAmount / (sl_distance / tickSize * tickValue);
    lots = NormalizeDouble(lots, 2);
-   return NormalizeVolume(Symbol_, MathMax(0.01, lots));
+   return NormalizeVolume(brokerSymbol, MathMax(0.01, lots));
 }
 
-double CalcLots(double sl_distance)
+double CalcLots(double sl_distance, string tradeSymbol)
 {
-   return CalcLotsWithConfig(UseFixedLots, FixedLots, MaxRiskPercent, sl_distance);
+   return CalcLotsWithConfig(UseFixedLots, FixedLots, MaxRiskPercent, sl_distance, tradeSymbol, true);
 }
 
 double CalcLotsForStrategy(string strategy, double sl_distance)
 {
+   string tradeSymbol = Symbol_;
+   // momentum_scalp 用策略独立手数，不套用 SymbolLotsMap
    if(strategy == "momentum_scalp")
-      return CalcLotsWithConfig(MomentumScalpUseFixedLots, MomentumScalpFixedLots, MomentumScalpRiskPercent, sl_distance);
+      return CalcLotsWithConfig(MomentumScalpUseFixedLots, MomentumScalpFixedLots,
+                                MomentumScalpRiskPercent, sl_distance, tradeSymbol, false);
 
-   return CalcLots(sl_distance);
+   return CalcLots(sl_distance, tradeSymbol);
 }
 
 // ============================================================

@@ -12,8 +12,8 @@
 #include <StdLib.mqh>
 
 // ============ 版本信息 ============
-#define EA_VERSION  "2.9.2"
-#define EA_BUILD    12
+#define EA_VERSION  "2.9.3"
+#define EA_BUILD    13
 
 //+------------------------------------------------------------------+
 //| 服务器连接配置                                                      |
@@ -32,7 +32,8 @@ extern double   MaxSpread       = 5.0;      // 最大点差（points）
 extern int      MaxSameDir      = 3;        // 同方向最大持仓数
 extern double   MaxFloatLoss    = 3.0;      // 最大浮亏 %
 extern bool     UseFixedLots    = true;     // 优先固定手数
-extern double   FixedLots       = 0.10;     // 固定手数（UseFixedLots=true 时生效）
+extern double   FixedLots       = 0.10;     // 固定手数（UseFixedLots=true 时生效；SymbolLotsMap 未命中时回退）
+extern string   SymbolLotsMap   = "";       // 按品种手数：XAUUSD:0.10,US100:0.05（空=全部用 FixedLots）
 
 //+------------------------------------------------------------------+
 //| 策略启用配置（EA 端控制）                                           |
@@ -113,6 +114,9 @@ string   g_symbols[];          // 解析后的品种列表
 int      g_symbolCount = 0;    // 品种数量
 string   g_ai_symbols[];       // AI 分析品种列表
 int      g_ai_symbol_count = 0; // AI 品种数量
+string   g_lotMapSymbols[];    // SymbolLotsMap 解析后的品种 key
+double   g_lotMapValues[];     // SymbolLotsMap 解析后的手数
+int      g_lotMapCount = 0;
 
 // ========== 连接状态跟踪（v2.8 新增） ==========
 bool     gbConnected      = false;        // 当前连接状态
@@ -278,6 +282,117 @@ bool FindSymbolInArray(string sym)
    return false;
 }
 
+// 解析 SymbolLotsMap: "XAUUSD:0.10,US100:0.05"
+void ParseSymbolLotsMap(string map)
+{
+   g_lotMapCount = 0;
+   ArrayResize(g_lotMapSymbols, 0);
+   ArrayResize(g_lotMapValues, 0);
+
+   string remaining = map;
+   remaining = StringTrimLeft(remaining);
+   remaining = StringTrimRight(remaining);
+   if(StringLen(remaining) == 0)
+      return;
+
+   while(StringLen(remaining) > 0)
+   {
+      int pos = StringFind(remaining, ",");
+      string token;
+      if(pos < 0)
+      {
+         token = remaining;
+         remaining = "";
+      }
+      else
+      {
+         token = StringSubstr(remaining, 0, pos);
+         remaining = StringSubstr(remaining, pos + 1);
+      }
+
+      token = StringTrimLeft(token);
+      token = StringTrimRight(token);
+      if(StringLen(token) == 0)
+         continue;
+
+      int colon = StringFind(token, ":");
+      if(colon <= 0)
+      {
+         Print("⚠️ SymbolLotsMap 无效项（需 SYMBOL:LOTS）: ", token);
+         continue;
+      }
+
+      string sym = StringSubstr(token, 0, colon);
+      string lotsStr = StringSubstr(token, colon + 1);
+      sym = StringTrimLeft(sym);
+      sym = StringTrimRight(sym);
+      lotsStr = StringTrimLeft(lotsStr);
+      lotsStr = StringTrimRight(lotsStr);
+
+      double lots = StringToDouble(lotsStr);
+      if(StringLen(sym) == 0 || lots <= 0.0)
+      {
+         Print("⚠️ SymbolLotsMap 无效项: ", token);
+         continue;
+      }
+
+      ArrayResize(g_lotMapSymbols, g_lotMapCount + 1);
+      ArrayResize(g_lotMapValues, g_lotMapCount + 1);
+      g_lotMapSymbols[g_lotMapCount] = sym;
+      g_lotMapValues[g_lotMapCount] = lots;
+      g_lotMapCount++;
+   }
+}
+
+// 按品种取固定手数：精确匹配优先，其次最长前缀匹配（US100 → US100Cash）
+double GetFixedLotsForSymbol(string symbol, double defaultLots)
+{
+   if(g_lotMapCount <= 0 || StringLen(symbol) == 0)
+      return defaultLots;
+
+   double bestLots = defaultLots;
+   int bestLen = -1;
+   for(int i = 0; i < g_lotMapCount; i++)
+   {
+      string key = g_lotMapSymbols[i];
+      if(StringLen(key) == 0)
+         continue;
+
+      bool matched = false;
+      if(symbol == key)
+         matched = true;
+      else if(StringFind(symbol, key) == 0)
+         matched = true;
+      else if(StringFind(key, symbol) == 0)
+         matched = true;
+
+      if(!matched)
+         continue;
+
+      int len = StringLen(key);
+      if(len > bestLen)
+      {
+         bestLen = len;
+         bestLots = g_lotMapValues[i];
+      }
+   }
+   return bestLots;
+}
+
+string FormatSymbolLotsMap()
+{
+   if(g_lotMapCount <= 0)
+      return "(空，全部用 FixedLots)";
+
+   string out = "";
+   for(int i = 0; i < g_lotMapCount; i++)
+   {
+      if(i > 0) out = out + ", ";
+      out = out + g_lotMapSymbols[i] + ":" + DoubleToString(g_lotMapValues[i], 2);
+   }
+   return out;
+}
+
 //+------------------------------------------------------------------+
 bool IsPrimarySymbol(string sym)
 {
@@ -399,12 +514,15 @@ int OnInit()
    // 解析多品种
    ParseSymbols(Symbols);
    ParseAISymbols();
+   ParseSymbolLotsMap(SymbolLotsMap);
    Print("交易品种(", g_symbolCount, "):");
    for(int s = 0; s < g_symbolCount; s++)
    {
       string brokerSym = GetBrokerSymbol(g_symbols[s]);
       bool avail = IsSymbolAvailable(brokerSym);
-      Print("   ", s+1, ". ", g_symbols[s], " → ", brokerSym, " ", (avail ? "✅" : "❌"));
+      double mappedLots = GetFixedLotsForSymbol(g_symbols[s], FixedLots);
+      Print("   ", s+1, ". ", g_symbols[s], " → ", brokerSym, " ", (avail ? "✅" : "❌"),
+            " | lots=", DoubleToString(mappedLots, 2));
       if(!avail)
       {
          Print("❌ 品种不可用: ", brokerSym, " | 请检查是否已加入 Market Watch");
@@ -416,9 +534,10 @@ int OnInit()
          " 反向回调=", CounterMagic, " 震荡区间=", RangeMagic,
          " 动量剥头皮=", MomentumScalpMagic, " AI信号=", AISignalMagic);
    Print("风控：",
-         (UseFixedLots ? ("固定手数=" + DoubleToString(FixedLots, 2)) : ("风险=" + DoubleToString(MaxRiskPercent, 1) + "%")),
+         (UseFixedLots ? ("固定手数默认=" + DoubleToString(FixedLots, 2)) : ("风险=" + DoubleToString(MaxRiskPercent, 1) + "%")),
          " | 持仓上限", MaxPositions,
          " | 日亏损", MaxDailyLoss, "% | 浮亏", MaxFloatLoss, "%");
+   Print("品种手数映射：", FormatSymbolLotsMap());
    Print("动量剥头皮：",
          (EnableMomentumScalp ? "启用" : "禁用"),
          " | ",
@@ -1674,44 +1793,68 @@ bool CheckRisk(string type_str)
 }
 
 // ============================================================
-// 计算手数（基于固定手数或风险百分比）
+// 计算手数（基于固定手数或风险百分比；固定手数可按品种映射）
 // ============================================================
-double CalcLotsWithConfig(bool useFixedLots, double fixedLots, double riskPercent, double sl_distance)
+// tradeSymbol: 基础品种名（如 XAUUSD / US100），用于 map 查找与 tick 计算
+// brokerSymbol: 经纪商实际下单品种（含后缀），用于 volume 规范化
+// applySymbolMap: 是否套用 SymbolLotsMap（策略独立手数如 momentum_scalp 应传 false）
+double CalcLotsWithConfig(bool useFixedLots, double fixedLots, double riskPercent,
+                          double sl_distance, string tradeSymbol, string brokerSymbol,
+                          bool applySymbolMap = true)
 {
+   if(StringLen(brokerSymbol) == 0)
+      brokerSymbol = tradeSymbol;
+   if(StringLen(brokerSymbol) == 0)
+      brokerSymbol = Symbol();
+   if(StringLen(tradeSymbol) == 0)
+      tradeSymbol = brokerSymbol;
+
    if(useFixedLots)
-      return NormalizeVolume(Symbol(), fixedLots);
+   {
+      double mapped = fixedLots;
+      if(applySymbolMap)
+      {
+         mapped = GetFixedLotsForSymbol(tradeSymbol, fixedLots);
+         if(mapped == fixedLots && tradeSymbol != brokerSymbol)
+            mapped = GetFixedLotsForSymbol(brokerSymbol, fixedLots);
+      }
+      return NormalizeVolume(brokerSymbol, mapped);
+   }
 
    double riskAmount = AccountEquity() * (riskPercent / 100.0);
-   double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
-   double tickSize = MarketInfo(Symbol(), MODE_TICKSIZE);
+   double tickValue = MarketInfo(brokerSymbol, MODE_TICKVALUE);
+   double tickSize = MarketInfo(brokerSymbol, MODE_TICKSIZE);
 
    if(tickValue <= 0 || tickSize <= 0 || sl_distance <= 0)
-      return NormalizeVolume(Symbol(), 0.01);
+      return NormalizeVolume(brokerSymbol, 0.01);
 
    double lots = riskAmount / (sl_distance / tickSize * tickValue);
    lots = NormalizeDouble(lots, 2);
 
-   return NormalizeVolume(Symbol(), MathMax(0.01, lots));
+   return NormalizeVolume(brokerSymbol, MathMax(0.01, lots));
 }
 
-double CalcLots(double sl_distance)
+double CalcLots(double sl_distance, string tradeSymbol, string brokerSymbol)
 {
-   return CalcLotsWithConfig(UseFixedLots, FixedLots, MaxRiskPercent, sl_distance);
+   return CalcLotsWithConfig(UseFixedLots, FixedLots, MaxRiskPercent, sl_distance, tradeSymbol, brokerSymbol, true);
 }
 
 double CalcLotsForStrategy(string strategy, string symbol, double sl_distance)
 {
-   double lots;
+   string tradeSymbol = symbol;
+   string brokerSymbol = GetBrokerSymbol(symbol);
+   if(StringLen(tradeSymbol) == 0)
+   {
+      tradeSymbol = Symbol();
+      brokerSymbol = tradeSymbol;
+   }
+
+   // momentum_scalp 用策略独立手数，不套用 SymbolLotsMap
    if(strategy == "momentum_scalp")
-      lots = CalcLotsWithConfig(MomentumScalpUseFixedLots, MomentumScalpFixedLots, MomentumScalpRiskPercent, sl_distance);
-   else
-      lots = CalcLots(sl_distance);
+      return CalcLotsWithConfig(MomentumScalpUseFixedLots, MomentumScalpFixedLots,
+                                MomentumScalpRiskPercent, sl_distance, tradeSymbol, brokerSymbol, false);
 
-   // US100Cash 指数CFD手数减半（标准手数 × 0.5）
-   if(StringFind(symbol, "US100") >= 0 || StringFind(symbol, "NAS100") >= 0)
-      lots = lots * 0.5;
-
-   return lots;
+   return CalcLots(sl_distance, tradeSymbol, brokerSymbol);
 }
 
 // ============================================================
