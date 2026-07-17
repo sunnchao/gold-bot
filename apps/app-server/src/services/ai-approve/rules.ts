@@ -10,17 +10,11 @@ export function pickAIApproveEntryPrice(entryZone: EaRecord | undefined): number
 }
 
 export function calcAIApproveLots(maxLots: number): number {
+  // AI signal 手数固定 0.01，忽略 LLM max_lots 缩放（仅要求 max_lots > 0 表示有仓位意图）
   if (maxLots <= 0) {
     return 0;
   }
-  const lots = Math.ceil((maxLots * 0.5) / 0.01) * 0.01;
-  if (lots < 0.01) {
-    return 0;
-  }
-  if (lots > 0.01) {
-    return 0.03;
-  }
-  return lots;
+  return 0.01;
 }
 
 export function firstPositiveAIApproveTakeProfit(values: number[]): number {

@@ -21,7 +21,7 @@ describe('AI approve pending gate', () => {
       accepted: true,
       currentPrice: 3335.6,
       entry: 3335.6,
-      lots: 0.02,
+      lots: 0.01,
       h1Atr: 2
     });
   });
@@ -360,7 +360,7 @@ describe('AI approve pending gate', () => {
     await store.savePositions({
       account_id: accountId,
       symbol,
-      positions: [{ ticket: 2001, symbol, type: 'BUY', lots: 0.05, open_price: 3333.6, strategy: 'ai_signal' }]
+      positions: [{ ticket: 2001, symbol, type: 'BUY', lots: 0.01, open_price: 3333.6, strategy: 'ai_signal' }]
     });
 
     await expect(evaluateAIApprovePendingGate({
@@ -457,7 +457,7 @@ describe('AI approve favorable add-on', () => {
       nowIso
     })).resolves.toMatchObject({
       accepted: true,
-      lots: 0.03
+      lots: 0.01
     });
   });
 
@@ -498,7 +498,7 @@ describe('AI approve favorable add-on', () => {
       account_id: accountId,
       symbol,
       positions: [
-        { ticket: 1001, symbol, type: 'BUY', lots: 0.04, open_price: 3333.0, sl: 3330.0, tp: 3340.0, profit: 104, strategy: 'ai_signal' }
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.01, open_price: 3333.0, sl: 3330.0, tp: 3340.0, profit: 104, strategy: 'ai_signal' }
       ]
     });
 
@@ -548,7 +548,7 @@ describe('AI approve adverse add-on', () => {
         requested_order_type: 'BUY_LIMIT'
       }),
       nowIso
-    })).resolves.toMatchObject({ accepted: true, lots: 0.03 });
+    })).resolves.toMatchObject({ accepted: true, lots: 0.01 });
   });
 
   it('rejects adverse add-on when loss < 1.0 ATR (L1)', async () => {
@@ -705,7 +705,7 @@ describe('AI approve adverse add-on', () => {
       account_id: accountId,
       symbol,
       positions: [
-        { ticket: 1001, symbol, type: 'BUY', lots: 0.04, open_price: 3338.0, sl: 3330.0, tp: 3340.0, strategy: 'ai_signal' }
+        { ticket: 1001, symbol, type: 'BUY', lots: 0.01, open_price: 3338.0, sl: 3330.0, tp: 3340.0, strategy: 'ai_signal' }
       ]
     });
 
@@ -746,7 +746,7 @@ describe('AI approve adverse add-on', () => {
         add_on_type: 'adverse',
         add_on_level: 1,
         max_lots: 0.05,
-        max_total_lots: 0.11,
+        max_total_lots: 0.10,
         entry_zone: { min: 3335.5, max: 3335.7 },
         execution_type: 'limit',
         requested_order_type: 'BUY_LIMIT'
