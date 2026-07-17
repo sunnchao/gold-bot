@@ -306,6 +306,81 @@ describe('SchedulerService', () => {
     expect(await store.listCommands('90011087')).toEqual([]);
   });
 
+  it('skips position manager MODIFY when stop is on the wrong side of market (error 130)', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    // BUY open 218.707, group reanchor wants 218.735, but market already below both → invalid SL
+    await store.saveTick({ account_id: '90011087', symbol: 'GBPJPY', bid: 218.30, ask: 218.32 });
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      positions: [{ ticket: 42370061, symbol: 'GBPJPY', type: 'BUY', open_price: 218.707, lots: 0.02, sl: 217.7, tp: 219.18 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: null,
+              position_commands: [
+                { action: 'MODIFY', ticket: 42370061, new_sl: 218.73475, reason: 'group_adverse_reanchor_BUY' }
+              ]
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-07-17T06:13:55.000Z'
+    );
+
+    await scheduler.enqueuePositionReview('90011087', 'GBPJPY');
+    expect(await store.listCommands('90011087')).toEqual([]);
+  });
+
+  it('still queues position manager MODIFY when stop stays valid vs market', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.saveTick({ account_id: '90011087', symbol: 'GBPJPY', bid: 218.90, ask: 218.92 });
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      positions: [{ ticket: 42370061, symbol: 'GBPJPY', type: 'BUY', open_price: 218.707, lots: 0.02, sl: 217.7, tp: 219.18 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: null,
+              position_commands: [
+                { action: 'MODIFY', ticket: 42370061, new_sl: 218.73475, reason: 'group_adverse_reanchor_BUY' }
+              ]
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-07-17T06:13:55.000Z'
+    );
+
+    await scheduler.enqueuePositionReview('90011087', 'GBPJPY');
+    const commands = await store.listCommands('90011087');
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      action: 'MODIFY',
+      source: 'position_manager',
+      ticket: 42370061,
+      new_sl: 218.73475,
+      reason: 'group_adverse_reanchor_BUY'
+    });
+  });
+
   it('does not queue position manager CLOSE commands for missing tickets', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');

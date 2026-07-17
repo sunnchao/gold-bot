@@ -752,8 +752,8 @@ export function evaluatePositionManagerCommands(input: PositionManagerCommandsIn
   applySameSideGroupClose(result.advisories, result.nextStates, openPositions, preTP1Hit, 'tp1Hit', 'group_tp1');
   applySameSideGroupClose(result.advisories, result.nextStates, openPositions, preTP2Hit, 'tp2Hit', 'group_tp2');
   const previousTickets = new Set(inputStates.keys());
-  applySameSideBreakeven(result.advisories, result.nextStates, openPositions, preBE, previousTickets);
-  applySameSideGroupStopReanchor(result.advisories, result.nextStates, openPositions, previousTickets, now);
+  applySameSideBreakeven(result.advisories, result.nextStates, openPositions, preBE, previousTickets, input.currentPrice);
+  applySameSideGroupStopReanchor(result.advisories, result.nextStates, openPositions, previousTickets, now, input.currentPrice);
   applyAdverseGroupDrawdownExit(result.advisories, result.nextStates, openPositions, input.equity ?? 0);
 
   return result;
@@ -1108,7 +1108,8 @@ function applySameSideBreakeven(
   nextStates: PositionManagerState[],
   positions: OpenPosition[],
   preBE: Map<number, boolean>,
-  previousTickets: Set<number>
+  previousTickets: Set<number>,
+  currentPrice: number
 ): void {
   const statesByTicket = new Map(nextStates.map((state) => [state.ticket, state]));
   const groups = new Map<PositionSide, OpenPosition[]>();
@@ -1168,7 +1169,11 @@ function applySameSideBreakeven(
         continue;
       }
       const currentBestSL = state.bestSl ?? 0;
-      if (validateNewSL(side, bestSL, currentBestSL) && bestSL !== currentBestSL) {
+      // 同 reanchor：group_be / favorable_addon 的 SL 也必须在市价正确一侧
+      const stopValidVsPrice = currentPrice > 0
+        ? (side === 'BUY' ? bestSL < currentPrice - PRICE_EPSILON : bestSL > currentPrice + PRICE_EPSILON)
+        : true;
+      if (stopValidVsPrice && validateNewSL(side, bestSL, currentBestSL) && bestSL !== currentBestSL) {
         state.bestSl = bestSL;
         const reason = hasFavorableAddOn ? `group_favorable_addon_${side}` : `group_be_${side}`;
         advisories.push({
@@ -1187,7 +1192,8 @@ function applySameSideGroupStopReanchor(
   nextStates: PositionManagerState[],
   positions: OpenPosition[],
   previousTickets: Set<number>,
-  now: Date
+  now: Date,
+  currentPrice: number
 ): void {
   const statesByTicket = new Map(nextStates.map((state) => [state.ticket, state]));
   const groups = new Map<PositionSide, OpenPosition[]>();
@@ -1266,7 +1272,12 @@ function applySameSideGroupStopReanchor(
       state.groupBestSl = groupAvgEntry;
 
       const currentBestSL = state.bestSl ?? 0;
-      if (validateNewSL(side, groupAvgEntry, currentBestSL) && groupAvgEntry !== currentBestSL) {
+      // 仅在 groupAvgEntry 相对当前价合法时才发 MODIFY；否则 MT4 会回 130
+      // BUY: SL 必须 < 现价；SELL: SL 必须 > 现价。状态仍记录 group 信息供后续使用。
+      const stopValidVsPrice = currentPrice > 0
+        ? (side === 'BUY' ? groupAvgEntry < currentPrice - PRICE_EPSILON : groupAvgEntry > currentPrice + PRICE_EPSILON)
+        : true;
+      if (stopValidVsPrice && validateNewSL(side, groupAvgEntry, currentBestSL) && groupAvgEntry !== currentBestSL) {
         state.bestSl = groupAvgEntry;
         advisories.push({
           action: 'MODIFY',

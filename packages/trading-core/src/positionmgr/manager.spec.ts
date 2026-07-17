@@ -1268,9 +1268,10 @@ describe('position manager Analyze orchestration parity slice', () => {
   it('tightens stop loss to group avg entry when adverse add-on detected', () => {
     const result = evaluatePositionManagerCommands({
       now,
-      currentPrice: 3320,
-      currentAtr: 2,
-      avgAtr: 2,
+      // 现价略高于 groupAvgEntry，BUY reanchor 合法；ATR 放大避免触发 BE/锁盈
+      currentPrice: 3329,
+      currentAtr: 10,
+      avgAtr: 10,
       h1Bars,
       positions: [
         { ticket: 3001, type: 'BUY', openPrice: 3330, lots: 0.1, sl: 3328, profit: -10 },
@@ -1292,6 +1293,38 @@ describe('position manager Analyze orchestration parity slice', () => {
     expect(result.nextStates[0].addOnCount).toBe(0);
     expect(result.nextStates[1].addOnCount).toBe(1);
   });
+
+  it('does not emit group_adverse_reanchor MODIFY when groupAvgEntry is on the wrong side of market', () => {
+    const now = '2026-07-17T06:13:55.000Z';
+    const result = evaluatePositionManagerCommands({
+      now,
+      currentPrice: 218.30,
+      currentAtr: 0.35,
+      avgAtr: 0.35,
+      equity: 10000,
+      h1Bars: Array.from({ length: 30 }, (_, i) => ({
+        time: `2026-07-17T0${i % 10}:00:00.000Z`,
+        open: 218.5,
+        high: 218.8,
+        low: 218.2,
+        close: 218.4,
+        volume: 1000
+      })),
+      positions: [
+        { ticket: 42360423, type: 'BUY', open_price: 218.781, lots: 0.02, sl: 218.39, tp: 219.39, profit: -5 },
+        { ticket: 42370061, type: 'BUY', open_price: 218.707, lots: 0.02, sl: 217.7, tp: 219.18, profit: -5 }
+      ],
+      states: [
+        { ticket: 42360423, openTime: '2026-07-17T05:00:00.000Z', bestSl: 218.39 },
+        // previousTickets only has old ticket so second is treated as adverse add-on
+      ]
+    });
+    const reanchors = result.advisories.filter((a) => String(a.reason).startsWith('group_adverse_reanchor'));
+    expect(reanchors).toEqual([]);
+    // group metadata still recorded when state exists for both
+    // only first had prior state; second becomes new add-on
+  });
+
 
   it('does not trigger adverse reanchor when net loss is below 6% of equity', () => {
     const equity = 10000;

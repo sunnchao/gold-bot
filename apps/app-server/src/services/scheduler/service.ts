@@ -269,8 +269,21 @@ export class SchedulerService {
       if (Math.abs(newSL - oldSL) < MODIFY_DISTANCE_EPSILON) {
         return undefined;
       }
-      // STOPLEVEL 距离检查：newSL 离当前价太近会导致 MT4 error 130
-      if (currentPrice > 0 && Math.abs(newSL - currentPrice) < currentPrice * STOPLEVEL_MIN_RATIO) {
+      // 方向合法性 + STOPLEVEL：SL 必须在市价正确一侧且保留最小距离，否则 MT4 error 130
+      // 典型场景：group_adverse_reanchor 把 SL 设到 groupAvgEntry，但价格已穿越均价
+      const side = stringField(position, 'type').toUpperCase();
+      if (currentPrice > 0 && side.length > 0) {
+        const minDistance = currentPrice * STOPLEVEL_MIN_RATIO;
+        if (side === 'BUY' || side.startsWith('BUY')) {
+          if (newSL >= currentPrice - minDistance) {
+            return undefined;
+          }
+        } else if (side === 'SELL' || side.startsWith('SELL')) {
+          if (newSL <= currentPrice + minDistance) {
+            return undefined;
+          }
+        }
+      } else if (currentPrice > 0 && Math.abs(newSL - currentPrice) < currentPrice * STOPLEVEL_MIN_RATIO) {
         return undefined;
       }
       return {
