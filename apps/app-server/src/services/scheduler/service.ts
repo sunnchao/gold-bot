@@ -9,6 +9,10 @@ const AI_STOP_LOSS_MODIFY_COOLDOWN_MS = 5 * 60 * 1000;
 const AI_STOP_LOSS_PROFIT_ATR_GATE = 1.5;
 const DEFAULT_AI_TRAIL_SYMBOLS = 'GBPJPY';
 const MODIFY_DISTANCE_EPSILON = 1e-9;
+/** MT4 STOPLEVEL 最小距离比例（0.05%），SL/TP 离当前价比此更近会触发 error 130 */
+const STOPLEVEL_MIN_RATIO = 0.0005;
+/** 仓位数据超过此时间未更新视为过期（可能已平仓），跳过避免 4108 */
+const STALE_POSITION_MS = 5 * 60 * 1000;
 
 type AIStopLossSkipReason =
   | 'suggested_sl_le_zero'
@@ -221,8 +225,10 @@ export class SchedulerService {
     }
     const nowIso = this.nowIso();
     const positions = (await this.store?.getPositions?.(accountId, symbol)) ?? [];
+    const bars = await this.barsByTimeframe(accountId, symbol);
+    const currentPrice = liveCurrentPrice((await this.store?.getLatestTick(accountId, symbol)) ?? {}, bars);
     for (const command of commands) {
-      const candidate = this.positionManagerCommandCandidate(accountId, symbol, command, positions, nowIso);
+      const candidate = this.positionManagerCommandCandidate(accountId, symbol, command, positions, nowIso, currentPrice);
       if (candidate == null || (await this.store?.getCommand?.(candidate.command_id ?? '')) != null) {
         continue;
       }
@@ -235,7 +241,8 @@ export class SchedulerService {
     symbol: string,
     command: ReplayPositionCommand,
     positions: EaRecord[],
-    nowIso: string
+    nowIso: string,
+    currentPrice: number
   ): CommandCandidate | undefined {
     const ticket = command.ticket;
     if (!Number.isFinite(ticket) || ticket <= 0) {
@@ -251,11 +258,19 @@ export class SchedulerService {
       if (position == null) {
         return undefined;
       }
+      // 仓位新鲜度检查：超过5分钟未更新的仓位可能已平仓，跳过避免 4108
+      if (isStalePosition(position, nowIso)) {
+        return undefined;
+      }
       const oldSL = numberField(position, 'sl');
       if (oldSL <= 0) {
         return undefined;
       }
       if (Math.abs(newSL - oldSL) < MODIFY_DISTANCE_EPSILON) {
+        return undefined;
+      }
+      // STOPLEVEL 距离检查：newSL 离当前价太近会导致 MT4 error 130
+      if (currentPrice > 0 && Math.abs(newSL - currentPrice) < currentPrice * STOPLEVEL_MIN_RATIO) {
         return undefined;
       }
       return {
@@ -282,6 +297,10 @@ export class SchedulerService {
         return undefined;
       }
       if (isPendingPositionRecord(position)) {
+        return undefined;
+      }
+      // 仓位新鲜度检查：超过5分钟未更新的仓位可能已平仓，跳过避免 4108
+      if (isStalePosition(position, nowIso)) {
         return undefined;
       }
       return {
@@ -483,13 +502,16 @@ function aiStopLossCommandId(accountId: string, symbol: string, ticket: number, 
 
 function positionManagerCommandId(accountId: string, symbol: string, command: ReplayPositionCommand, nowIso: string): string {
   const timestampKey = utcMinuteKey(nowIso);
+  // 归一化 reason：移除动态 dd 值（如 trail_tp1_dd1.2 → trail_tp1）
+  // 防止同一仓位因 drawdown 数值变化生成不同 command_id，导致去重失效
+  const normalizedReason = (command.reason ?? '').replace(/_dd[\d.]+/, '');
   return [
     'pm',
     commandIdPart(accountId),
     commandIdPart(symbol.toUpperCase()),
     String(command.ticket),
     command.action.toLowerCase(),
-    commandIdPart(command.reason),
+    commandIdPart(normalizedReason),
     timestampKey
   ].filter((part) => part.length > 0).join('_');
 }
@@ -509,6 +531,21 @@ function isPendingPositionRecord(position: EaRecord): boolean {
   }
   const type = stringField(position, 'type').toUpperCase();
   return type.includes('LIMIT') || type.includes('STOP');
+}
+
+/** 仓位新鲜度检查：超过 STALE_POSITION_MS 未更新的仓位视为过期（可能已平仓） */
+function isStalePosition(position: EaRecord, nowIso: string): boolean {
+  const timeStr = stringField(position, 'time') || stringField(position, 'updated_at') || stringField(position, 'updatedAt');
+  if (!timeStr) {
+    return false; // 无时间字段，不阻拦
+  }
+  const ms = Date.parse(timeStr);
+  if (!Number.isFinite(ms)) {
+    return false;
+  }
+  const nowMs = Date.parse(nowIso);
+  const ref = Number.isFinite(nowMs) ? nowMs : Date.now();
+  return ref - ms > STALE_POSITION_MS;
 }
 
 function aiDecisionId(aiResult: EaRecord): string {

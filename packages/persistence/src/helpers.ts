@@ -29,6 +29,7 @@ export type PositionStateRecord = {
   group_id: string;
   group_avg_entry: number;
   group_best_sl: number;
+  trailing_closed: boolean;
 };
 
 export type PositionStateRow = {
@@ -47,6 +48,7 @@ export type PositionStateRow = {
   group_id: string;
   group_avg_entry: number;
   group_best_sl: number;
+  trailing_closed: number;
 };
 
 export type RuntimeCommandRow = {
@@ -300,7 +302,8 @@ export function normalizePositionState(state: PositionStateRecord): PositionStat
     last_add_on_price: Number.isFinite(state.last_add_on_price) ? state.last_add_on_price : 0,
     group_id: typeof state.group_id === 'string' ? state.group_id : '',
     group_avg_entry: Number.isFinite(state.group_avg_entry) ? state.group_avg_entry : 0,
-    group_best_sl: Number.isFinite(state.group_best_sl) ? state.group_best_sl : 0
+    group_best_sl: Number.isFinite(state.group_best_sl) ? state.group_best_sl : 0,
+    trailing_closed: state.trailing_closed === true
   };
 }
 
@@ -320,7 +323,8 @@ export function positionStateFromRow(row: PositionStateRow): PositionStateRecord
     last_add_on_price: Number(row.last_add_on_price) || 0,
     group_id: typeof row.group_id === 'string' ? row.group_id : '',
     group_avg_entry: Number(row.group_avg_entry) || 0,
-    group_best_sl: Number(row.group_best_sl) || 0
+    group_best_sl: Number(row.group_best_sl) || 0,
+    trailing_closed: row.trailing_closed !== 0
   };
 }
 

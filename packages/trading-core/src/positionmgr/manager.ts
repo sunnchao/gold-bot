@@ -88,6 +88,9 @@ export type PositionManagerState = {
   group_avg_entry?: number;
   groupBestSl?: number;
   group_best_sl?: number;
+  /** trail_tp CLOSE 已执行，后续不再生成 trail_tp 命令（幂等 flag） */
+  trailingClosed?: boolean;
+  trailing_closed?: boolean;
 };
 
 export type PositionTimeStopInput = {
@@ -868,7 +871,9 @@ function dynamicTrailingState(position: OpenPosition, existing: PositionManagerS
     ticket: position.ticket,
     tp1Hit: existing?.tp1Hit ?? existing?.tp1_hit ?? false,
     tp2Hit: existing?.tp2Hit ?? existing?.tp2_hit ?? false,
-    maxProfitAtr: existing?.maxProfitAtr ?? existing?.max_profit_atr ?? 0
+    maxProfitAtr: existing?.maxProfitAtr ?? existing?.max_profit_atr ?? 0,
+    trailingClosed: existing?.trailingClosed ?? existing?.trailing_closed ?? false,
+    trailing_closed: existing?.trailingClosed ?? existing?.trailing_closed ?? false
   };
 
   if (profitAtr > (state.maxProfitAtr ?? 0)) {
@@ -888,15 +893,24 @@ function dynamicTrailingAdvisory(
     return null;
   }
 
+  // 幂等检查：trail_tp CLOSE 已执行过，不再重复生成
+  if (state.trailingClosed === true || state.trailing_closed === true) {
+    return null;
+  }
+
   const drawdown = maxProfitAtr - profitAtr;
   if (state.tp2Hit === true) {
     if (drawdown > maxProfitAtr * 0.55) {
+      state.trailingClosed = true;
+      state.trailing_closed = true;
       return { action: 'CLOSE', ticket: position.ticket, lots: position.lots, reason: `trail_tp2_dd${formatAtr(drawdown)}` };
     }
     return null;
   }
 
   if (drawdown > maxProfitAtr * 0.6 && profitAtr < maxProfitAtr - 0.8) {
+    state.trailingClosed = true;
+    state.trailing_closed = true;
     return { action: 'CLOSE', ticket: position.ticket, lots: position.lots, reason: `trail_tp1_dd${formatAtr(drawdown)}` };
   }
   return null;
@@ -1519,7 +1533,9 @@ function positionAnalyzeState(position: OpenPosition, existing: PositionManagerS
     beMoved: existing?.beMoved ?? existing?.be_moved ?? false,
     maxProfitAtr: existing?.maxProfitAtr ?? existing?.max_profit_atr ?? 0,
     beTriggerAtr,
-    bestSl: existing?.bestSl ?? existing?.best_sl ?? position.sl
+    bestSl: existing?.bestSl ?? existing?.best_sl ?? position.sl,
+    trailingClosed: existing?.trailingClosed ?? existing?.trailing_closed ?? false,
+    trailing_closed: existing?.trailingClosed ?? existing?.trailing_closed ?? false
   };
 }
 

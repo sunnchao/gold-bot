@@ -148,6 +148,7 @@ function toPositionStateRecord(state: PositionManagerState, nowIso: string): Pos
     last_add_on_price: state.lastAddOnPrice ?? state.last_add_on_price ?? 0,
     group_id: state.groupId ?? state.group_id ?? '',
     group_avg_entry: state.groupAvgEntry ?? state.group_avg_entry ?? 0,
-    group_best_sl: state.groupBestSl ?? state.group_best_sl ?? 0
+    group_best_sl: state.groupBestSl ?? state.group_best_sl ?? 0,
+    trailing_closed: state.trailingClosed ?? state.trailing_closed ?? false
   };
 }

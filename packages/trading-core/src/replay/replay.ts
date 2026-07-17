@@ -924,7 +924,21 @@ function normalizePositionManagerStates(values: unknown[]): PositionManagerState
       beTriggerAtr: optionalNumberField(record, 'beTriggerAtr'),
       be_trigger_atr: optionalNumberField(record, 'be_trigger_atr'),
       bestSl: optionalNumberField(record, 'bestSl'),
-      best_sl: optionalNumberField(record, 'best_sl')
+      best_sl: optionalNumberField(record, 'best_sl'),
+      addOnCount: optionalNumberField(record, 'addOnCount'),
+      add_on_count: optionalNumberField(record, 'add_on_count'),
+      lastAddOnTime: optionalStringField(record, 'lastAddOnTime'),
+      last_add_on_time: optionalStringField(record, 'last_add_on_time'),
+      lastAddOnPrice: optionalNumberField(record, 'lastAddOnPrice'),
+      last_add_on_price: optionalNumberField(record, 'last_add_on_price'),
+      groupId: optionalStringField(record, 'groupId'),
+      group_id: optionalStringField(record, 'group_id'),
+      groupAvgEntry: optionalNumberField(record, 'groupAvgEntry'),
+      group_avg_entry: optionalNumberField(record, 'group_avg_entry'),
+      groupBestSl: optionalNumberField(record, 'groupBestSl'),
+      group_best_sl: optionalNumberField(record, 'group_best_sl'),
+      trailingClosed: optionalBooleanField(record, 'trailingClosed'),
+      trailing_closed: optionalBooleanField(record, 'trailing_closed')
     };
   });
 }

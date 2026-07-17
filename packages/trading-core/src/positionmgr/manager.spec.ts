@@ -827,6 +827,40 @@ describe('position manager dynamic-trailing advisory parity slice', () => {
     ]);
     expect(result.canProduceLiveCommands).toBe(false);
   });
+
+  it('sets trailingClosed after first trail_tp close and stays idempotent on next cycle', () => {
+    const first = evaluatePositionDynamicTrailing({
+      currentPrice: 3343,
+      currentAtr: 2,
+      positions: [{ ticket: 1207, type: 'BUY', lots: 0.5, openPrice: 3340 }],
+      states: [{ ticket: 1207, tp1Hit: true, tp2Hit: false, maxProfitAtr: 4 }]
+    });
+
+    expect(first.advisories).toEqual([{ action: 'CLOSE', ticket: 1207, lots: 0.5, reason: 'trail_tp1_dd2.5' }]);
+    expect(first.nextStates).toEqual([
+      expect.objectContaining({
+        ticket: 1207,
+        trailingClosed: true,
+        trailing_closed: true
+      })
+    ]);
+
+    const second = evaluatePositionDynamicTrailing({
+      currentPrice: 3342.8,
+      currentAtr: 2,
+      positions: [{ ticket: 1207, type: 'BUY', lots: 0.5, openPrice: 3340 }],
+      states: first.nextStates
+    });
+
+    expect(second.advisories).toEqual([]);
+    expect(second.nextStates).toEqual([
+      expect.objectContaining({
+        ticket: 1207,
+        trailingClosed: true,
+        trailing_closed: true
+      })
+    ]);
+  });
 });
 
 describe('position manager momentum-scalp exit advisory parity slice', () => {
