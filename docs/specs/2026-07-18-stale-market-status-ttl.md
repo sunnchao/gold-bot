@@ -2,7 +2,7 @@
 
 > 日期：2026-07-18  
 > 范围：`analysis_payload.market_status` 陈旧判定、Agent LLM 关市 skip 链路  
-> 状态：方案文档（未实现）  
+> 状态：已上线（commit 846a3f5）  
 > 目标：周末 / EA 断线后停止无效 LLM 调用；EA 恢复上报后自动恢复分析
 
 ---
@@ -568,3 +568,12 @@ docker logs gold-analysis-agent --since 20m | rg 'routeAfterFetch|LLM streamLaye
 ## 15. 一句话总结
 
 **在服务端对 tick/heartbeat 做 15 分钟读时 TTL：过期则对外 `market_open=false` 让 Agent 自动 skip LLM；EA 恢复新鲜上报后无需人工干预即可自动恢复分析。**
+
+
+---
+
+## 16. 上线记录
+
+- commit：`846a3f5` `fix(app-server): stale tick/heartbeat 读时关市，阻断周末 LLM`
+- 默认 TTL：tick 15m + heartbeat 15m（`GB_MARKET_STATUS_TICK_TTL_MS` / `GB_MARKET_STATUS_HEARTBEAT_TTL_MS`）
+- 生产验证（2026-07-18）：XAUUSD/XAGUSD/GBPJPY 均 `market_open=false`，`stale_reason=tick_stale`
