@@ -1583,7 +1583,11 @@ function analysisPayload(store: EaStore, accountId: string, symbol: string, time
       is_trade_allowed: marketStatus.isTradeAllowed,
       market_open: marketStatus.marketOpen,
       mt4_server_time: stringFieldOrEmpty(heartbeat, 'server_time'),
-      tradeable: marketStatus.marketOpen && marketStatus.isTradeAllowed
+      tradeable: marketStatus.marketOpen && marketStatus.isTradeAllowed,
+      stale: marketStatus.stale,
+      stale_reason: marketStatus.staleReason,
+      tick_age_ms: marketStatus.tickAgeMs,
+      heartbeat_age_ms: marketStatus.heartbeatAgeMs
     },
     positions: positions.map((position) => normalizeAnalysisPosition(position, latestTick, timestamp)),
     status: 'OK',
@@ -1606,15 +1610,97 @@ function configuredMaxSpread(latestTick: EaRecord, heartbeat: EaRecord): number 
   return heartbeatMaxSpread != null && heartbeatMaxSpread > 0 ? heartbeatMaxSpread : undefined;
 }
 
-function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timestamp: string): { marketOpen: boolean; isTradeAllowed: boolean } {
-  let marketOpen = booleanField(heartbeat, 'market_open');
-  let isTradeAllowed = booleanField(heartbeat, 'is_trade_allowed');
+type AnalysisMarketStatus = {
+  marketOpen: boolean;
+  isTradeAllowed: boolean;
+  stale: boolean;
+  staleReason?: string;
+  tickAgeMs?: number;
+  heartbeatAgeMs?: number;
+};
+
+// LLM / analysis_payload 关市 TTL：读时计算，不写死 DB。
+// 与 riskgate 的 2 分钟 tick.stale（下单门禁）刻意区分。
+const MARKET_STATUS_TICK_TTL_MS = readPositiveMsEnv('GB_MARKET_STATUS_TICK_TTL_MS', 15 * 60 * 1000);
+const MARKET_STATUS_HEARTBEAT_TTL_MS = readPositiveMsEnv('GB_MARKET_STATUS_HEARTBEAT_TTL_MS', 15 * 60 * 1000);
+
+function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timestamp: string): AnalysisMarketStatus {
+  const rawMarketOpen = booleanField(heartbeat, 'market_open');
+  const rawTradeAllowed = booleanField(heartbeat, 'is_trade_allowed');
   const now = parseDateMillis(timestamp);
   const tickTime = analysisTickTimeMillis(heartbeat, latestTick, now);
-  if (tickTime == null) {
-    return { marketOpen: false, isTradeAllowed: false };
+  const heartbeatTime = analysisHeartbeatTimeMillis(heartbeat);
+  const tickAgeMs = now != null && tickTime != null ? Math.max(0, now - tickTime) : undefined;
+  const heartbeatAgeMs = now != null && heartbeatTime != null ? Math.max(0, now - heartbeatTime) : undefined;
+
+  if (now == null || tickTime == null) {
+    return {
+      marketOpen: false,
+      isTradeAllowed: false,
+      stale: true,
+      staleReason: 'tick_time_unparseable',
+      tickAgeMs,
+      heartbeatAgeMs
+    };
   }
-  return { marketOpen, isTradeAllowed };
+
+  if (tickAgeMs != null && tickAgeMs > MARKET_STATUS_TICK_TTL_MS) {
+    return {
+      marketOpen: false,
+      isTradeAllowed: false,
+      stale: true,
+      staleReason: 'tick_stale',
+      tickAgeMs,
+      heartbeatAgeMs
+    };
+  }
+
+  if (heartbeatAgeMs != null && heartbeatAgeMs > MARKET_STATUS_HEARTBEAT_TTL_MS) {
+    return {
+      marketOpen: false,
+      isTradeAllowed: false,
+      stale: true,
+      staleReason: 'heartbeat_stale',
+      tickAgeMs,
+      heartbeatAgeMs
+    };
+  }
+
+  return {
+    marketOpen: rawMarketOpen,
+    isTradeAllowed: rawTradeAllowed,
+    stale: false,
+    tickAgeMs,
+    heartbeatAgeMs
+  };
+}
+
+function analysisHeartbeatTimeMillis(heartbeat: EaRecord): number | undefined {
+  const candidates = [
+    stringFieldOrEmpty(heartbeat, 'server_time'),
+    stringFieldOrEmpty(heartbeat, 'updated_at'),
+    stringFieldOrEmpty(heartbeat, 'last_heartbeat_at'),
+    stringFieldOrEmpty(heartbeat, 'time')
+  ];
+  for (const candidate of candidates) {
+    const millis = parseDateMillis(candidate);
+    if (millis != null) {
+      return millis;
+    }
+  }
+  return undefined;
+}
+
+function readPositiveMsEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim().length === 0) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
 }
 
 const TIME_ONLY_PATTERN = /^\d{1,2}:\d{2}(?::\d{2})?$/;
@@ -2712,7 +2798,13 @@ function parseDateMillis(value: string): number | undefined {
   if (value.length === 0) {
     return undefined;
   }
-  const millis = new Date(value).getTime();
+  const direct = new Date(value).getTime();
+  if (Number.isFinite(direct)) {
+    return direct;
+  }
+  // Fallback: normalize MT4-ish "YYYY.MM.DD HH:MM[:SS]" for engines that reject dots.
+  const normalized = value.trim().replace(/\./g, '-').replace(' ', 'T');
+  const millis = new Date(normalized).getTime();
   return Number.isFinite(millis) ? millis : undefined;
 }
 

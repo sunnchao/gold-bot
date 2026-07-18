@@ -4194,12 +4194,15 @@ describe('app-server scaffold', () => {
       };
     };
     expect(body.market_filters?.reason_codes).toContain('tick.stale');
-    expect(body.market_status).toEqual({
+    expect(body.market_status).toMatchObject({
       market_open: false,
       is_trade_allowed: false,
       mt4_server_time: '2026.06.04 13:00',
-      tradeable: false
+      tradeable: false,
+      stale: true,
+      stale_reason: 'tick_stale'
     });
+    expect(body.market_status?.tick_age_ms).toBeGreaterThan(15 * 60 * 1000);
   });
 
   it('keeps analysis market status tradeable for EA time-only tick timestamps', async () => {
@@ -4237,11 +4240,12 @@ describe('app-server scaffold', () => {
         tradeable?: boolean;
       };
     };
-    expect(body.market_status).toEqual({
+    expect(body.market_status).toMatchObject({
       market_open: true,
       is_trade_allowed: true,
       mt4_server_time: '2026.07.07 02:44',
-      tradeable: true
+      tradeable: true,
+      stale: false
     });
   });
 
@@ -4280,11 +4284,130 @@ describe('app-server scaffold', () => {
         tradeable?: boolean;
       };
     };
-    expect(body.market_status).toEqual({
+    expect(body.market_status).toMatchObject({
+      market_open: true,
+      is_trade_allowed: true,
+      mt4_server_time: '2026.07.07 00:12',
+      tradeable: true,
+      stale: false
+    });
+    expect(body.market_status?.tick_age_ms).toBeLessThanOrEqual(15 * 60 * 1000);
+  });
+
+  it('marks analysis market status untradeable when heartbeat is stale even if tick looks fresh', async () => {
+    const store = createInMemoryEaStore();
+    const server = await createApiServer({ store, nowIso: () => '2026-07-07T03:00:00+08:00' });
+
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      server_time: '2026.07.07 02:30'
+    });
+    await store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 4162.05,
+      ask: 4162.28,
+      spread: 23,
+      time: '02:59:30'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      market_status?: {
+        market_open?: boolean;
+        is_trade_allowed?: boolean;
+        tradeable?: boolean;
+        stale?: boolean;
+        stale_reason?: string;
+        heartbeat_age_ms?: number;
+      };
+    };
+    expect(body.market_status).toMatchObject({
       market_open: false,
       is_trade_allowed: false,
-      mt4_server_time: '2026.07.07 00:12',
-      tradeable: false
+      tradeable: false,
+      stale: true,
+      stale_reason: 'heartbeat_stale'
+    });
+    expect(body.market_status?.heartbeat_age_ms).toBeGreaterThan(15 * 60 * 1000);
+  });
+
+  it('restores tradeable market status after fresh heartbeat and tick replace stale data', async () => {
+    const store = createInMemoryEaStore();
+    let now = '2026-07-07T03:20:00+08:00';
+    const server = await createApiServer({ store, nowIso: () => now });
+
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      server_time: '2026.07.07 02:30'
+    });
+    await store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 4162.05,
+      ask: 4162.28,
+      spread: 23,
+      time: '02:30:00'
+    });
+
+    const staleResponse = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+    const staleBody = JSON.parse(staleResponse.body) as {
+      market_status?: { market_open?: boolean; tradeable?: boolean; stale?: boolean };
+    };
+    expect(staleBody.market_status?.market_open).toBe(false);
+    expect(staleBody.market_status?.tradeable).toBe(false);
+    expect(staleBody.market_status?.stale).toBe(true);
+
+    now = '2026-07-07T03:21:00+08:00';
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      server_time: '2026.07.07 03:21'
+    });
+    await store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 4163.1,
+      ask: 4163.3,
+      spread: 20,
+      time: '03:20:55'
+    });
+
+    const freshResponse = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+    const freshBody = JSON.parse(freshResponse.body) as {
+      market_status?: {
+        market_open?: boolean;
+        is_trade_allowed?: boolean;
+        tradeable?: boolean;
+        stale?: boolean;
+      };
+    };
+    expect(freshBody.market_status).toMatchObject({
+      market_open: true,
+      is_trade_allowed: true,
+      tradeable: true,
+      stale: false
     });
   });
 
