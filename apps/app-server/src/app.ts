@@ -1628,12 +1628,25 @@ function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timesta
   const rawMarketOpen = booleanField(heartbeat, 'market_open');
   const rawTradeAllowed = booleanField(heartbeat, 'is_trade_allowed');
   const now = parseDateMillis(timestamp);
-  const tickTime = analysisTickTimeMillis(heartbeat, latestTick, now);
-  const heartbeatTime = analysisHeartbeatTimeMillis(heartbeat);
+  // 新鲜度必须用服务端接收时钟（UTC ISO），禁止用 MT4 server_time 墙钟与 nowIso 混比。
+  const tickTime = analysisTickFreshnessMillis(heartbeat, latestTick, now);
+  const heartbeatTime = analysisHeartbeatFreshnessMillis(heartbeat);
   const tickAgeMs = now != null && tickTime != null ? Math.max(0, now - tickTime) : undefined;
   const heartbeatAgeMs = now != null && heartbeatTime != null ? Math.max(0, now - heartbeatTime) : undefined;
 
-  if (now == null || tickTime == null) {
+  if (now == null) {
+    return {
+      marketOpen: false,
+      isTradeAllowed: false,
+      stale: true,
+      staleReason: 'tick_time_unparseable',
+      tickAgeMs,
+      heartbeatAgeMs
+    };
+  }
+
+  // 无任何可解析新鲜度锚点（接收时间或可解析 tick 时间）→ 关市
+  if (tickTime == null && heartbeatTime == null) {
     return {
       marketOpen: false,
       isTradeAllowed: false,
@@ -1655,6 +1668,18 @@ function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timesta
     };
   }
 
+  // tick 无接收时间时，可用新鲜 heartbeat 证明 EA 仍在线（历史 payload 兼容）
+  if (tickTime == null && heartbeatAgeMs != null && heartbeatAgeMs > MARKET_STATUS_HEARTBEAT_TTL_MS) {
+    return {
+      marketOpen: false,
+      isTradeAllowed: false,
+      stale: true,
+      staleReason: 'heartbeat_stale',
+      tickAgeMs,
+      heartbeatAgeMs
+    };
+  }
+
   if (heartbeatAgeMs != null && heartbeatAgeMs > MARKET_STATUS_HEARTBEAT_TTL_MS) {
     return {
       marketOpen: false,
@@ -1666,6 +1691,22 @@ function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timesta
     };
   }
 
+  // 若仅有 heartbeat 新鲜、tick 无时间锚点但有报价，仍信任 EA 开市声明
+  if (tickTime == null) {
+    const hasPrice =
+      (optionalNumberField(latestTick, 'bid') ?? 0) > 0 || (optionalNumberField(latestTick, 'ask') ?? 0) > 0;
+    if (!hasPrice || heartbeatTime == null) {
+      return {
+        marketOpen: false,
+        isTradeAllowed: false,
+        stale: true,
+        staleReason: 'tick_time_unparseable',
+        tickAgeMs,
+        heartbeatAgeMs
+      };
+    }
+  }
+
   return {
     marketOpen: rawMarketOpen,
     isTradeAllowed: rawTradeAllowed,
@@ -1675,12 +1716,12 @@ function analysisMarketStatus(heartbeat: EaRecord, latestTick: EaRecord, timesta
   };
 }
 
-function analysisHeartbeatTimeMillis(heartbeat: EaRecord): number | undefined {
+function analysisHeartbeatFreshnessMillis(heartbeat: EaRecord): number | undefined {
+  // Prefer server receive timestamps stamped by /heartbeat handler.
   const candidates = [
-    stringFieldOrEmpty(heartbeat, 'server_time'),
-    stringFieldOrEmpty(heartbeat, 'updated_at'),
     stringFieldOrEmpty(heartbeat, 'last_heartbeat_at'),
-    stringFieldOrEmpty(heartbeat, 'time')
+    stringFieldOrEmpty(heartbeat, 'updated_at'),
+    stringFieldOrEmpty(heartbeat, 'received_at')
   ];
   for (const candidate of candidates) {
     const millis = parseDateMillis(candidate);
@@ -1688,7 +1729,28 @@ function analysisHeartbeatTimeMillis(heartbeat: EaRecord): number | undefined {
       return millis;
     }
   }
-  return undefined;
+  // Legacy fixtures / missing stamp: fall back to MT4 server_time only as last resort.
+  return parseDateMillis(stringFieldOrEmpty(heartbeat, 'server_time'));
+}
+
+function analysisTickFreshnessMillis(
+  heartbeat: EaRecord,
+  latestTick: EaRecord,
+  referenceTime: number | undefined
+): number | undefined {
+  const receiveCandidates = [
+    stringFieldOrEmpty(latestTick, 'received_at'),
+    stringFieldOrEmpty(latestTick, 'updated_at'),
+    stringFieldOrEmpty(latestTick, 'last_tick_at')
+  ];
+  for (const candidate of receiveCandidates) {
+    const millis = parseDateMillis(candidate);
+    if (millis != null) {
+      return millis;
+    }
+  }
+  // Legacy path: parse MT4 tick wall-clock. Only safe when test clocks match.
+  return analysisTickTimeMillis(heartbeat, latestTick, referenceTime);
 }
 
 function readPositiveMsEnv(name: string, fallback: number): number {

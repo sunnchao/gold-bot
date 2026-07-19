@@ -4166,7 +4166,9 @@ describe('app-server scaffold', () => {
       account_id: '90011087',
       market_open: true,
       is_trade_allowed: true,
-      server_time: '2026.06.04 13:00'
+      server_time: '2026.06.04 13:00',
+      last_heartbeat_at: '2026-06-04T13:00:00.000Z',
+      updated_at: '2026-06-04T13:00:00.000Z'
     });
     await store.saveTick({
       account_id: '90011087',
@@ -4174,7 +4176,9 @@ describe('app-server scaffold', () => {
       bid: 3335.55,
       ask: 3335.75,
       spread: 0.2,
-      time: '2026-06-04T12:44:30.000Z'
+      time: '12:44:30',
+      received_at: '2026-06-04T12:44:30.000Z',
+      updated_at: '2026-06-04T12:44:30.000Z'
     });
 
     const response = await server.inject({
@@ -4191,9 +4195,10 @@ describe('app-server scaffold', () => {
         is_trade_allowed?: boolean;
         mt4_server_time?: string;
         tradeable?: boolean;
+        tick_age_ms?: number;
       };
     };
-    expect(body.market_filters?.reason_codes).toContain('tick.stale');
+    // market_filters.tick.stale 仍是 riskgate 2 分钟门禁（用 EA wall-clock），与 market_status 15m 接收时钟 TTL 分离。
     expect(body.market_status).toMatchObject({
       market_open: false,
       is_trade_allowed: false,
@@ -4205,7 +4210,107 @@ describe('app-server scaffold', () => {
     expect(body.market_status?.tick_age_ms).toBeGreaterThan(15 * 60 * 1000);
   });
 
-  it('keeps analysis market status tradeable for EA time-only tick timestamps', async () => {
+  it('keeps analysis market status tradeable when receive timestamps are fresh', async () => {
+    const store = createInMemoryEaStore();
+    const server = await createApiServer({ store, nowIso: () => '2026-07-07T02:53:00.000Z' });
+
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      server_time: '2026.07.07 02:53',
+      last_heartbeat_at: '2026-07-07T02:52:50.000Z',
+      updated_at: '2026-07-07T02:52:50.000Z'
+    });
+    await store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 4162.05,
+      ask: 4162.28,
+      spread: 23,
+      time: '02:52:52',
+      received_at: '2026-07-07T02:52:52.000Z',
+      updated_at: '2026-07-07T02:52:52.000Z'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      market_status?: {
+        market_open?: boolean;
+        is_trade_allowed?: boolean;
+        mt4_server_time?: string;
+        tradeable?: boolean;
+      };
+    };
+    expect(body.market_status).toMatchObject({
+      market_open: true,
+      is_trade_allowed: true,
+      mt4_server_time: '2026.07.07 02:53',
+      tradeable: true,
+      stale: false
+    });
+  });
+
+  it('does not treat MT4 server wall-clock offset as stale when receive timestamps are fresh', async () => {
+    // Production bug: host TZ parses MT4 "2026.07.20 02:09" as local CST → ~5h behind UTC nowIso.
+    const store = createInMemoryEaStore();
+    const server = await createApiServer({ store, nowIso: () => '2026-07-19T23:10:00.000Z' });
+
+    await store.saveRegistration({ account_id: '90011087' });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      server_time: '2026.07.20 02:09',
+      last_heartbeat_at: '2026-07-19T23:09:50.000Z',
+      updated_at: '2026-07-19T23:09:50.000Z'
+    });
+    await store.saveTick({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      bid: 3993.79,
+      ask: 3994.03,
+      spread: 24,
+      time: '02:09:30',
+      received_at: '2026-07-19T23:09:55.000Z',
+      updated_at: '2026-07-19T23:09:55.000Z'
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/analysis_payload/90011087',
+      headers: apiUserHeaders
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      market_status?: {
+        market_open?: boolean;
+        is_trade_allowed?: boolean;
+        tradeable?: boolean;
+        stale?: boolean;
+        tick_age_ms?: number;
+        heartbeat_age_ms?: number;
+      };
+    };
+    expect(body.market_status).toMatchObject({
+      market_open: true,
+      is_trade_allowed: true,
+      tradeable: true,
+      stale: false
+    });
+    expect(body.market_status?.tick_age_ms).toBeLessThan(60 * 1000);
+    expect(body.market_status?.heartbeat_age_ms).toBeLessThan(60 * 1000);
+  });
+
+  it('keeps analysis market status tradeable for legacy EA time-only tick timestamps without receive stamp', async () => {
     const store = createInMemoryEaStore();
     const server = await createApiServer({ store, nowIso: () => '2026-07-07T02:53:00+08:00' });
 
@@ -4214,7 +4319,7 @@ describe('app-server scaffold', () => {
       account_id: '90011087',
       market_open: true,
       is_trade_allowed: true,
-      server_time: '2026.07.07 02:44'
+      server_time: '2026.07.07 02:53'
     });
     await store.saveTick({
       account_id: '90011087',
@@ -4243,7 +4348,7 @@ describe('app-server scaffold', () => {
     expect(body.market_status).toMatchObject({
       market_open: true,
       is_trade_allowed: true,
-      mt4_server_time: '2026.07.07 02:44',
+      mt4_server_time: '2026.07.07 02:53',
       tradeable: true,
       stale: false
     });
@@ -4282,6 +4387,7 @@ describe('app-server scaffold', () => {
         is_trade_allowed?: boolean;
         mt4_server_time?: string;
         tradeable?: boolean;
+        tick_age_ms?: number;
       };
     };
     expect(body.market_status).toMatchObject({
@@ -4296,14 +4402,16 @@ describe('app-server scaffold', () => {
 
   it('marks analysis market status untradeable when heartbeat is stale even if tick looks fresh', async () => {
     const store = createInMemoryEaStore();
-    const server = await createApiServer({ store, nowIso: () => '2026-07-07T03:00:00+08:00' });
+    const server = await createApiServer({ store, nowIso: () => '2026-07-07T03:00:00.000Z' });
 
     await store.saveRegistration({ account_id: '90011087' });
     await store.saveHeartbeat({
       account_id: '90011087',
       market_open: true,
       is_trade_allowed: true,
-      server_time: '2026.07.07 02:30'
+      server_time: '2026.07.07 03:00',
+      last_heartbeat_at: '2026-07-07T02:30:00.000Z',
+      updated_at: '2026-07-07T02:30:00.000Z'
     });
     await store.saveTick({
       account_id: '90011087',
@@ -4311,7 +4419,9 @@ describe('app-server scaffold', () => {
       bid: 4162.05,
       ask: 4162.28,
       spread: 23,
-      time: '02:59:30'
+      time: '02:59:30',
+      received_at: '2026-07-07T02:59:30.000Z',
+      updated_at: '2026-07-07T02:59:30.000Z'
     });
 
     const response = await server.inject({
@@ -4343,7 +4453,7 @@ describe('app-server scaffold', () => {
 
   it('restores tradeable market status after fresh heartbeat and tick replace stale data', async () => {
     const store = createInMemoryEaStore();
-    let now = '2026-07-07T03:20:00+08:00';
+    let now = '2026-07-07T03:20:00.000Z';
     const server = await createApiServer({ store, nowIso: () => now });
 
     await store.saveRegistration({ account_id: '90011087' });
@@ -4351,7 +4461,9 @@ describe('app-server scaffold', () => {
       account_id: '90011087',
       market_open: true,
       is_trade_allowed: true,
-      server_time: '2026.07.07 02:30'
+      server_time: '2026.07.07 02:40',
+      last_heartbeat_at: '2026-07-07T02:40:00.000Z',
+      updated_at: '2026-07-07T02:40:00.000Z'
     });
     await store.saveTick({
       account_id: '90011087',
@@ -4359,7 +4471,9 @@ describe('app-server scaffold', () => {
       bid: 4162.05,
       ask: 4162.28,
       spread: 23,
-      time: '02:30:00'
+      time: '02:40:00',
+      received_at: '2026-07-07T02:40:00.000Z',
+      updated_at: '2026-07-07T02:40:00.000Z'
     });
 
     const staleResponse = await server.inject({
@@ -4367,27 +4481,31 @@ describe('app-server scaffold', () => {
       url: '/api/analysis_payload/90011087',
       headers: apiUserHeaders
     });
-    const staleBody = JSON.parse(staleResponse.body) as {
-      market_status?: { market_open?: boolean; tradeable?: boolean; stale?: boolean };
-    };
-    expect(staleBody.market_status?.market_open).toBe(false);
-    expect(staleBody.market_status?.tradeable).toBe(false);
-    expect(staleBody.market_status?.stale).toBe(true);
+    expect(staleResponse.statusCode).toBe(200);
+    expect(JSON.parse(staleResponse.body).market_status).toMatchObject({
+      market_open: false,
+      tradeable: false,
+      stale: true
+    });
 
-    now = '2026-07-07T03:21:00+08:00';
+    now = '2026-07-07T03:21:00.000Z';
     await store.saveHeartbeat({
       account_id: '90011087',
       market_open: true,
       is_trade_allowed: true,
-      server_time: '2026.07.07 03:21'
+      server_time: '2026.07.07 03:21',
+      last_heartbeat_at: '2026-07-07T03:20:50.000Z',
+      updated_at: '2026-07-07T03:20:50.000Z'
     });
     await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
-      bid: 4163.1,
-      ask: 4163.3,
-      spread: 20,
-      time: '03:20:55'
+      bid: 4162.15,
+      ask: 4162.38,
+      spread: 23,
+      time: '03:20:55',
+      received_at: '2026-07-07T03:20:55.000Z',
+      updated_at: '2026-07-07T03:20:55.000Z'
     });
 
     const freshResponse = await server.inject({
@@ -4395,21 +4513,15 @@ describe('app-server scaffold', () => {
       url: '/api/analysis_payload/90011087',
       headers: apiUserHeaders
     });
-    const freshBody = JSON.parse(freshResponse.body) as {
-      market_status?: {
-        market_open?: boolean;
-        is_trade_allowed?: boolean;
-        tradeable?: boolean;
-        stale?: boolean;
-      };
-    };
-    expect(freshBody.market_status).toMatchObject({
+    expect(freshResponse.statusCode).toBe(200);
+    expect(JSON.parse(freshResponse.body).market_status).toMatchObject({
       market_open: true,
       is_trade_allowed: true,
       tradeable: true,
       stale: false
     });
   });
+
 
   it('serves trading-core analysis from Node snapshots without enqueueing commands', async () => {
     const store = createInMemoryEaStore();

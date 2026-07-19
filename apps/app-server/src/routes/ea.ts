@@ -73,10 +73,14 @@ export async function handleEaRoute(request: EaRouteRequest, deps: EaRouteDeps, 
       logEaLifecycle(deps.log, 'heartbeat', parsed.body);
       return ok({ status: 'OK', server_time: deps.nowUnix() });
     }
-    case '/tick':
+    case '/tick': {
+      const receivedAt = deps.nowIso();
+      parsed.body.received_at = receivedAt;
+      parsed.body.updated_at = receivedAt;
       await deps.store.saveTick(parsed.body);
       logEaLifecycle(deps.log, 'tick', parsed.body);
       return ok({ status: 'OK' });
+    }
     case '/bars':
       await deps.store.saveBars(parsed.body);
       deps.onBarsSaved?.(accountId, helpers.symbolOrDefault(parsed.body), helpers.stringFieldOrEmpty(parsed.body, 'timeframe'));
