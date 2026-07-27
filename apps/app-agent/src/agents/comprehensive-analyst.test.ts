@@ -476,4 +476,105 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(firstUserLayers[1].text).toContain('75');
     expect(secondUserLayers[1].text).toContain('82');
   });
+
+  const structuredAnalysisInput = {
+    technical: {
+      bias: 'neutral',
+      confidence: 45,
+      phase: 'consolidation',
+      indicators_summary: '震荡整理 (Consolidation)',
+      support_levels: [],
+      resistance_levels: [],
+      recommendation: 'none',
+      rationale: '观望 (Hold)',
+    },
+    wave: {
+      wave_confirmation: 'partial',
+      extension_wave: null,
+      corrective_type: 'zigzag',
+      trend_strength: 'moderate',
+      target_levels: { level_1_618: 2380, level_2_0: 2420 },
+      confidence: 45,
+      rationale: '部分确认 (Partial)',
+    },
+    chanlun: {
+      trend: 'range',
+      strength: 'moderate',
+      latest_signal: 'hold',
+      hub_state: 'active',
+      confidence: 45,
+      rationale: '中枢震荡 (Range)',
+    },
+    risk: {
+      riskLevel: 'medium',
+      maxPositionSize: 0.1,
+      suggestedSL: 2290,
+      warnings: [],
+      addOn: false,
+    },
+    arbitration: {
+      final_direction: 'hold',
+      confidence: 45,
+      primary_contradiction: '',
+      phase: 'consolidation',
+      reasoning: '市场整理，观望。',
+      action: 'hold',
+      united_front_analysis: '观望 (Hold)',
+    },
+  };
+
+  it('recovers via forced tool_use structured retry when both parse formats fail', async () => {
+    const streamLayered = vi.fn()
+      // First-phase analysis returns unparseable garbage (no markdown headers, no JSON)
+      .mockResolvedValueOnce({ content: 'sorry, I cannot comply in the requested format', cacheStats })
+      // Structured retry returns valid tool input
+      .mockResolvedValueOnce({
+        content: '',
+        cacheStats,
+        toolUse: { id: 't1', name: 'submit_comprehensive_analysis', input: structuredAnalysisInput },
+      });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = new ComprehensiveAnalystService(client);
+
+    const result = await service.run(payloadWithLastBarClose(2335), 'XAUUSD');
+
+    // Retry call is the second streamLayered invocation with forced tool choice
+    expect(streamLayered).toHaveBeenCalledTimes(2);
+    expect(streamLayered.mock.calls[1][2]).toMatchObject({
+      toolChoice: { type: 'tool', name: 'submit_comprehensive_analysis' },
+    });
+    // Recovered result, not the confidence-0 fallback
+    expect(result.technical.confidence).toBe(45);
+    expect(result.arbitration.confidence).toBe(45);
+    expect(result.arbitration.reasoning).toContain('市场整理');
+  });
+
+  it('falls back to neutral result when the structured retry also fails', async () => {
+    const streamLayered = vi.fn()
+      .mockResolvedValueOnce({ content: 'sorry, I cannot comply in the requested format', cacheStats })
+      // Retry returns tool input that violates the schema
+      .mockResolvedValueOnce({
+        content: '',
+        cacheStats,
+        toolUse: { id: 't1', name: 'submit_comprehensive_analysis', input: { technical: { bias: 'sideways' } } },
+      });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = new ComprehensiveAnalystService(client);
+
+    const result = await service.run(payloadWithLastBarClose(2335), 'XAUUSD');
+
+    expect(streamLayered).toHaveBeenCalledTimes(2);
+    expect(result.technical.confidence).toBe(0);
+    expect(result.arbitration.final_direction).toBe('hold');
+  });
 });

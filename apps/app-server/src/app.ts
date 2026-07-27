@@ -140,7 +140,9 @@ const DEFAULT_STRATEGY_MAPPING: EaRecord = {
 const VALID_TRADE_PLAN_MODES = new Set(['observe', 'veto', 'approve', 'modify', 'reduce', 'close']);
 const VALID_TRADE_PLAN_SIDES = new Set(['buy', 'sell', 'none']);
 const AI_RISK_EXIT_SUGGESTIONS = new Set(['close_partial', 'close_all', 'close_short']);
-const AI_APPROVE_QUEUE_MIN_CONFIDENCE = 55;
+// Phase 4.3：55→65。55 在 17 天实盘里只拦截了 3 次，无实际约束力；
+// 65 约过滤 17% 低置信分析，同步减少无效 LLM 消耗。
+const AI_APPROVE_QUEUE_MIN_CONFIDENCE = 65;
 
 export async function createAppServer(options: AppServerOptions = {}) {
   const nowUnix = options.nowUnix ?? (() => Math.floor(Date.now() / 1000));
@@ -351,7 +353,18 @@ async function routeRequest(
         log: deps.log,
         onBarsSaved: async (accountId, symbol, timeframe) => { void deps.scheduler.enqueueAnalysis(accountId, symbol, timeframe); },
         onPositionsSaved: async (accountId, symbol) => { void deps.scheduler.enqueuePositionReview(accountId, symbol); },
-        onOrderResult: async (accountId, commandId, result, ticket, errorText, createdAt) => { void deps.commandLifecycle.reconcile(accountId, commandId, result, ticket, errorText, createdAt); },
+        onOrderResult: async (accountId, commandId, result, ticket, errorText, createdAt) => {
+          // 命令回报计数（Phase 2.4 补充）：error_code 维度打通 4108/130 趋势面板。
+          // 只保留纯数字错误码，其余归为 other，防止自由文本撑爆 label 基数。
+          const trimmed = errorText?.trim() ?? '';
+          const errorCode = trimmed === '' ? 'none' : (/^\d{1,6}$/.test(trimmed) ? trimmed : 'other');
+          deps.metrics?.commandResultsTotal.inc({
+            account_id: accountId,
+            result: result.trim().toUpperCase() || 'UNKNOWN',
+            error_code: errorCode
+          });
+          void deps.commandLifecycle.reconcile(accountId, commandId, result, ticket, errorText, createdAt);
+        },
       },
       {
         stringFieldOrEmpty,
@@ -490,6 +503,71 @@ async function routeRequest(
   }
 
   if (path.startsWith('/api/')) {
+    // POST /api/trade_history — EA 上报已平仓成交，用于建立 closed_trades 绩效数据库
+    if (method === 'POST' && path === '/api/trade_history') {
+      const tokenResult = requireRouteToken(deps.validTokens, request.headers, request.url);
+      if (tokenResult.response != null) return tokenResult.response;
+      let body: unknown;
+      try { body = JSON.parse(request.rawBody ?? '{}'); } catch { return { statusCode: 400, body: { status: 'ERROR', message: 'invalid JSON' } }; }
+      const trades = Array.isArray(body) ? body : (body as Record<string, unknown>).trades;
+      if (!Array.isArray(trades)) return { statusCode: 400, body: { status: 'ERROR', message: 'expected array of trades' } };
+      let saved = 0;
+      for (const raw of trades) {
+        if (raw == null || typeof raw !== 'object') continue;
+        const t = raw as Record<string, unknown>;
+        const magic = Number(t.magic) || 0;
+        const strategy = (DEFAULT_STRATEGY_MAPPING[String(magic)] as string | undefined) ?? 'unknown';
+        const openTime = normalizeMtTime(t.open_time);
+        const closeTime = normalizeMtTime(t.close_time);
+        const openMs = Date.parse(openTime);
+        const closeMs = Date.parse(closeTime);
+        const durMin = Number.isFinite(openMs) && Number.isFinite(closeMs)
+          ? Math.max(0, Math.round((closeMs - openMs) / 60000))
+          : 0;
+        const trade = {
+          account_id: String(t.account_id ?? ''),
+          ticket: Number(t.ticket) || 0,
+          magic,
+          symbol: String(t.symbol ?? ''),
+          strategy,
+          side: String(t.side ?? t.type ?? '').toUpperCase(),
+          open_price: Number(t.open_price) || 0,
+          close_price: Number(t.close_price) || 0,
+          lots: Number(t.lots) || 0,
+          profit: Number(t.profit) || 0,
+          open_time: openTime,
+          close_time: closeTime,
+          duration_min: durMin
+        };
+        if (trade.ticket <= 0 || trade.account_id === '') continue;
+        await deps.store.saveClosedTrade(trade);
+        // Prometheus 指标 — ordersTotal 和 orderProfit（之前声明但从未写入的空壳指标）
+        deps.metrics?.ordersTotal.inc({
+          account_id: trade.account_id,
+          symbol: trade.symbol,
+          side: trade.side,
+          result: trade.profit > 0 ? 'win' : 'loss',
+          strategy: trade.strategy
+        });
+        deps.metrics?.orderProfit.observe(
+          { account_id: trade.account_id, symbol: trade.symbol, strategy: trade.strategy },
+          trade.profit
+        );
+        saved++;
+      }
+      // 定期刷新 strategyWinRate gauge（按策略聚合胜率）
+      if (saved > 0) {
+        const acctIds = [...new Set(trades.filter(Boolean).map((t) => String((t as Record<string, unknown>).account_id ?? '')).filter(Boolean))];
+        for (const aid of acctIds) {
+          const stats = await deps.store.getClosedTradeStats(aid);
+          for (const s of stats) {
+            deps.metrics?.strategyWinRate.set({ account_id: aid, strategy: s.strategy }, s.win_rate);
+          }
+        }
+      }
+      return { statusCode: 200, body: { status: 'OK', saved } };
+    }
+
     if (path.includes('/analysis_payload/') || path.includes('/ai_result/')) {
       return await routeAI(
         {
@@ -563,6 +641,20 @@ async function validateEaPayload(path: string, body: EaRecord, store: EaStore): 
     default:
       return null;
   }
+}
+
+// MT4/MT5 的 TimeToStr/TimeToString 输出形如 "2026.07.25 14:30:00"，Date.parse 无法识别。
+// 统一转成 ISO 风格 "2026-07-25T14:30:00Z"（MT 服务器时间视为 UTC 偏移基准，仅用于计算持仓时长）。
+function normalizeMtTime(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const text = value.trim();
+  const mt = /^(\d{4})\.(\d{2})\.(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(text);
+  if (mt == null) {
+    return text;
+  }
+  return `${mt[1]}-${mt[2]}-${mt[3]}T${mt[4]}:${mt[5]}:${mt[6] ?? '00'}Z`;
 }
 
 function normalizeRegisterPayload(body: EaRecord): string | null {

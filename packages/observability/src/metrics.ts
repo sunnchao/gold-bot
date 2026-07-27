@@ -31,6 +31,7 @@ export type MetricsRegistry = {
   strategyExecutionDuration: Histogram<string>;
   strategyWinRate: Gauge<string>;
   riskGateRejections: Counter<string>;
+  commandResultsTotal: Counter<string>;
   spreadPoints: Gauge<string>;
 };
 
@@ -58,7 +59,7 @@ export function createMetricsRegistry(enableDefault = true): MetricsRegistry {
   const ordersTotal = new Counter({
     name: 'goldbot_orders_total',
     help: 'Total number of orders executed',
-    labelNames: ['account_id', 'symbol', 'side', 'result'],
+    labelNames: ['account_id', 'symbol', 'side', 'result', 'strategy'],
     registers: [registry]
   });
 
@@ -74,7 +75,7 @@ export function createMetricsRegistry(enableDefault = true): MetricsRegistry {
     name: 'goldbot_order_profit_usd',
     help: 'Order profit/loss distribution in USD',
     buckets: [-1000, -500, -100, -50, 0, 50, 100, 500, 1000],
-    labelNames: ['account_id', 'symbol'],
+    labelNames: ['account_id', 'symbol', 'strategy'],
     registers: [registry]
   });
 
@@ -198,6 +199,15 @@ export function createMetricsRegistry(enableDefault = true): MetricsRegistry {
     registers: [registry]
   });
 
+  // EA /order_result 回报计数（Phase 2.4 补充）：error_code 维度让 4108/130
+  // 等券商错误码可在 Grafana 里做趋势面板；成功回报 error_code='none'。
+  const commandResultsTotal = new Counter({
+    name: 'goldbot_command_results_total',
+    help: 'Total number of EA command results received, by result and broker error code',
+    labelNames: ['account_id', 'result', 'error_code'],
+    registers: [registry]
+  });
+
   const spreadPoints = new Gauge({
     name: 'goldbot_spread_points',
     help: 'Current spread in points',
@@ -229,6 +239,7 @@ export function createMetricsRegistry(enableDefault = true): MetricsRegistry {
     strategyExecutionDuration,
     strategyWinRate,
     riskGateRejections,
+    commandResultsTotal,
     spreadPoints
   };
 }

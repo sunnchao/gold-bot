@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runReplay } from '../index.js';
 
 const fixtureRoot = join(import.meta.dirname, '../../../../tests/replay/testdata');
@@ -278,7 +278,10 @@ describe('replay harness Go oracle slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
-  it('preserves precomputed M1 RSI for replay-integrated momentum scalp advisories', () => {
+  // NOTE: d888a5d 起 momentum_scalp 持仓识别与 momentumScalpExitAdvisory 已禁用
+  // （positionmgr/manager.ts 中注释掉），M1 RSI TP75 减仓通道不再产生命令。
+  // 与 engine.spec.ts 的 momentum 测试同样处理为 skip，待策略重新启用时恢复。
+  it.skip('preserves precomputed M1 RSI for replay-integrated momentum scalp advisories', () => {
     const h1Bars = Array.from({ length: 15 }, (_, index) => ({
       time: `2026-04-13T${String(index).padStart(2, '0')}:00:00.000Z`,
       open: 100,
@@ -316,7 +319,9 @@ describe('replay harness Go oracle slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
-  it('matches the Go momentum scalp BUY signal oracle slice', () => {
+  // NOTE: d888a5d 起 momentum_scalp 信号生成已从 collectReplayCandidates 移除
+  // （聚焦更长持仓的日内策略），Go oracle 期望无法再复现；与 engine.spec.ts 同样 skip。
+  it.skip('matches the Go momentum scalp BUY signal oracle slice', () => {
     const result = runReplay({
       account_id: '90011087',
       current_price: 100,
@@ -350,7 +355,8 @@ describe('replay harness Go oracle slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
-  it('uses the Go gold momentum scalp thresholds for XAUUSD replay slices', () => {
+  // NOTE: d888a5d 起 momentum_scalp 信号生成已禁用（含黄金专用阈值路径），与 engine.spec.ts 同样 skip。
+  it.skip('uses the Go gold momentum scalp thresholds for XAUUSD replay slices', () => {
     const result = runReplay({
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -433,9 +439,41 @@ describe('replay harness Go oracle slice', () => {
       }
     });
 
-    // 日内放开 H4 硬过滤：振荡时不再 BLOCK，由多周期共识决定扣分
-    // signal 可能因 trend scoring 或 minScore 被后续过滤
+    // Phase 3.6：默认 hard 模式，H4 震荡市一票否决
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        strategy: 'H4过滤',
+        msg: expect.stringContaining('震荡市禁入')
+      })
+    );
     expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('keeps candidates under H4 range when GB_H4_ADX_FILTER_MODE=soft', () => {
+    vi.stubEnv('GB_H4_ADX_FILTER_MODE', 'soft');
+    try {
+      const result = runReplay({
+        account_id: '90011087',
+        current_price: 95,
+        bars: {
+          H1: pullbackBuyBars(),
+          H4: h4RangeBars()
+        }
+      });
+
+      // soft 模式：仅告警，不阻断；后续由多周期共识扣分决定
+      expect(result.logs).toContainEqual(
+        expect.objectContaining({
+          level: 'warn',
+          strategy: 'H4过滤',
+          msg: expect.stringContaining('不做方向偏置')
+        })
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('uses the per-symbol H4 ADX threshold instead of the XAUUSD default', () => {
@@ -654,7 +692,8 @@ describe('replay harness Go oracle slice', () => {
       account_id: '90011087',
       current_price: 95,
       harmonic: {
-        active_pattern: { type: 'gartley', direction: 'BUY', score: 5 }
+        // score 为 0-100 量纲：45 = 中等质量形态，+1
+        active_pattern: { type: 'gartley', direction: 'BUY', score: 45 }
       },
       bars: {
         H1: pullbackWeakAdxBuyBars(),
@@ -666,6 +705,36 @@ describe('replay harness Go oracle slice', () => {
     expect(result.signal?.all_strategies).toEqual([
       expect.objectContaining({ strategy: 'pullback', side: 'BUY', score: 8 })
     ]);
+  });
+
+  it('ignores weak harmonic patterns and grants +2 only to high-quality ones', () => {
+    const weak = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      harmonic: {
+        active_pattern: { type: 'gartley', direction: 'BUY', score: 20 }
+      },
+      bars: {
+        H1: pullbackWeakAdxBuyBars(),
+        M30: m30NeutralBars()
+      }
+    });
+    // 弱形态（<30）不加分
+    expect(weak.signal?.score).toBe(7);
+
+    const strong = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      harmonic: {
+        active_pattern: { type: 'gartley', direction: 'BUY', score: 85 }
+      },
+      bars: {
+        H1: pullbackWeakAdxBuyBars(),
+        M30: m30NeutralBars()
+      }
+    });
+    // 高质量形态（>=70）+2
+    expect(strong.signal?.score).toBe(9);
   });
 
   it('adds Go SMC CHoCH/Sweep/OB confirmation bonus without FVG scoring', () => {
@@ -1015,6 +1084,43 @@ describe('replay harness Go oracle slice', () => {
       msg: '🟢 BUY 评分=9 | 收盘价突破布林上轨=101.00 | ADX=35.0>30 | RSI=60.0 | MACD柱>0'
     });
     expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('requires M30 second-step confirmation for breakout pyramid when symbol and M30 bars exist', () => {
+    const snapshot = {
+      account_id: '90011087',
+      symbol: 'ZZCONFIRM1',
+      current_price: 102,
+      bars: {
+        H1: breakoutPyramidBuySignalBars(),
+        // M30 收盘 101.5 > BB 上轨 101：二次确认应通过
+        M30: [{ time: '2026-07-24T10:00:00Z', open: 101.4, high: 101.6, low: 101.3, close: 101.5 }]
+      }
+    };
+
+    // 第一步：H1 突破先进缓存，等待 M30 确认，本轮不发信号
+    const first = runReplay(snapshot);
+    expect(first.signal).toBeNull();
+
+    // 第二步：缓存命中且 M30 收盘仍在 BB 外，放行信号
+    const second = runReplay(snapshot);
+    expect(second.signal).toMatchObject({ strategy: 'breakout_pyramid', side: 'BUY' });
+  });
+
+  it('rejects breakout pyramid as false breakout when M30 closes back inside the band', () => {
+    const snapshot = {
+      account_id: '90011087',
+      symbol: 'ZZCONFIRM2',
+      current_price: 102,
+      bars: {
+        H1: breakoutPyramidBuySignalBars(),
+        // M30 收盘 100.5 < BB 上轨 101：回到带内，判定假突破
+        M30: [{ time: '2026-07-24T10:00:00Z', open: 100.6, high: 100.8, low: 100.4, close: 100.5 }]
+      }
+    };
+
+    expect(runReplay(snapshot).signal).toBeNull(); // 进缓存
+    expect(runReplay(snapshot).signal).toBeNull(); // 假突破拒绝
   });
 
   it('matches the Go breakout pyramid SELL signal oracle slice', () => {

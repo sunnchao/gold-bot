@@ -1,4 +1,4 @@
-import { adx, atr, bollinger, ema, fibonacci, isPriceInFibZone, macd, pivotPoints, rsi } from '../indicators/index.js';
+import { adx, atr, bollinger, ema, fibonacci, isPriceInFibZone, macd, pivotPoints, rsi, stoch } from '../indicators/index.js';
 import {
   evaluatePositionManagerCommands,
   type PositionManagerCommandAdvisory,
@@ -421,12 +421,22 @@ function collectReplayCandidates(
     evaluateBreakoutRetestSignal(h1, price, pricePrecision, traditionalConfig),
     evaluateDivergenceSignal(h1, price, pricePrecision, traditionalConfig),
     evaluateCounterPullbackSignal(h1, m30, m15, price, smc, pricePrecision, traditionalConfig),
-    evaluateBreakoutPyramidSignal(h1, price, smc, pricePrecision, traditionalConfig),
+    evaluateBreakoutPyramidSignal(h1, m30, price, smc, pricePrecision, traditionalConfig, symbol),
     // TODO: Add scale_in strategy integration
     // evaluateScaleInSignal(h1, price, positions, pricePrecision, symbol),
     // NOTE: momentum_scalp strategy disabled for intraday trading focus
     // evaluateMomentumScalpSignal(m15, m5, m1, price, momentumConfig, pricePrecision)
   ].filter((signal): signal is ReplaySignal => signal != null);
+}
+
+/**
+ * H4 ADX 趋势否决模式（Phase 3.6）。hard = 震荡市阻断全部入场（默认，
+ * 恢复重写前的 Go 行为）；soft = 仅告警，由多周期共识扣分兜底。
+ * trading-core 不依赖 @gold-bot/config，这里直接读环境变量并做守卫。
+ */
+function h4AdxFilterMode(): 'hard' | 'soft' {
+  const raw = typeof process !== 'undefined' ? process.env?.['GB_H4_ADX_FILTER_MODE'] : undefined;
+  return raw?.trim().toLowerCase() === 'soft' ? 'soft' : 'hard';
 }
 
 function applyH4FilterToCandidates(
@@ -439,16 +449,33 @@ function applyH4FilterToCandidates(
   }
 
   const filter = h4FilterDecision(h4, config);
-  // 日内交易：H4 ADX 不足时不再一票否决，降级为倾向性过滤
+  // H4 ADX 趋势否决双档（Phase 3.6）：GB_H4_ADX_FILTER_MODE=hard|soft。
+  // hard（默认）= 震荡市一票否决，阻断所有入场；soft = 仅告警，
+  // 降级为倾向性过滤，由后续多周期共识扣分决定（2026-07 前的日内行为）。
   if (filter.direction === 'BLOCK') {
+    if (h4AdxFilterMode() === 'soft') {
+      const logs: ReplayLog[] = [
+        {
+          level: 'warn',
+          strategy: 'H4过滤',
+          msg: `H4=震荡(ADX=${formatFixed(filter.adx, 1)}<${formatFixed(config.h4ADXThreshold, 0)}), 不做方向偏置, 后续由多周期共识扣分决定`
+        }
+      ];
+      return { candidates, logs };
+    }
     const logs: ReplayLog[] = [
       {
         level: 'warn',
         strategy: 'H4过滤',
-        msg: `H4=震荡(ADX=${formatFixed(filter.adx, 1)}<${formatFixed(config.h4ADXThreshold, 0)}), 不做方向偏置, 后续由多周期共识扣分决定`
+        msg: `H4=震荡(ADX=${formatFixed(filter.adx, 1)}<${formatFixed(config.h4ADXThreshold, 0)}), 过滤掉 ${candidates.length} 个信号（震荡市禁入）`
+      },
+      {
+        level: 'info',
+        strategy: 'H4过滤',
+        msg: 'H4趋势过滤后无信号'
       }
     ];
-    return { candidates, logs };
+    return { candidates: [], logs };
   }
 
   if (filter.direction === '') {
@@ -791,6 +818,7 @@ function enrichBars(bars: ReplayRawBar[]): EnrichedReplayBar[] {
   const closes = bars.map((bar) => bar.close);
   const highs = bars.map((bar) => bar.high);
   const lows = bars.map((bar) => bar.low);
+  const volumes = bars.map((bar) => bar.volume ?? 0);
   const ema20 = ema(closes, 20);
   const ema50 = ema(closes, 50);
   const atr14 = atr(highs, lows, closes, 14);
@@ -798,6 +826,8 @@ function enrichBars(bars: ReplayRawBar[]): EnrichedReplayBar[] {
   const macdResult = macd(closes);
   const adx14 = adx(highs, lows, closes, 14);
   const bb20 = bollinger(closes, 20, 2);
+  const stoch14 = stoch(highs, lows, closes, 14, 3);
+  const volSma20 = rollingVolumeSma(volumes, 20);
 
   return bars.map((bar, index) => {
     const fibWindow = Math.min(50, bars.length);
@@ -818,10 +848,10 @@ function enrichBars(bars: ReplayRawBar[]): EnrichedReplayBar[] {
       adx: bar.adx ?? bar.ADX ?? adx14[index],
       bb_upper: bar.bb_upper ?? bar.bbUpper ?? bar.BBUpper ?? bb20.upper[index],
       bb_lower: bar.bb_lower ?? bar.bbLower ?? bar.BBLower ?? bb20.lower[index],
-      stoch_k: bar.stoch_k ?? bar.stochK ?? bar.StochK ?? 0,
-      stochK: bar.stochK ?? bar.stoch_k ?? bar.StochK ?? 0,
-      vol_sma: bar.vol_sma ?? bar.volSMA ?? bar.VolSMA,
-      volSMA: bar.volSMA ?? bar.vol_sma ?? bar.VolSMA,
+      stoch_k: bar.stoch_k ?? bar.stochK ?? bar.StochK ?? finiteOrNeutralStoch(stoch14.k[index]),
+      stochK: bar.stochK ?? bar.stoch_k ?? bar.StochK ?? finiteOrNeutralStoch(stoch14.k[index]),
+      vol_sma: bar.vol_sma ?? bar.volSMA ?? bar.VolSMA ?? volSma20[index],
+      volSMA: bar.volSMA ?? bar.vol_sma ?? bar.VolSMA ?? volSma20[index],
       fib382: bar.fib382 ?? bar.fib_382 ?? bar.Fib382 ?? fib.fib382,
       fib618: bar.fib618 ?? bar.fib_618 ?? bar.Fib618 ?? fib.fib618,
       fib786: bar.fib786 ?? bar.fib_786 ?? bar.Fib786 ?? fib.fib786,
@@ -838,6 +868,28 @@ type ReplayPositionReview = {
   commands: ReplayPositionCommand[];
   states: PositionManagerState[] | null;
 };
+
+// Stoch 计算窗口不足时返回中性值 50：避免 NaN 被当作 0 触发 "超卖" 加分（系统性偏多）。
+function finiteOrNeutralStoch(value: number): number {
+  return Number.isFinite(value) ? value : 50;
+}
+
+// 成交量 SMA：窗口不足时返回 undefined，保持 "无数据则跳过成交量确认" 的原有语义。
+function rollingVolumeSma(volumes: readonly number[], period: number): Array<number | undefined> {
+  const out = Array<number | undefined>(volumes.length).fill(undefined);
+  let sum = 0;
+  for (let i = 0; i < volumes.length; i += 1) {
+    sum += volumes[i];
+    if (i >= period) {
+      sum -= volumes[i - period];
+    }
+    if (i >= period - 1) {
+      const mean = sum / period;
+      out[i] = mean > 0 ? mean : undefined;
+    }
+  }
+  return out;
+}
 
 function evaluateReplayPositionCommands(snapshot: ReplaySnapshot, enrichedH1: EnrichedReplayBar[], currentPrice: number): ReplayPositionReview {
   if ((snapshot.positions?.length ?? 0) === 0) {
@@ -1915,13 +1967,15 @@ function applyContextScoringBonuses(
 
 function calculateHarmonicBonus(harmonic: ReplayHarmonicContext | undefined, side: 'BUY' | 'SELL'): number {
   const pattern = harmonic?.active_pattern;
-  if (pattern == null || pattern.score < 5) {
+  // pattern.score 是 0-100 量纲（harmonic/detector.ts clampInt(score, 0, 100)）。
+  // 旧阈值 5/8 按 0-10 量纲写，导致任何方向一致形态（典型分 40-90）都拿满 +2，质量分失效。
+  if (pattern == null || pattern.score < 30) {
     return 0;
   }
   if (harmonicDirectionToSide(pattern.direction) !== side) {
     return 0;
   }
-  return pattern.score >= 8 ? 2 : 1;
+  return pattern.score >= 70 ? 2 : 1;
 }
 
 function harmonicDirectionToSide(direction: string): 'BUY' | 'SELL' | undefined {
@@ -2714,10 +2768,12 @@ function zoneNearPrice(low: number, high: number, price: number, threshold: numb
 
 function evaluateBreakoutPyramidSignal(
   h1: EnrichedReplayBar[],
+  m30: EnrichedReplayBar[],
   price: number,
   smc: ReplaySmcContext | undefined,
   pricePrecision: number,
-  config: ReplayTraditionalConfig
+  config: ReplayTraditionalConfig,
+  symbol: string
 ): ReplaySignal | null {
   if (h1.length < 30 || price <= 0) {
     return null;
@@ -2732,17 +2788,39 @@ function evaluateBreakoutPyramidSignal(
     if (breakoutPyramidBlockingOrderBlock(h1, 'BUY', smc) != null) {
       return null;
     }
-    return buildBreakoutPyramidSignal('BUY', price, atrValue, last, breakoutPyramidScore('BUY', last), pricePrecision, config);
+    const signal = buildBreakoutPyramidSignal('BUY', price, atrValue, last, breakoutPyramidScore('BUY', last), pricePrecision, config);
+    return applyBreakoutPyramidM30Confirmation(symbol, 'BUY', last.bb_upper, m30, signal);
   }
 
   if (last.close < last.bb_lower && last.ema20 < last.ema50) {
     if (breakoutPyramidBlockingOrderBlock(h1, 'SELL', smc) != null) {
       return null;
     }
-    return buildBreakoutPyramidSignal('SELL', price, atrValue, last, breakoutPyramidScore('SELL', last), pricePrecision, config);
+    const signal = buildBreakoutPyramidSignal('SELL', price, atrValue, last, breakoutPyramidScore('SELL', last), pricePrecision, config);
+    return applyBreakoutPyramidM30Confirmation(symbol, 'SELL', last.bb_lower, m30, signal);
   }
 
   return null;
+}
+
+/**
+ * 突破加仓 M30 二次确认（Phase 3.4）：H1 收盘突破 BB 先缓存，等 M30 收盘仍在
+ * BB 外才放行，可减少约 30% 假突破。缓存是进程级单例且依赖挂钟时间，
+ * 因此仅在有 symbol 的实盘路径启用；回放/测试（无 symbol）保持确定性直接放行。
+ * M30 数据缺失时同样降级为直接放行（confirmBreakoutPyramid 内部同语义）。
+ */
+function applyBreakoutPyramidM30Confirmation(
+  symbol: string,
+  side: 'BUY' | 'SELL',
+  bbLevel: number,
+  m30: EnrichedReplayBar[],
+  signal: ReplaySignal | null
+): ReplaySignal | null {
+  if (signal == null || symbol.trim().length === 0 || m30.length === 0) {
+    return signal;
+  }
+  const result = confirmBreakoutPyramid(symbol, side, bbLevel, m30, signal, '');
+  return result.confirmed ? signal : null;
 }
 
 function breakoutPyramidScore(side: 'BUY' | 'SELL', last: EnrichedReplayBar): number {

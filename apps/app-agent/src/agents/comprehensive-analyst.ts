@@ -9,7 +9,7 @@ import { validateArbitrationResult, validateTradeRecommendation } from '../utils
 import { getSymbolProfile, detectCrossInstrumentPrice, type SymbolProfile } from '../config/symbol-profile.js';
 import { analyzeChanlun } from '../tools/chanlun-core.js';
 import { analyzeElliottWave } from '../tools/elliott-wave.js';
-import { LlmClientService } from '../tools/llm-client.js';
+import { LlmClientService, type SystemBlock, type UserLayer } from '../tools/llm-client.js';
 import { toolUseToTradeAction } from './trade-action-converter.js';
 import {
   ArbitrationResultSchema,
@@ -22,6 +22,7 @@ import {
 import { selectIndicator } from '../utils/goldbot-indicators.js';
 import { getLogger } from '../utils/logger.js';
 import { safeParseResponse } from '../utils/parse.js';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import {
   splitSections,
   extractFields,
@@ -1089,6 +1090,21 @@ function parseMarkdownResponse(raw: string, currentPrice: number, profile: Symbo
   return { technical, wave, chanlun, harmonic, risk, arbitration };
 }
 
+/**
+ * Phase 4.2：解析失败时的结构化重试工具。input_schema 直接由
+ * ComprehensiveAnalysisDataSchema 生成，保证与 Zod 校验完全一致。
+ * `$refStrategy: 'none'` 内联所有引用（Anthropic tools 不解析 $ref）。
+ */
+const COMPREHENSIVE_ANALYSIS_TOOLS = [
+  {
+    name: 'submit_comprehensive_analysis',
+    description:
+      'Submit the full comprehensive market analysis result as structured data. ' +
+      'Every section (technical / wave / chanlun / risk / arbitration) is required.',
+    input_schema: zodToJsonSchema(ComprehensiveAnalysisDataSchema, { $refStrategy: 'none' }),
+  },
+] as const;
+
 const TRADE_ACTION_DECISION_PROMPT = `You are the final trade execution decision agent.
 
 Given the arbitration decision and trade recommendation from the first phase, you MUST call exactly ONE tool:
@@ -1117,6 +1133,66 @@ export class ComprehensiveAnalystService {
   private readonly structureCache = new StructureCache();
 
   constructor(private readonly client: LlmClientService) {}
+
+  /**
+   * Phase 4.2：结构化重试兜底。当 Markdown 与 JSON 双格式解析都失败时，
+   * 用同一组 prompt 层追加一次强制 tool_use 调用（绑定
+   * ComprehensiveAnalysisDataSchema 生成的 JSON Schema），让模型直接提交
+   * 结构化字段，消除 confidence=0 的 buildFallback 噪音（实盘占 accepted
+   * 信号的 5.4%）。仍失败才返回 null（调用方回退 buildFallback）。
+   */
+  private async retryWithStructuredOutput(
+    systemBlocks: SystemBlock[],
+    userLayers: UserLayer[],
+    symbol: string,
+  ): Promise<ComprehensiveAnalysisResult | null> {
+    const logger = getLogger();
+    try {
+      const result = await this.client.streamLayered(
+        systemBlocks,
+        [
+          ...userLayers,
+          {
+            text:
+              'Your previous output could not be parsed. Re-submit the SAME analysis by calling the ' +
+              '`submit_comprehensive_analysis` tool with every field filled in. Do not change your ' +
+              'conclusions — only re-encode them as structured tool input.',
+            cacheable: false,
+          },
+        ],
+        {
+          tools: COMPREHENSIVE_ANALYSIS_TOOLS,
+          toolChoice: { type: 'tool', name: 'submit_comprehensive_analysis' },
+        },
+      );
+      const input = result.toolUse?.input;
+      if (!input) {
+        logger.warn({ symbol }, 'comprehensiveAnalysis: structured retry returned no tool_use');
+        return null;
+      }
+      const parsed = ComprehensiveAnalysisDataSchema.safeParse(input);
+      if (!parsed.success) {
+        logger.warn(
+          { symbol, issues: parsed.error.issues.slice(0, 5) },
+          'comprehensiveAnalysis: structured retry tool input failed schema validation',
+        );
+        return null;
+      }
+      logger.info({ symbol }, 'comprehensiveAnalysis: structured retry recovered a valid result');
+      const data = parsed.data;
+      // 与 JSON 解析路径一致：harmonic 缺失时先补占位（随后被程序化检测覆盖）
+      if (!data.harmonic) {
+        data.harmonic = buildHarmonicFromContext(null);
+      }
+      return normalizeComprehensive(data as ComprehensiveAnalysisResult);
+    } catch (err) {
+      logger.warn(
+        { symbol, err: err instanceof Error ? err.message : String(err) },
+        'comprehensiveAnalysis: structured retry call failed',
+      );
+      return null;
+    }
+  }
 
   private async decideTradeAction(
     arbitration: ArbitrationResult,
@@ -1268,13 +1344,19 @@ export class ComprehensiveAnalystService {
         });
         if (!parsed) {
           logger.error({ symbol, rawPrefix: raw.slice(0, 200) }, 'comprehensiveAnalysis: both Markdown and JSON parse failed');
-          return buildFallback(currentPrice);
+          // Phase 4.2：兜底前先做一次强制 tool_use 结构化重试
+          const retried = await this.retryWithStructuredOutput(systemBlocks, userLayers, symbol);
+          if (!retried) {
+            return buildFallback(currentPrice);
+          }
+          result = retried;
+        } else {
+          // Ensure harmonic field exists before normalizeComprehensive (will be overridden by post-parse injection)
+          if (!parsed.harmonic) {
+            parsed.harmonic = buildHarmonicFromContext(null);
+          }
+          result = normalizeComprehensive(parsed as ComprehensiveAnalysisResult);
         }
-        // Ensure harmonic field exists before normalizeComprehensive (will be overridden by post-parse injection)
-        if (!parsed.harmonic) {
-          parsed.harmonic = buildHarmonicFromContext(null);
-        }
-        result = normalizeComprehensive(parsed as ComprehensiveAnalysisResult);
       }
     } else {
       const parsed = safeParseResponse(raw, ComprehensiveAnalysisDataSchema, {
@@ -1283,13 +1365,19 @@ export class ComprehensiveAnalystService {
       });
       if (!parsed) {
         logger.error({ symbol, rawPrefix: raw.slice(0, 200) }, 'comprehensiveAnalysis: both Markdown and JSON parse failed');
-        return buildFallback(currentPrice);
+        // Phase 4.2：兜底前先做一次强制 tool_use 结构化重试
+        const retried = await this.retryWithStructuredOutput(systemBlocks, userLayers, symbol);
+        if (!retried) {
+          return buildFallback(currentPrice);
+        }
+        result = retried;
+      } else {
+        // Ensure harmonic field exists before normalizeComprehensive (will be overridden by post-parse injection)
+        if (!parsed.harmonic) {
+          parsed.harmonic = buildHarmonicFromContext(null);
+        }
+        result = normalizeComprehensive(parsed as ComprehensiveAnalysisResult);
       }
-      // Ensure harmonic field exists before normalizeComprehensive (will be overridden by post-parse injection)
-      if (!parsed.harmonic) {
-        parsed.harmonic = buildHarmonicFromContext(null);
-      }
-      result = normalizeComprehensive(parsed as ComprehensiveAnalysisResult);
     }
 
     // ── POST-PARSE PROGRAMMATIC OVERRIDE: Harmonic detection ──

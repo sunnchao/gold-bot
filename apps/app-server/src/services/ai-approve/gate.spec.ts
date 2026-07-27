@@ -51,6 +51,37 @@ describe('AI approve pending gate', () => {
     });
   });
 
+  it('rejects plans once the per-symbol daily AI signal limit is reached', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+    // 用 SELL 方向占满当日限额，避免先触发 pending.duplicate（BUY 侧无重复）。
+    // createStoredCommand 用真实时钟盖 created_at，所以 nowIso 也用真实时钟对齐 UTC 日期。
+    const realNowIso = new Date().toISOString();
+    const expiration = Math.floor(Date.now() / 1000) + 4 * 60 * 60;
+    for (const suffix of ['a', 'b']) {
+      const command = await store.saveCommandCandidate(accountId, {
+        command_id: `ai_pending_90011087_XAUUSD_daily_${suffix}`,
+        source: 'ai_approve',
+        symbol,
+        type: 'SELL',
+        action: 'SIGNAL',
+        expiration
+      });
+      await store.promoteCommand(command.command_id);
+    }
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan(),
+      nowIso: realNowIso
+    })).resolves.toEqual({
+      accepted: false,
+      reason: 'daily_limit.symbol'
+    });
+  });
+
   it('rejects weak trend consensus after the Go lots-halving rule', async () => {
     const store = createInMemoryEaStore();
     await seedStrongTrendState(store, { trend: 'neutral' });

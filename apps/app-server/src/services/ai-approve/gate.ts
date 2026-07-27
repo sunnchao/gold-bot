@@ -9,6 +9,10 @@ import {
 
 export const AI_APPROVE_COOLDOWN_MS = 30 * 60 * 1000;
 
+// 每品种每日 AI 信号限额（Phase 4.1）：实盘数据 XAUUSD 单日最多 8 笔 AI 信号
+// （含同日反向互相止损），限制为每 UTC 日每品种 2 笔。
+export const AI_APPROVE_MAX_DAILY_SIGNALS_PER_SYMBOL = 2;
+
 export type AIApproveCooldown = {
   active(symbol: string, nowIso: string, ttlMs?: number): boolean;
   mark(symbol: string, nowIso: string): void;
@@ -195,12 +199,38 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     return reject('pending.duplicate');
   }
 
+  // 每品种每日限额（Phase 4.1）：当日（UTC）该品种已下发的 AI 信号 ≥ 上限时拒绝，
+  // 阻断同日高频反向互扫。draft/shadow_only 不计入（未真正下发）。
+  if (await countAIApproveSignalsToday(input.store, input.accountId, input.symbol, input.nowIso) >= AI_APPROVE_MAX_DAILY_SIGNALS_PER_SYMBOL) {
+    return reject('daily_limit.symbol');
+  }
+
   if (input.cooldown?.active(input.symbol, input.nowIso, AI_APPROVE_COOLDOWN_MS) === true) {
     return reject('cooldown.active');
   }
 
   if (h1Atr > 0 && Math.abs(currentPrice - entry) > h1Atr * 3) {
     return reject('entry.too_far_from_market');
+  }
+
+  // R:R 下限过滤：实盘数据显示约40%的AI信号 R:R < 1.0（含0.25、0.35等），
+  // 数学期望接近负值。要求最低1.2，过滤无效入场同时保留高质量信号。
+  // 市价单以当前执行价（bid/ask）计算，限价单以指定入场价计算，两者不同。
+  const MIN_RR_RATIO = 1.2;
+  const stopLoss = numberField(input.tradePlan, 'stop_loss');
+  const takeProfitValues = arrayNumberField(input.tradePlan, 'take_profit');
+  const takeProfit = takeProfitValues.find((v) => v > 0) ?? 0;
+  if (stopLoss > 0 && takeProfit > 0) {
+    const rrEntry = orderIntent.orderType === 'market' ? executionPrice : entry;
+    if (rrEntry > 0) {
+      const slDistance = Math.abs(rrEntry - stopLoss);
+      const tpDistance = signalDirection === 'BULL'
+        ? takeProfit - rrEntry
+        : rrEntry - takeProfit;
+      if (slDistance > 0 && tpDistance / slDistance < MIN_RR_RATIO) {
+        return reject('rr.below_minimum');
+      }
+    }
   }
 
   return {
@@ -215,6 +245,33 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
 
 function reject(reason: string): AIApprovePendingGateResult {
   return { accepted: false, reason };
+}
+
+/**
+ * 当日（UTC）该品种已进入队列的 ai_approve 信号数。按 created_at 的 UTC 日期
+ * 与 nowIso 同日计数；queued/delivered/acked/failed/superseded 都算"已下发过"，
+ * draft/shadow_only/rejected 不算（未真正下发）。
+ */
+async function countAIApproveSignalsToday(store: EaStore, accountId: string, symbol: string, nowIso: string): Promise<number> {
+  const today = nowIso.slice(0, 10);
+  if (today.length !== 10) {
+    return 0;
+  }
+  const commands = await store.listCommands(accountId);
+  const wantSymbol = symbol.trim().toUpperCase();
+  return commands.filter((command) => {
+    if (command.source !== 'ai_approve') {
+      return false;
+    }
+    if (command.status === 'draft' || command.status === 'shadow_only' || command.status === 'rejected') {
+      return false;
+    }
+    const commandSymbol = stringField(command as EaRecord, 'symbol').trim().toUpperCase();
+    if (commandSymbol !== wantSymbol) {
+      return false;
+    }
+    return command.created_at.slice(0, 10) === today;
+  }).length;
 }
 
 function currentPriceFromTick(tick: EaRecord): number {
@@ -376,6 +433,13 @@ function stringField(record: EaRecord, field: string): string {
 
 function booleanField(record: EaRecord, field: string): boolean {
   return record[field] === true;
+}
+
+function arrayNumberField(record: EaRecord, field: string): number[] {
+  const value = record[field];
+  return Array.isArray(value)
+    ? value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item))
+    : [];
 }
 
 function totalLotsOnSide(positions: EaRecord[], symbol: string, side: string): number {

@@ -49,6 +49,7 @@ import {
   type RuntimeCommandRow
 } from './helpers.js';
 import type { EaStore } from './index.js';
+import type { ClosedTrade, ClosedTradeStats } from './index.js';
 
 type QueryResult = { rows: Record<string, unknown>[]; rowCount: number };
 
@@ -883,6 +884,78 @@ export async function createPostgresEaStore(dsn: string): Promise<EaStore | null
         return heartbeatSymbols;
       }
       return (await this.listSymbols(accountIdValue)).sort();
+    },
+
+    async saveClosedTrade(payload: ClosedTrade): Promise<void> {
+      await q.query(
+        `INSERT INTO closed_trades
+           (account_id, ticket, magic, symbol, strategy, side, open_price, close_price,
+            lots, profit, open_time, close_time, duration_min)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         ON CONFLICT (account_id, ticket) DO UPDATE SET
+           profit=excluded.profit, close_price=excluded.close_price,
+           close_time=excluded.close_time, duration_min=excluded.duration_min`,
+        [
+          payload.account_id, payload.ticket, payload.magic, payload.symbol,
+          payload.strategy, payload.side, payload.open_price, payload.close_price,
+          payload.lots, payload.profit, payload.open_time, payload.close_time, payload.duration_min
+        ]
+      );
+    },
+
+    async getClosedTradeStats(accountIdValue: string): Promise<ClosedTradeStats[]> {
+      const rows = await queryRows(q,
+        `SELECT strategy,
+           COUNT(*)::int AS total,
+           SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END)::int AS wins,
+           SUM(CASE WHEN profit <= 0 THEN 1 ELSE 0 END)::int AS losses,
+           COALESCE(SUM(profit),0)::float AS total_profit,
+           COALESCE(AVG(profit),0)::float AS avg_profit,
+           COALESCE(AVG(CASE WHEN profit > 0 THEN profit END),0)::float AS avg_win,
+           COALESCE(AVG(CASE WHEN profit <= 0 THEN profit END),0)::float AS avg_loss,
+           COALESCE(AVG(duration_min),0)::float AS avg_duration_min
+         FROM closed_trades WHERE account_id = $1
+         GROUP BY strategy ORDER BY total DESC`,
+        [accountIdValue]
+      );
+      return rows.map((row) => {
+        const wins = asNumber(row.wins);
+        const total = asNumber(row.total);
+        const winRate = total > 0 ? wins / total : 0;
+        const avgWin = asNumber(row.avg_win);
+        const avgLoss = asNumber(row.avg_loss);
+        return {
+          strategy: asString(row.strategy),
+          total,
+          wins,
+          losses: asNumber(row.losses),
+          win_rate: winRate,
+          total_profit: asNumber(row.total_profit),
+          avg_profit: asNumber(row.avg_profit),
+          avg_win: avgWin,
+          avg_loss: avgLoss,
+          expectancy: winRate * avgWin + (1 - winRate) * avgLoss,
+          avg_duration_min: asNumber(row.avg_duration_min)
+        };
+      });
+    },
+
+    async getDailyStartEquity(accountIdValue: string, utcDate: string): Promise<number | undefined> {
+      const row = await queryOne(q, 'SELECT start_equity FROM daily_equity WHERE account_id = $1 AND utc_date = $2', [accountIdValue, utcDate]);
+      if (!row) {
+        return undefined;
+      }
+      return asNumber(row.start_equity);
+    },
+
+    async saveDailyStartEquity(accountIdValue: string, utcDate: string, equity: number): Promise<void> {
+      // 首写生效：同一 UTC 日重复写入不覆盖当日起始权益
+      await q.query(
+        `INSERT INTO daily_equity (account_id, utc_date, start_equity)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (account_id, utc_date) DO NOTHING`,
+        [accountIdValue, utcDate, equity]
+      );
     },
 
     async close(): Promise<void> {

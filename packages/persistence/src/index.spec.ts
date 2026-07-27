@@ -173,7 +173,8 @@ describe('persistence scaffold', () => {
             last_add_on_price: 0,
             group_id: '',
             group_avg_entry: 0,
-            group_best_sl: 0
+            group_best_sl: 0,
+            trailing_closed: false
           }
         ]);
 
@@ -186,7 +187,8 @@ describe('persistence scaffold', () => {
           be_trigger_atr: 1.5,
           best_sl: 0,
           open_time: '2026-04-13T06:00:00.000Z',
-          last_modify_time: '2026-04-13T09:00:00.000Z'
+          last_modify_time: '2026-04-13T09:00:00.000Z',
+          trailing_closed: true
         });
         await store.savePositionState('90011087', 'XAUUSD', {
           ticket: 1002,
@@ -218,7 +220,8 @@ describe('persistence scaffold', () => {
             last_add_on_price: 0,
             group_id: '',
             group_avg_entry: 0,
-            group_best_sl: 0
+            group_best_sl: 0,
+            trailing_closed: true
           }
         ]);
         expect((await store.loadPositionStates('90011087', 'GBPJPY')).map((state) => state.ticket)).toEqual([1001]);

@@ -11,6 +11,7 @@ export type GoldBotEnv = {
   GB_DISCORD_WEBHOOK_URL: string;
   GB_FEISHU_WEBHOOK_URL: string;
   GB_FEISHU_SECRET: string;
+  GB_MAX_DAILY_LOSS_PCT: number;
 };
 
 type EnvSource = Partial<Record<string, string | undefined>>;
@@ -28,7 +29,9 @@ export function loadGoldBotEnv(source: EnvSource = process.env): GoldBotEnv {
     GB_REDIS_URL: source.GB_REDIS_URL ?? '',
     GB_DISCORD_WEBHOOK_URL: source.GB_DISCORD_WEBHOOK_URL ?? '',
     GB_FEISHU_WEBHOOK_URL: source.GB_FEISHU_WEBHOOK_URL ?? '',
-    GB_FEISHU_SECRET: source.GB_FEISHU_SECRET ?? ''
+    GB_FEISHU_SECRET: source.GB_FEISHU_SECRET ?? '',
+    // 日亏保护阈值（Phase 5.1）：当日已实现回撤达到该比例时阻断新信号/LLM 分析
+    GB_MAX_DAILY_LOSS_PCT: parseRatio('GB_MAX_DAILY_LOSS_PCT', source.GB_MAX_DAILY_LOSS_PCT, 0.05)
   };
 }
 
@@ -54,4 +57,15 @@ function parseBoolean(value: string | undefined, fallback: boolean): boolean {
     return false;
   }
   throw new Error(`Expected boolean string "true" or "false", got ${value}`);
+}
+
+function parseRatio(name: string, value: string | undefined, fallback: number): number {
+  if (value == null || value.trim() === '') {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 1) {
+    throw new Error(`${name} must be a ratio in (0, 1), got ${value}`);
+  }
+  return parsed;
 }

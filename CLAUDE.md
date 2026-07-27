@@ -1,57 +1,36 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # Gold Bot Monorepo
 
-Gold Bot is a Node.js-based monorepo for the trading engine, AI analysis agents, dashboard, and shared packages.
+Node.js pnpm/turbo monorepo for an automated gold/multi-symbol trading system: trading engine, LangGraph AI analysis agents, dashboard, and shared packages. The system was fully rewritten from Go to Node.js (Go removed 2026-07-06; preserved in git history).
 
-## Architecture
+> Note: `README.md`, `AGENTS.md`, and some docs still reference old paths (`agents/`, `web/dashboard/`, `legacy/python/`, Go code). Those moved: AI agents → `apps/app-agent`, dashboard → `apps/app-web`. Trust the layout below.
 
-| Component | Path | Runtime | Port |
-|-----------|------|---------|------|
-| **Trading Engine** | `apps/app-server` | Node.js 20+ | `3000` (dev) / `8880` (prod) |
-| **AI Agents** | `agents/` | NestJS 11 / Node.js 20+ | `3100` |
-| **Dashboard** | `web/dashboard/` | Next.js 15 static export | served by app-server |
-| **Shared Packages** | `packages/*` | TypeScript libraries | n/a |
-| **Legacy Python** | `legacy/python/` | Python (archived) | n/a |
-
-### Shared Packages
-
-| Package | Purpose |
-|---------|---------|
-| `@gold-bot/trading-core` | SMC, harmonics, indicators, replay engine, risk gate |
-| `@gold-bot/persistence` | SQLite/PostgreSQL stores, migrations |
-| `@gold-bot/observability` | Prometheus metrics, SSE, shadow validation |
-| `@gold-bot/notifications` | Discord/Feishu webhooks |
-| `@gold-bot/config` | Environment variable parsing |
-| `@gold-bot/shared-contracts` | Shared TypeScript types |
-| `@gold-bot/breakout-cache` | Breakout detection cache |
-
-## Local Development
+## Commands
 
 ```bash
-# Install dependencies
-pnpm install
+pnpm install                                  # install all workspace deps
+docker compose -f docker-compose.dev.yaml up -d   # local Redis (needed by app-agent)
 
-# Shared local infrastructure (Redis)
-docker compose -f docker-compose.dev.yaml up -d
+pnpm -w run build                             # turbo build (packages build before apps)
+pnpm -w run test                              # all tests (vitest; test depends on ^build)
+pnpm -w run typecheck                         # typecheck everything
+pnpm -w run lint                              # lint == typecheck in most packages
 
-# Build all packages
-pnpm -w run build
+# Per-package (filter by package name)
+pnpm --filter app-server dev                  # trading engine, tsx watch, port 3000 (GB_APP_SERVER_PORT)
+pnpm --filter app-agent dev                   # AI agents, port 3100
+pnpm --filter app-web build                   # Next.js static export, served by app-server
+pnpm --filter @gold-bot/trading-core test
 
-# Run tests
-pnpm -w run test
-
-# Trading engine (development mode)
-pnpm --filter app-server dev
-
-# AI agents (separate terminal)
-cd agents
-npm ci
-npm run dev
-
-# Dashboard (build only, served by app-server)
-cd web/dashboard
-npm ci
-npm run build
+# Single test file / single test name
+pnpm --filter app-server exec vitest run src/routes/ai.spec.ts
+pnpm --filter app-server exec vitest run -t "test name"
 ```
+
+Tests are colocated with source as `.spec.ts` / `.test.ts`. Root `tests/` holds legacy Python contract/replay tests and fixtures. Because turbo's `test` task depends on `^build`, run a workspace build first if a package's tests import stale `dist/` output from a dependency.
 
 ## Docker Deployment
 
@@ -61,65 +40,56 @@ docker compose build app agents
 docker compose up -d app agents redis prometheus grafana
 ```
 
-The production compose file exposes (localhost only):
+Production ports (all bound to 127.0.0.1): app-server `8880`, agents `3100`, Prometheus `9090`, Grafana `9092` (container port 3000). In dev, app-server defaults to port `3000`.
 
-- Node.js trading engine: `127.0.0.1:8880`
-- AI agents: `127.0.0.1:3100`
-- Prometheus: `127.0.0.1:9090`
-- Grafana: `127.0.0.1:3000`
+## Architecture
 
-## Data Flow
+### Apps (`apps/*`, all pnpm workspace members)
+
+| App | What it is |
+|-----|-----------|
+| `app-server` | Trading engine (plain Node HTTP, no framework). EA routes, AI routes, admin API, SSE, metrics. Entry: `src/index.ts` → `src/app.ts`; routes in `src/routes/` (ea, ai, admin, visual, indicator-alert); background services in `src/services/` (analysis, arbitration, ai-approve gate, command-lifecycle, scheduler, shadow validation). |
+| `app-agent` | AI analysis service: NestJS 11 + LangChain/LangGraph + BullMQ (Redis). Multi-agent workflow in `src/graph/` (workflow.service.ts, workflow-nodes.service.ts) orchestrating `src/agents/` — technical/sr/wave/chanlun/comprehensive analysts, mao-arbitrator, risk-manager, publisher. Runtime zod schemas in `src/types/schemas.ts`. Scheduling via `src/scheduler/` BullMQ processors. |
+| `app-web` | Next.js 15 static-export dashboard (`output: 'export'`), React 19 + Tailwind. Built output served by app-server. |
+| `app-mt` | **Read-only** MT4/MT5 EA sources (`mt4_ea/GoldBolt_Client.mq4`, `mt5_ea/*.mq5`) served via app-server `/api/ea/download` + `/api/ea/version`. Do not modify MQL code. |
+
+### Shared Packages (`packages/*`, `@gold-bot/*`)
+
+| Package | Purpose |
+|---------|---------|
+| `trading-core` | SMC, harmonics, indicators, candlestick, replay engine, risk gate |
+| `persistence` | SQLite (better-sqlite3) / PostgreSQL stores, migrations |
+| `observability` | Prometheus metrics (23 `goldbot_*` metrics), SSE, shadow validation |
+| `notifications` | Discord/Feishu webhooks |
+| `config` | `GB_*` environment variable parsing |
+| `shared-contracts` | Route constants and shared runtime schemas/types |
+| `breakout-cache` | Breakout detection cache |
+
+### Data Flow
 
 ```text
-MT4/MT5 EA -> Node.js app-server (:8880) -> state, strategy, pending signal
-AI agents (:3100) -> GET analysis payload from app-server
-AI agents (:3100) -> POST AI result and trade plan to app-server
-Node.js app-server -> EA poll endpoint -> trading commands
-Prometheus -> app-server /metrics -> Grafana dashboards
+MT4/MT5 EA -> app-server (/register /heartbeat /tick /bars /positions) -> state, strategy, pending signal
+app-agent  -> GET  app-server /api/v2/analysis_payload/{account}/{symbol}
+app-agent  -> LangGraph multi-agent analysis (LLM via OpenAI-compatible API)
+app-agent  -> POST app-server /api/v2/ai_result/{account}/{symbol}
+app-server -> ai-approve gate + arbitration -> EA /poll -> trading commands -> /order_result
+Prometheus -> app-server /metrics -> Grafana
 ```
 
-## API Routes
+### Key Constraints
 
-The Node.js trading engine (`apps/app-server`) exposes:
+- **Strategy names are an EA-side contract.** `signal.strategy` must be one of the names the EA maps to magic numbers: `pullback`, `breakout_retest`, `divergence`, `breakout_pyramid`, `counter_pullback`, `range`, `momentum_scalp`, `ai_signal`. Never invent new strategy names; pass subtype identifiers in payload fields instead.
+- **Market-status freshness gates trading**: stale tick/heartbeat data closes the market state on read and blocks LLM analysis (see recent app-server commits) — be careful with clock/timestamp handling in `/tick` and `/heartbeat` paths.
+- Do not push or cut releases without explicit user approval.
 
-### EA Legacy Routes
-- `POST /register` - EA registration
-- `POST /heartbeat` - Account runtime updates
-- `POST /tick` - Tick data
-- `POST /bars` - Bar data (OHLCV + indicators)
-- `POST /positions` - Position updates
-- `GET /poll` - Poll trading commands
-- `POST /order_result` - Order execution results
+## API Routes (app-server)
 
-### AI Routes
-- `GET /api/analysis_payload/{account}` - Legacy single-symbol payload
-- `GET /api/v2/analysis_payload/{account}/{symbol}` - Multi-symbol payload
-- `POST /api/ai_result/{account}` - Legacy single-symbol result
-- `POST /api/v2/ai_result/{account}/{symbol}` - Multi-symbol result
+- **EA legacy**: `POST /register`, `/heartbeat`, `/tick`, `/bars`, `/positions`, `/order_result`; `GET /poll`
+- **AI**: `GET /api/v2/analysis_payload/{account}/{symbol}`, `POST /api/v2/ai_result/{account}/{symbol}` (v1 single-symbol variants exist for legacy)
+- **Admin**: `/api/symbols/{account}`, `/api/pending_signal/{account}/{symbol}`, `/api/arbitration/{signal_id}`, `/api/arbitration/expire`, `/api/tokens` (CRUD), `/api/v1/accounts`, `/api/v1/overview`, `/api/v1/audit`, `/api/v1/events/stream` (SSE)
+- **EA assets**: `GET /api/ea/download`, `GET /api/ea/version` (`?platform=mt5` for MT5)
+- **Observability**: `/healthz`, `/metrics`, `/shadow/metrics`, `/shadow/qualification`, `POST /shadow/comparisons`
 
-### Admin Routes
-- `GET /api/symbols/{account}` - List symbols for account
-- `GET /api/pending_signal/{account}/{symbol}` - Get pending signals
-- `POST /api/arbitration/{signal_id}` - Approve/reject signal
-- `POST /api/arbitration/expire` - Expire stale signals
-- `GET /api/tokens` - List API tokens (admin)
-- `POST /api/tokens` - Create API token (admin)
-- `DELETE /api/tokens/{prefix}` - Revoke API token (admin)
-- `GET /api/v1/accounts` - List accounts (admin)
-- `GET /api/v1/accounts/{id}` - Account detail (admin)
-- `GET /api/v1/overview` - Overview dashboard (admin)
-- `GET /api/v1/audit` - Audit data (admin)
-- `GET /api/v1/events/stream` - SSE event stream (admin)
+## Configuration
 
-### Observability Routes
-- `GET /healthz` - Health check
-- `GET /metrics` - Prometheus metrics (23 goldbot_* metrics)
-- `GET /shadow/metrics` - Shadow validation metrics
-- `GET /shadow/qualification` - Cutover readiness report
-- `POST /shadow/comparisons` - Record oracle comparison (internal)
-
-## API Contracts
-
-Runtime schemas for the agents live in `agents/src/types/schemas.ts`.
-
-For historical Go → AI agents API contracts, see `docs/API_CONTRACTS.md` (archived).
+`.env.example` is the reference. App-server uses `GB_*` vars (`GB_APP_SERVER_PORT`, `GB_EA_STORE_SQLITE_PATH`, `GB_ADMIN_TOKEN`, `GB_DISCORD_WEBHOOK_URL`, …); app-agent uses `GOLDBOT_API_URL`/`GOLDBOT_API_TOKEN` (points at app-server), `REDIS_URL`, and `LLM_*` (OpenAI-compatible provider config).

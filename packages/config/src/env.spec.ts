@@ -15,7 +15,8 @@ describe('loadGoldBotEnv', () => {
       GB_REDIS_URL: '',
       GB_DISCORD_WEBHOOK_URL: '',
       GB_FEISHU_WEBHOOK_URL: '',
-      GB_FEISHU_SECRET: ''
+      GB_FEISHU_SECRET: '',
+      GB_MAX_DAILY_LOSS_PCT: 0.05
     });
   });
 
@@ -41,11 +42,18 @@ describe('loadGoldBotEnv', () => {
       GB_REDIS_URL: '',
       GB_DISCORD_WEBHOOK_URL: '',
       GB_FEISHU_WEBHOOK_URL: '',
-      GB_FEISHU_SECRET: ''
+      GB_FEISHU_SECRET: '',
+      GB_MAX_DAILY_LOSS_PCT: 0.05
     });
   });
 
   it('falls back to legacy ADMIN_TOKEN for Go-compatible admin bootstrap', () => {
     expect(loadGoldBotEnv({ ADMIN_TOKEN: 'legacy-admin-token' }).GB_ADMIN_TOKEN).toBe('legacy-admin-token');
+  });
+
+  it('parses GB_MAX_DAILY_LOSS_PCT and rejects out-of-range ratios', () => {
+    expect(loadGoldBotEnv({ GB_MAX_DAILY_LOSS_PCT: '0.03' }).GB_MAX_DAILY_LOSS_PCT).toBe(0.03);
+    expect(() => loadGoldBotEnv({ GB_MAX_DAILY_LOSS_PCT: '1.5' })).toThrow(/GB_MAX_DAILY_LOSS_PCT/);
+    expect(() => loadGoldBotEnv({ GB_MAX_DAILY_LOSS_PCT: 'abc' })).toThrow(/GB_MAX_DAILY_LOSS_PCT/);
   });
 });

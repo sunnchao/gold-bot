@@ -27,6 +27,36 @@ export type EaCommand = EaRecord & {
   action: string;
 };
 
+export type ClosedTrade = {
+  account_id: string;
+  ticket: number;
+  magic: number;
+  symbol: string;
+  strategy: string;   // derived from magic, e.g. 'pullback' | 'ai_signal'
+  side: string;       // 'BUY' | 'SELL'
+  open_price: number;
+  close_price: number;
+  lots: number;
+  profit: number;     // realised P/L incl. swap/commission
+  open_time: string;
+  close_time: string;
+  duration_min: number;
+};
+
+export type ClosedTradeStats = {
+  strategy: string;
+  total: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  total_profit: number;
+  avg_profit: number;
+  avg_win: number;
+  avg_loss: number;
+  expectancy: number;
+  avg_duration_min: number;
+};
+
 export type PositionStateRecord = {
   ticket: number;
   tp1_hit: boolean;
@@ -95,6 +125,12 @@ export type EaStore = {
   listAccountIds(): Promise<string[]>;
   listSymbols(accountId: string): Promise<string[]>;
   listAISymbols(accountId: string): Promise<string[]>;
+  saveClosedTrade(payload: ClosedTrade): Promise<void>;
+  getClosedTradeStats(accountId: string): Promise<ClosedTradeStats[]>;
+  // 日亏保护（Phase 5.1）：按 UTC 日持久化每账户当日起始权益。
+  // save 语义为"首写生效"（同一 UTC 日重复写入不覆盖），跨 UTC 日自然生成新基线。
+  getDailyStartEquity(accountId: string, utcDate: string): Promise<number | undefined>;
+  saveDailyStartEquity(accountId: string, utcDate: string, equity: number): Promise<void>;
   close?(): Promise<void>;
 };
 
@@ -114,6 +150,8 @@ type StoreState = {
   pendingSignals: Map<string, EaRecord[]>;
   aiResults: Map<string, EaRecord>;
   apiTokens: Map<string, StoredApiToken>;
+  closedTrades: ClosedTrade[];
+  dailyEquities: Map<string, number>;
   nextCommandId: number;
   nextDecisionEventId: number;
   nextPendingSignalId: number;
@@ -136,6 +174,8 @@ export function createInMemoryEaStore(): EaStore {
     pendingSignals: new Map(),
     aiResults: new Map(),
     apiTokens: new Map(),
+    closedTrades: [],
+    dailyEquities: new Map(),
     nextCommandId: 1,
     nextDecisionEventId: 1,
     nextPendingSignalId: 1
@@ -425,6 +465,29 @@ export function createInMemoryEaStore(): EaStore {
       }
       const fallback = (await this.listSymbols(accountId)).sort();
       return fallback;
+    },
+    async saveClosedTrade(payload) {
+      const idx = state.closedTrades.findIndex(
+        (t) => t.account_id === payload.account_id && t.ticket === payload.ticket
+      );
+      if (idx >= 0) {
+        state.closedTrades[idx] = { ...payload };
+      } else {
+        state.closedTrades.push({ ...payload });
+      }
+    },
+    async getClosedTradeStats(accountId) {
+      return buildClosedTradeStats(state.closedTrades.filter((t) => t.account_id === accountId));
+    },
+    async getDailyStartEquity(accountId, utcDate) {
+      return state.dailyEquities.get(`${accountId}|${utcDate}`);
+    },
+    async saveDailyStartEquity(accountId, utcDate, equity) {
+      const key = `${accountId}|${utcDate}`;
+      // 首写生效：同一 UTC 日重复写入不覆盖当日起始权益
+      if (!state.dailyEquities.has(key)) {
+        state.dailyEquities.set(key, equity);
+      }
     }
   };
 }
@@ -493,6 +556,7 @@ export function createSqliteEaStore(path: string): EaStore {
       group_id TEXT NOT NULL DEFAULT '',
       group_avg_entry REAL NOT NULL DEFAULT 0,
       group_best_sl REAL NOT NULL DEFAULT 0,
+      trailing_closed INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (account_id, symbol, ticket)
     );
     CREATE INDEX IF NOT EXISTS idx_ea_events_kind_account_delivered
@@ -604,8 +668,9 @@ export function createSqliteEaStore(path: string): EaStore {
       last_add_on_price,
       group_id,
       group_avg_entry,
-      group_best_sl
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      group_best_sl,
+      trailing_closed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(account_id, symbol, ticket)
     DO UPDATE SET
       tp1_hit = excluded.tp1_hit,
@@ -621,10 +686,11 @@ export function createSqliteEaStore(path: string): EaStore {
       last_add_on_price = excluded.last_add_on_price,
       group_id = excluded.group_id,
       group_avg_entry = excluded.group_avg_entry,
-      group_best_sl = excluded.group_best_sl
+      group_best_sl = excluded.group_best_sl,
+      trailing_closed = excluded.trailing_closed
   `);
   const selectPositionStates = db.prepare(`
-    SELECT ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, best_sl, open_time, last_modify_time, add_on_count, last_add_on_time, last_add_on_price, group_id, group_avg_entry, group_best_sl
+    SELECT ticket, tp1_hit, tp2_hit, max_profit_atr, be_moved, be_trigger_atr, best_sl, open_time, last_modify_time, add_on_count, last_add_on_time, last_add_on_price, group_id, group_avg_entry, group_best_sl, trailing_closed
     FROM position_states
     WHERE account_id = ? AND symbol = ?
     ORDER BY ticket ASC
@@ -802,7 +868,8 @@ export function createSqliteEaStore(path: string): EaStore {
         normalized.last_add_on_price,
         normalized.group_id,
         normalized.group_avg_entry,
-        normalized.group_best_sl
+        normalized.group_best_sl,
+        normalized.trailing_closed ? 1 : 0
       );
     },
     async loadPositionStates(accountId, symbol) {
@@ -1105,6 +1172,69 @@ export function createSqliteEaStore(path: string): EaStore {
       }
       const heartbeatSymbols = stringArrayField(await this.getHeartbeat(accountId), 'ai_symbols');
       return heartbeatSymbols.length > 0 ? heartbeatSymbols : (await this.listSymbols(accountId)).sort();
+    },
+    async saveClosedTrade(payload) {
+      db.prepare(`
+        INSERT INTO closed_trades
+          (account_id, ticket, magic, symbol, strategy, side, open_price, close_price,
+           lots, profit, open_time, close_time, duration_min)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(account_id, ticket) DO UPDATE SET
+          profit=excluded.profit, close_price=excluded.close_price,
+          close_time=excluded.close_time, duration_min=excluded.duration_min
+      `).run(
+        payload.account_id, payload.ticket, payload.magic, payload.symbol,
+        payload.strategy, payload.side, payload.open_price, payload.close_price,
+        payload.lots, payload.profit, payload.open_time, payload.close_time, payload.duration_min
+      );
+    },
+    async getClosedTradeStats(accountId) {
+      const rows = db.prepare(`
+        SELECT strategy, COUNT(*) AS total,
+          SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) AS wins,
+          SUM(CASE WHEN profit <= 0 THEN 1 ELSE 0 END) AS losses,
+          SUM(profit) AS total_profit,
+          AVG(profit) AS avg_profit,
+          AVG(CASE WHEN profit > 0 THEN profit END) AS avg_win,
+          AVG(CASE WHEN profit <= 0 THEN profit END) AS avg_loss,
+          AVG(duration_min) AS avg_duration_min
+        FROM closed_trades WHERE account_id = ?
+        GROUP BY strategy ORDER BY total DESC
+      `).all(accountId) as Array<Record<string, unknown>>;
+      return rows.map((row) => {
+        const wins = Number(row.wins) || 0;
+        const total = Number(row.total) || 0;
+        const winRate = total > 0 ? wins / total : 0;
+        const avgWin = Number(row.avg_win) || 0;
+        const avgLoss = Number(row.avg_loss) || 0;
+        return {
+          strategy: String(row.strategy),
+          total,
+          wins,
+          losses: Number(row.losses) || 0,
+          win_rate: winRate,
+          total_profit: Number(row.total_profit) || 0,
+          avg_profit: Number(row.avg_profit) || 0,
+          avg_win: avgWin,
+          avg_loss: avgLoss,
+          expectancy: winRate * avgWin + (1 - winRate) * avgLoss,
+          avg_duration_min: Number(row.avg_duration_min) || 0
+        };
+      });
+    },
+    async getDailyStartEquity(accountId, utcDate) {
+      const row = db.prepare(
+        'SELECT start_equity FROM daily_equity WHERE account_id = ? AND utc_date = ?'
+      ).get(accountId, utcDate) as { start_equity?: number } | undefined;
+      return typeof row?.start_equity === 'number' ? row.start_equity : undefined;
+    },
+    async saveDailyStartEquity(accountId, utcDate, equity) {
+      // 首写生效：同一 UTC 日重复写入不覆盖当日起始权益
+      db.prepare(`
+        INSERT INTO daily_equity (account_id, utc_date, start_equity)
+        VALUES (?, ?, ?)
+        ON CONFLICT(account_id, utc_date) DO NOTHING
+      `).run(accountId, utcDate, equity);
     },
     async close() {
       db.close();
@@ -1494,6 +1624,39 @@ function currentTimestamp(): string {
 function stringField(payload: EaRecord, field: string): string {
   const value = payload[field];
   return typeof value === 'string' ? value : '';
+}
+
+function buildClosedTradeStats(trades: ClosedTrade[]): ClosedTradeStats[] {
+  const byStrategy = new Map<string, ClosedTrade[]>();
+  for (const t of trades) {
+    const key = t.strategy || 'unknown';
+    const bucket = byStrategy.get(key) ?? [];
+    bucket.push(t);
+    byStrategy.set(key, bucket);
+  }
+  const result: ClosedTradeStats[] = [];
+  for (const [strategy, bucket] of byStrategy) {
+    const wins = bucket.filter((t) => t.profit > 0);
+    const losses = bucket.filter((t) => t.profit <= 0);
+    const totalProfit = bucket.reduce((s, t) => s + t.profit, 0);
+    const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.profit, 0) / wins.length : 0;
+    const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.profit, 0) / losses.length : 0;
+    const winRate = bucket.length > 0 ? wins.length / bucket.length : 0;
+    result.push({
+      strategy,
+      total: bucket.length,
+      wins: wins.length,
+      losses: losses.length,
+      win_rate: winRate,
+      total_profit: totalProfit,
+      avg_profit: bucket.length > 0 ? totalProfit / bucket.length : 0,
+      avg_win: avgWin,
+      avg_loss: avgLoss,
+      expectancy: winRate * avgWin + (1 - winRate) * avgLoss,
+      avg_duration_min: bucket.length > 0 ? bucket.reduce((s, t) => s + t.duration_min, 0) / bucket.length : 0
+    });
+  }
+  return result.sort((a, b) => b.total - a.total);
 }
 
 function numericField(payload: EaRecord, field: string): number {

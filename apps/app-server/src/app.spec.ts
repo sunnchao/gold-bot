@@ -3176,10 +3176,15 @@ describe('app-server scaffold', () => {
     );
   });
 
-  it('queues confidence 55 accepted AI approve plans for cutover accounts', async () => {
+  it('queues confidence 65 accepted AI approve plans for cutover accounts', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
-    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    // 用真实时钟锚定 nowIso：persistence pollCommands 以真实墙钟判定 ai_approve 命令
+    // 的 4 小时投递 TTL（helpers.ts isRuntimeCommandExpired），固定历史 nowIso 会让
+    // created_at 永远早于真实 now-4h，命令在 poll 时被判定过期而拿不到。
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const server = await createApiServer({ store, nowIso: () => nowIso });
 
     await store.saveRegistration({ account_id: '90011087', leverage: 500 });
     await store.saveHeartbeat({
@@ -3195,7 +3200,7 @@ describe('app-server scaffold', () => {
       bid: 3335.5,
       ask: 3335.7,
       spread: 0.2,
-      time: '2026-04-13T15:59:30+08:00'
+      time: new Date(nowMs - 30_000).toISOString()
     });
     await seedAIApproveTrendBars(store);
 
@@ -3217,7 +3222,7 @@ describe('app-server scaffold', () => {
           stop_loss: 3330,
           take_profit: [3345],
           max_lots: 0.1,
-          confidence: 55,
+          confidence: 65,
           expires_at: '2099-06-06T09:15:00Z',
           reason_codes: ['mode.approve', 'side.buy'],
           narrative: 'cutover mode may queue after deterministic and pending gates'
@@ -3237,8 +3242,8 @@ describe('app-server scaffold', () => {
         status: 'queued',
         decision_id: 'tpv1_cutover_mode',
         type: 'BUY',
-        confidence: 55,
-        score: 55
+        confidence: 65,
+        score: 65
       })
     ]);
     expect(await store.pollCommands('90011087')).toEqual([
@@ -3247,13 +3252,13 @@ describe('app-server scaffold', () => {
         source: 'ai_approve',
         decision_id: 'tpv1_cutover_mode',
         type: 'BUY',
-        confidence: 55,
-        score: 55
+        confidence: 65,
+        score: 65
       })
     ]);
   });
 
-  it('records a queue skip event for confidence 54 accepted AI approve plans', async () => {
+  it('records a queue skip event for confidence 64 accepted AI approve plans', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
@@ -3294,7 +3299,7 @@ describe('app-server scaffold', () => {
           stop_loss: 3330,
           take_profit: [3345],
           max_lots: 0.1,
-          confidence: 54,
+          confidence: 64,
           expires_at: '2099-06-06T09:15:00Z',
           reason_codes: ['mode.approve', 'side.buy'],
           narrative: 'otherwise valid approve below live confidence threshold'
@@ -3407,7 +3412,10 @@ describe('app-server scaffold', () => {
   it('queues the first valid dual AI approve plan and keeps the Go symbol cooldown behavior', async () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
-    const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
+    // 同上：/poll 投递走 persistence 真实墙钟 + ai_approve 4h TTL，nowIso 需锚定真实时间。
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const server = await createApiServer({ store, nowIso: () => nowIso });
 
     await store.saveTick({
       account_id: '90011087',
@@ -3415,7 +3423,7 @@ describe('app-server scaffold', () => {
       bid: 3335.5,
       ask: 3335.7,
       spread: 0.2,
-      time: '2026-04-13T15:59:30+08:00'
+      time: new Date(nowMs - 30_000).toISOString()
     });
     await seedAIApproveTrendBars(store);
 
@@ -4030,6 +4038,8 @@ describe('app-server scaffold', () => {
 
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body) as { strategy_mapping?: Record<string, string> };
+    // '20250237': 'momentum_scalp' 不再透传：d888a5d 禁用 momentum_scalp（日内策略聚焦），
+    // 已从 ALLOWED_STRATEGY_MAPPING_KEYS 移除，注册时携带也会被过滤（同 '20259999' 未知键）。
     expect(body.strategy_mapping).toEqual({
       '20250231': 'pullback',
       '20250232': 'breakout_retest',
@@ -4037,7 +4047,6 @@ describe('app-server scaffold', () => {
       '20250234': 'breakout_pyramid',
       '20250235': 'counter_pullback',
       '20250236': 'range',
-      '20250237': 'momentum_scalp',
       '20250238': 'ai_signal'
     });
   });
@@ -4056,6 +4065,7 @@ describe('app-server scaffold', () => {
 
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body) as { strategy_mapping?: Record<string, string> };
+    // 默认映射不含 '20250237': 'momentum_scalp'：d888a5d 禁用该策略后已从 DEFAULT_STRATEGY_MAPPING 移除。
     expect(body.strategy_mapping).toEqual({
       '20250231': 'pullback',
       '20250232': 'breakout_retest',
@@ -4063,7 +4073,6 @@ describe('app-server scaffold', () => {
       '20250234': 'breakout_pyramid',
       '20250235': 'counter_pullback',
       '20250236': 'range',
-      '20250237': 'momentum_scalp',
       '20250238': 'ai_signal'
     });
   });
@@ -4528,6 +4537,16 @@ describe('app-server scaffold', () => {
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T08:00:00Z' });
     const snapshot = readReplayFixture('account_90011087_snapshot.json');
     const register = readFixture('register');
+    // Gold Fib gates pullback entries (b4e23e6 分品种配置)；与 engine.spec.ts 的 oracle 测试一致，
+    // 把 fixture 的 Fib 口袋钉在 Go 期望入场附近，否则价格不在自动计算的回撤区会被过滤。
+    const lastH1Bar = snapshot.bars.H1.at(-1);
+    if (lastH1Bar) {
+      Object.assign(lastH1Bar, {
+        fib_382: 3350,
+        fib_618: 3320,
+        fib_786: 3334.93
+      });
+    }
 
     await server.inject({
       method: 'POST',
@@ -4615,7 +4634,8 @@ describe('app-server scaffold', () => {
       strategy: 'pullback',
       side: 'BUY',
       entry: 3335.75,
-      score: 6
+      // 6 → 7：9cf7bec 对齐 SR-SLTP/goldFib parity 后 oracle 评分为 7（与 engine.spec.ts 同一 fixture 一致）。
+      score: 7
     });
     expect(body.replay?.logs).toEqual(
       expect.arrayContaining([
@@ -4631,8 +4651,10 @@ describe('app-server scaffold', () => {
         }
       ])
     );
+    // 69b8d37 引入阶梯锁盈：浮盈 ≥2.0ATR 时保本升级为 lock_l1（SL = open + 0.3*ATR），
+    // 此仓位浮盈约 2.2ATR，故不再是 breakeven@3330 而是 lock_l1@≈3330.80。
     expect(body.replay?.position_commands).toEqual([
-      { action: 'MODIFY', ticket: 777, new_sl: 3330, reason: 'breakeven_2.2ATR' },
+      expect.objectContaining({ action: 'MODIFY', ticket: 777, new_sl: expect.closeTo(3330.8, 1), reason: 'lock_l1_2.2ATR' }),
       { action: 'CLOSE', ticket: 777, lots: 0.04, reason: 'TP1_2.2ATR' }
     ]);
     expect(body.replay?.canProduceLiveCommands).toBe(false);
@@ -4664,6 +4686,23 @@ describe('app-server scaffold', () => {
       timeframe: 'H1',
       bars: pullbackBuyBars()
     });
+    // XAUUSD 走 gold 分品种配置（b4e23e6），pullback 需要 H4 数据做 Fib 趋势确认，
+    // 缺 H4 会直接被 "pullback+FIB: H4数据不足" 过滤；补一段 H4 多头 bars 让信号合法通过。
+    await store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H4',
+      bars: Array.from({ length: 5 }, (_, index) => ({
+        time: `2026-04-15T${String(index).padStart(2, '0')}:00:00.000Z`,
+        open: 90 + index,
+        high: 100 + index,
+        low: 88 + index,
+        close: 95 + index,
+        adx: 30,
+        ema20: 110,
+        ema50: 100
+      }))
+    });
     await store.saveBars({
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -4685,7 +4724,101 @@ describe('app-server scaffold', () => {
       strategy: 'pullback',
       side: 'BUY',
       entry: 95,
-      score: 8
+      // 8 → 9：基础分 9 + Fib 汇合 +1 = 10，再被多周期共识弱势 -1（1ffbea7 起趋势评级
+      // 门槛从 D1 改为 H4，且 D1 已退出共识计算）。与 engine.spec.ts 同类 fixture 的期望一致。
+      score: 9
     });
+  });
+
+  it('POST /api/trade_history 保存已平仓成交并聚合策略胜率', async () => {
+    const store = createInMemoryEaStore();
+    const server = await createApiServer({ store });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/trade_history',
+      headers: apiUserHeaders,
+      body: {
+        trades: [
+          {
+            account_id: fixtureAccountId,
+            ticket: 1001,
+            magic: 20250231,
+            symbol: 'XAUUSD',
+            side: 'BUY',
+            open_price: 3300,
+            close_price: 3310,
+            lots: 0.01,
+            profit: 10,
+            open_time: '2026.07.25 10:00:00',
+            close_time: '2026.07.25 11:30:00'
+          },
+          {
+            account_id: fixtureAccountId,
+            ticket: 1002,
+            magic: 20250231,
+            symbol: 'XAUUSD',
+            side: 'SELL',
+            open_price: 3310,
+            close_price: 3315,
+            lots: 0.01,
+            profit: -5,
+            open_time: '2026.07.25 12:00:00',
+            close_time: '2026.07.25 12:30:00'
+          }
+        ]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({ status: 'OK', saved: 2 });
+
+    const stats = await store.getClosedTradeStats(fixtureAccountId);
+    expect(stats).toHaveLength(1);
+    expect(stats[0]).toMatchObject({
+      total: 2,
+      wins: 1,
+      losses: 1,
+      win_rate: 0.5,
+      total_profit: 5
+    });
+  });
+
+  it('POST /api/trade_history 从 MT 时间格式计算持仓时长并按 ticket 幂等去重', async () => {
+    const store = createInMemoryEaStore();
+    const server = await createApiServer({ store });
+    const trade = {
+      account_id: fixtureAccountId,
+      ticket: 2001,
+      magic: 20250231,
+      symbol: 'XAUUSD',
+      side: 'BUY',
+      open_price: 3300,
+      close_price: 3306,
+      lots: 0.01,
+      profit: 6,
+      open_time: '2026.07.25 10:00:00',
+      close_time: '2026.07.25 11:30:00'
+    };
+
+    await server.inject({ method: 'POST', url: '/api/trade_history', headers: apiUserHeaders, body: { trades: [trade] } });
+    // 同一 ticket 重复上报（EA 重启后水位线归零）不应产生重复行
+    await server.inject({ method: 'POST', url: '/api/trade_history', headers: apiUserHeaders, body: { trades: [trade] } });
+
+    const stats = await store.getClosedTradeStats(fixtureAccountId);
+    expect(stats).toHaveLength(1);
+    expect(stats[0]?.total).toBe(1);
+    expect(stats[0]?.avg_duration_min).toBe(90);
+  });
+
+  it('POST /api/trade_history 拒绝无效 token', async () => {
+    const server = await createApiServer({ store: createInMemoryEaStore() });
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/trade_history',
+      headers: { 'X-API-Token': 'bogus-token' },
+      body: { trades: [] }
+    });
+    expect(response.statusCode).toBe(401);
   });
 });

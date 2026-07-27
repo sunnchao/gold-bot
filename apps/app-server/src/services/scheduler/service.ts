@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
+import { loadGoldBotEnv } from '@gold-bot/config';
 import type { CommandCandidate, EaRecord, EaStore } from '@gold-bot/persistence';
-import { atr, type ReplayPositionCommand } from '@gold-bot/trading-core';
+import { atr, evaluateMarketFilters, evaluateRiskGate, type ReplayPositionCommand } from '@gold-bot/trading-core';
 import { AnalysisService } from '../analysis/service.js';
 import { CommandLifecycleService } from '../command-lifecycle/service.js';
 import type { ShadowService } from '../shadow/service.js';
@@ -9,8 +10,16 @@ const AI_STOP_LOSS_MODIFY_COOLDOWN_MS = 5 * 60 * 1000;
 const AI_STOP_LOSS_PROFIT_ATR_GATE = 1.5;
 const DEFAULT_AI_TRAIL_SYMBOLS = 'GBPJPY';
 const MODIFY_DISTANCE_EPSILON = 1e-9;
-/** MT4 STOPLEVEL 最小距离比例（0.05%），SL/TP 离当前价比此更近会触发 error 130 */
-const STOPLEVEL_MIN_RATIO = 0.0005;
+/** MT4 STOPLEVEL 最小距离比例默认值（0.05%），SL/TP 离当前价比此更近会触发 error 130 */
+const STOPLEVEL_MIN_RATIO_DEFAULT = 0.0005;
+/**
+ * per-symbol STOPLEVEL 最小距离比例（Phase 5.3）：实盘 115 条 ERROR 130 中
+ * 44 条来自 GBPJPY group_favorable_addon，0.05% 距离不足以覆盖其点差 +
+ * broker STOPLEVEL，提高到 0.12%。key 为归一化 symbol（去 broker 后缀、大写）。
+ */
+const STOPLEVEL_MIN_RATIO_BY_SYMBOL: Record<string, number> = {
+  GBPJPY: 0.0012
+};
 /** 仓位数据超过此时间未更新视为过期（可能已平仓），跳过避免 4108 */
 const STALE_POSITION_MS = 5 * 60 * 1000;
 
@@ -33,7 +42,7 @@ export class SchedulerService {
     private readonly analysis: AnalysisService,
     private readonly commandLifecycle: CommandLifecycleService,
     private readonly shadow?: ShadowService,
-    private readonly store?: Pick<EaStore, 'getHeartbeat' | 'getLatestTick' | 'getBars' | 'getCommand' | 'getPositions' | 'getAIResults' | 'loadPositionStates'>,
+    private readonly store?: Pick<EaStore, 'getHeartbeat' | 'getLatestTick' | 'getBars' | 'getCommand' | 'getPositions' | 'getAIResults' | 'loadPositionStates' | 'getDailyStartEquity' | 'saveDailyStartEquity' | 'getRegistration'>,
     private readonly nowIso: () => string = () => new Date().toISOString()
   ) {}
 
@@ -70,7 +79,115 @@ export class SchedulerService {
 
   private async canRunLiveAnalysis(accountId: string): Promise<boolean> {
     const heartbeat = (await this.store?.getHeartbeat(accountId)) ?? {};
-    return explicitBoolean(heartbeat, 'market_open') === true && explicitBoolean(heartbeat, 'is_trade_allowed') === true;
+    if (explicitBoolean(heartbeat, 'market_open') !== true || explicitBoolean(heartbeat, 'is_trade_allowed') !== true) {
+      return false;
+    }
+    return this.passesDailyLossGuard(accountId, heartbeat);
+  }
+
+  /**
+   * 服务端日亏保护（Phase 5.1）：EA 的 MaxDailyLoss=5% 重启即清零，且用券商
+   * 本地时间切日；这里按 UTC 日在 store 里持久化每账户"当日起始权益"，
+   * 当日已实现回撤 (startEquity - equity) / startEquity 达到阈值
+   * （GB_MAX_DAILY_LOSS_PCT，默认 5%）时阻断 LLM 分析与新信号下发。
+   * 当日首次见到该账户权益时记录基线；UTC 日切换后 key 变化，自然重置。
+   */
+  private async passesDailyLossGuard(accountId: string, heartbeat: EaRecord): Promise<boolean> {
+    const equity = numberField(heartbeat, 'equity');
+    if (equity <= 0 || this.store?.getDailyStartEquity == null || this.store.saveDailyStartEquity == null) {
+      // 心跳没有权益数据（或 store 不支持持久化）时不拦截，保持旧行为
+      return true;
+    }
+    const utcDate = utcDateKey(this.nowIso());
+    const startEquity = await this.store.getDailyStartEquity(accountId, utcDate);
+    if (startEquity == null || startEquity <= 0) {
+      await this.store.saveDailyStartEquity(accountId, utcDate, equity);
+      return true;
+    }
+    const drawdownPct = (startEquity - equity) / startEquity;
+    if (drawdownPct >= maxDailyLossPct()) {
+      console.warn(
+        `[SCHED] daily_loss_guard_blocked ${JSON.stringify({
+          account_id: accountId,
+          utc_date: utcDate,
+          start_equity: startEquity,
+          equity,
+          drawdown_pct: Number(drawdownPct.toFixed(4)),
+          threshold_pct: maxDailyLossPct()
+        })}`
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * riskgate allowedLots（Phase 5.2）：复用 app.ts AI 路径 aiTradePlanRiskGate
+   * 的数据流（registration 杠杆 + 心跳权益/可用保证金 + 最新 tick），对技术
+   * 信号计算 2% 权益风险与保证金约束下的最大手数。allowAdd/allowHedge 置
+   * true——这里只取手数上限，不做加仓/对锁裁决（那是信号与市场过滤层的职责）。
+   * riskgate 因缺数据（无 tick 价格/权益/SL 等）拒绝而算不出上限时返回
+   * undefined，此时不 clamp、保持信号原手数。
+   */
+  private async allowedLotsForSignal(
+    accountId: string,
+    symbol: string,
+    signal: EaRecord,
+    heartbeat: EaRecord,
+    latestTick: EaRecord
+  ): Promise<number | undefined> {
+    const registration = (await this.store?.getRegistration?.(accountId)) ?? {};
+    const positions = (await this.store?.getPositions?.(accountId, symbol)) ?? [];
+    // 与 evaluateSignalMarketFilters 相同的 tick 时间兜底：生产 tick 带
+    // received_at，测试/遗留数据缺时间戳时按"新鲜"处理
+    const lastTickAt =
+      stringField(latestTick, 'received_at') ||
+      stringField(latestTick, 'updated_at') ||
+      stringField(latestTick, 'time') ||
+      this.nowIso();
+    const result = evaluateRiskGate({
+      now: this.nowIso(),
+      account: {
+        accountId,
+        leverage: numberField(registration, 'leverage')
+      },
+      runtime: {
+        equity: numberField(heartbeat, 'equity'),
+        freeMargin: numberField(heartbeat, 'free_margin'),
+        marketOpen: explicitBoolean(heartbeat, 'market_open') !== false,
+        isTradeAllowed: explicitBoolean(heartbeat, 'is_trade_allowed') !== false,
+        lastTickAt
+      },
+      state: {
+        tick: {
+          symbol,
+          bid: numberField(latestTick, 'bid'),
+          ask: numberField(latestTick, 'ask'),
+          spread: numberField(latestTick, 'spread'),
+          maxSpread: positiveNumberField(latestTick, 'max_spread') ?? positiveNumberField(heartbeat, 'max_spread')
+        },
+        positions: positions.map((position) => ({
+          ticket: numberField(position, 'ticket'),
+          symbol: stringField(position, 'symbol'),
+          type: stringField(position, 'type'),
+          lots: numberField(position, 'lots'),
+          strategy: stringField(position, 'strategy')
+        }))
+      },
+      plan: {
+        accountId,
+        symbol,
+        mode: 'approve',
+        side: stringField(signal, 'side'),
+        stopLoss: numberField(signal, 'stop_loss'),
+        maxLots: numberField(signal, 'lots')
+      },
+      allowAdd: true,
+      allowHedge: true,
+      sourceStrategy: stringField(signal, 'strategy')
+    });
+    const allowedLots = result.allowedLots;
+    return typeof allowedLots === 'number' && Number.isFinite(allowedLots) && allowedLots > 0 ? allowedLots : undefined;
   }
 
   private async publishReplaySignal(accountId: string, symbol: string): Promise<void> {
@@ -92,19 +209,58 @@ export class SchedulerService {
       return;
     }
     const signalRecord = signal as EaRecord;
+    const strategy = stringField(signalRecord, 'strategy');
+    const heartbeat = (await this.store?.getHeartbeat(accountId)) ?? {};
+    // EA 心跳按策略上报 enabled 开关；策略在 EA 侧被关闭时不再下发信号，
+    // 避免整批 strategy_disabled ERROR（实盘 7/23-24 US100Cash breakout_retest 10/12 因此失败）。
+    if (heartbeatStrategyDisabled(heartbeat, strategy)) {
+      console.log(
+        `[SCHED] signal_skipped_strategy_disabled ${JSON.stringify({ account_id: accountId, symbol, strategy })}`
+      );
+      return;
+    }
     const bars = await this.barsByTimeframe(accountId, symbol);
-    const triggerKey = liveDecisionKey(stringField(signalRecord, 'strategy'), bars);
+    const latestTick = (await this.store?.getLatestTick(accountId, symbol)) ?? {};
+    // 市场过滤器（点差过宽/周五尾盘/tick 过期等）此前只填充 LLM payload，从不拦截技术信号。
+    // 这里对 blocking 级别的过滤结果直接丢弃信号，warning 级别放行。
+    const marketFilters = await this.evaluateSignalMarketFilters(accountId, symbol, latestTick, bars, heartbeat);
+    if (marketFilters.blocked) {
+      return;
+    }
+    const triggerKey = liveDecisionKey(strategy, bars);
     const commandId = liveCommandId(accountId, symbol, signalRecord, triggerKey);
     if ((await this.store?.getCommand(commandId)) != null) {
       return;
     }
-    const currentPrice = liveCurrentPrice((await this.store?.getLatestTick(accountId, symbol)) ?? {}, bars);
+    const currentPrice = liveCurrentPrice(latestTick, bars);
     const atr = latestAtr(bars.H1) || numberField(signalRecord, 'atr');
     const orderType = orderTypeForSignal(currentPrice, numberField(signalRecord, 'entry'), atr, stringField(signalRecord, 'side'));
     // Multi-TP split: only enable when signal has a meaningful TP2 (>0 and different from TP1)
     const tp1Value = numberField(signalRecord, 'tp1');
     const tp2Value = numberField(signalRecord, 'tp2');
     const shouldSplitTP = tp2Value > 0 && Math.abs(tp2Value - tp1Value) > 0;
+    // allowedLots 实际生效（Phase 5.2）：riskgate 按 2% 权益风险 + 可用保证金
+    // 计算的手数上限此前只写进 AI 响应从不消费。这里对带手数的信号做
+    // min(signal.lots, allowedLots) clamp 后随命令下发（EA 侧 cmd.lots > 0 时
+    // 优先于策略默认手数）。信号不带手数时保持旧行为，由 EA 自行计算。
+    const signalLots = numberField(signalRecord, 'lots');
+    let commandLots = signalLots;
+    if (signalLots > 0) {
+      const allowedLots = await this.allowedLotsForSignal(accountId, symbol, signalRecord, heartbeat, latestTick);
+      if (allowedLots != null && signalLots > allowedLots) {
+        commandLots = allowedLots;
+        console.log(
+          `[SCHED] signal_lots_clamped ${JSON.stringify({
+            account_id: accountId,
+            symbol,
+            strategy,
+            lots: signalLots,
+            allowed_lots: allowedLots,
+            clamped_lots: commandLots
+          })}`
+        );
+      }
+    }
     const candidate: CommandCandidate = {
       command_id: commandId,
       decision_id: commandId,
@@ -130,6 +286,9 @@ export class SchedulerService {
       // (40% lots @ TP1 + 60% lots @ TP2). EA handles lot distribution; ensures total ≤ plan lots.
       tp_split: shouldSplitTP
     };
+    if (commandLots > 0) {
+      candidate.lots = commandLots;
+    }
     if (booleanField(signalRecord, 'fib_enhanced')) {
       candidate.fib_enhanced = true;
     }
@@ -273,7 +432,7 @@ export class SchedulerService {
       // 典型场景：group_adverse_reanchor 把 SL 设到 groupAvgEntry，但价格已穿越均价
       const side = stringField(position, 'type').toUpperCase();
       if (currentPrice > 0 && side.length > 0) {
-        const minDistance = currentPrice * STOPLEVEL_MIN_RATIO;
+        const minDistance = currentPrice * stoplevelMinRatio(symbol);
         if (side === 'BUY' || side.startsWith('BUY')) {
           if (newSL >= currentPrice - minDistance) {
             return undefined;
@@ -283,7 +442,7 @@ export class SchedulerService {
             return undefined;
           }
         }
-      } else if (currentPrice > 0 && Math.abs(newSL - currentPrice) < currentPrice * STOPLEVEL_MIN_RATIO) {
+      } else if (currentPrice > 0 && Math.abs(newSL - currentPrice) < currentPrice * stoplevelMinRatio(symbol)) {
         return undefined;
       }
       return {
@@ -454,6 +613,54 @@ export class SchedulerService {
       M1: (await this.store?.getBars(accountId, symbol, 'M1')) ?? []
     };
   }
+
+  /**
+   * 技术信号入队前的市场过滤（Phase 3.2）：点差过宽 / 周五尾盘禁入窗口 /
+   * tick 过期等 blocking 条件直接丢弃信号。此前 evaluateMarketFilters 只用于
+   * 填充 LLM payload，从不拦截 live_strategy 命令。
+   */
+  private async evaluateSignalMarketFilters(
+    accountId: string,
+    symbol: string,
+    latestTick: EaRecord,
+    bars: Record<string, EaRecord[]>,
+    heartbeat: EaRecord
+  ) {
+    // 生产路径的 tick 都带 /tick handler 盖章的 received_at；测试与遗留数据
+    // 没有时间戳时按"新鲜"处理（新鲜度硬门槛已由 market_status 读时关市承担）。
+    const lastTickAt =
+      stringField(latestTick, 'received_at') ||
+      stringField(latestTick, 'updated_at') ||
+      stringField(latestTick, 'time') ||
+      this.nowIso();
+    const result = evaluateMarketFilters({
+      now: this.nowIso(),
+      symbol,
+      runtime: {
+        marketOpen: explicitBoolean(heartbeat, 'market_open') !== false,
+        isTradeAllowed: explicitBoolean(heartbeat, 'is_trade_allowed') !== false,
+        lastTickAt
+      },
+      state: {
+        tick: {
+          symbol,
+          spread: numberField(latestTick, 'spread'),
+          maxSpread: positiveNumberField(latestTick, 'max_spread') ?? positiveNumberField(heartbeat, 'max_spread')
+        },
+        bars: { M30: (bars.M30 ?? []).map((bar) => ({ atr: numberField(bar, 'atr') || numberField(bar, 'ATR') })) }
+      }
+    });
+    if (result.blocked) {
+      console.log(
+        `[SCHED] signal_blocked_by_market_filter ${JSON.stringify({
+          account_id: accountId,
+          symbol,
+          reason_codes: result.reason_codes
+        })}`
+      );
+    }
+    return result;
+  }
 }
 
 function isLiveStrategyTimeframe(timeframe: string): boolean {
@@ -462,6 +669,26 @@ function isLiveStrategyTimeframe(timeframe: string): boolean {
 
 function explicitBoolean(record: EaRecord, field: string): boolean | undefined {
   return typeof record[field] === 'boolean' ? record[field] : undefined;
+}
+
+/**
+ * EA 心跳的 strategies.{name}.enabled 明确为 false 时返回 true。
+ * 心跳缺失、无 strategies 块或该策略未上报（如 ai_signal/scale_in 不在心跳里）时
+ * 返回 false，即默认放行——只有 EA 明确说"关了"才拦。
+ */
+function heartbeatStrategyDisabled(heartbeat: EaRecord, strategy: string): boolean {
+  if (strategy.length === 0) {
+    return false;
+  }
+  const strategies = heartbeat['strategies'];
+  if (strategies == null || typeof strategies !== 'object' || Array.isArray(strategies)) {
+    return false;
+  }
+  const entry = (strategies as Record<string, unknown>)[strategy];
+  if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) {
+    return false;
+  }
+  return (entry as Record<string, unknown>)['enabled'] === false;
 }
 
 function isAIStopLossModifyCandidate(candidate: CommandCandidate): boolean {
@@ -583,6 +810,22 @@ function utcMinuteKey(value: string): string {
   ].join('');
 }
 
+/** UTC 日 key（YYYY-MM-DD），日亏保护按此切日/重置基线 */
+function utcDateKey(value: string): string {
+  const millis = Date.parse(value);
+  const date = new Date(Number.isFinite(millis) ? millis : Date.now());
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0')
+  ].join('-');
+}
+
+/** 日亏保护阈值：GB_MAX_DAILY_LOSS_PCT（packages/config 解析），默认 0.05（5%） */
+function maxDailyLossPct(): number {
+  return loadGoldBotEnv().GB_MAX_DAILY_LOSS_PCT;
+}
+
 function liveCurrentPrice(tick: EaRecord, bars: Record<string, EaRecord[]>): number {
   const bid = numberField(tick, 'bid');
   const ask = numberField(tick, 'ask');
@@ -654,6 +897,15 @@ function normalizeAIStopLossSymbol(symbol: string): string {
   return symbol.trim().toUpperCase();
 }
 
+/**
+ * 取 symbol 的 STOPLEVEL 最小距离比例。symbol 归一化对齐 riskgate/analysis
+ * 的 baseSymbol 写法：trim + 大写 + 去 broker 后缀（如 GBPJPYm#、GBPJPY#）。
+ */
+function stoplevelMinRatio(symbol: string): number {
+  const normalized = symbol.trim().toUpperCase().replace(/M#$/, '').replace(/#$/, '');
+  return STOPLEVEL_MIN_RATIO_BY_SYMBOL[normalized] ?? STOPLEVEL_MIN_RATIO_DEFAULT;
+}
+
 function aiStopLossProfitAtr(position: EaRecord, atrValue: number, currentPrice: number): number | undefined {
   const openPrice = numberField(position, 'open_price') || numberField(position, 'openPrice');
   if (atrValue <= 0 || currentPrice <= 0 || openPrice <= 0) {
@@ -690,6 +942,11 @@ function unixSeconds(value: string): number {
 function numberField(record: EaRecord, field: string): number {
   const value = record[field];
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function positiveNumberField(record: EaRecord, field: string): number | undefined {
+  const value = record[field];
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function stringField(record: EaRecord, field: string): string {

@@ -191,7 +191,9 @@ describe('strategy engine replay-backed slice', () => {
       stopLoss: 93,
       tp1: 95.8,
       tp2: 96.13,
-      score: 10
+      // 10 → 9：1ffbea7 起趋势评级门槛从 D1 改为 H4（applyTrendRatingPenalty 只要有 H4 即生效），
+      // 该 fixture 多周期共识偏弱（H4/H1 均 NEUTRAL、无 M30）触发 -1 扣分。策略层原始评分仍为 10（见日志）。
+      score: 9
     });
     expect(result.logs).toContainEqual({
       level: 'info',
@@ -237,10 +239,17 @@ describe('strategy engine replay-backed slice', () => {
       decision: 'no_signal',
       signal: null,
       logs: expect.arrayContaining([
+        // 文案更新：Phase 3.6 恢复 H4 ADX hard 否决（GB_H4_ADX_FILTER_MODE 默认 hard），
+        // 硬过滤仍阻断入场（decision 不变），但日志改为按数量播报 + 补充"过滤后无信号"。
         {
           level: 'warn',
           strategy: 'H4过滤',
-          message: 'H4=震荡(ADX=10.0<30), 过滤所有信号'
+          message: 'H4=震荡(ADX=10.0<30), 过滤掉 1 个信号（震荡市禁入）'
+        },
+        {
+          level: 'info',
+          strategy: 'H4过滤',
+          message: 'H4趋势过滤后无信号'
         }
       ]),
       canProduceLiveCommands: false
@@ -348,7 +357,9 @@ describe('strategy engine replay-backed slice', () => {
       stopLoss: 88,
       tp1: 95.8,
       tp2: 96,
-      score: 10
+      // 10 → 9：1ffbea7 起趋势评级门槛从 D1 改为 H4，该 fixture 多周期共识偏弱触发 -1 扣分。
+      // 策略层原始评分（基础 9 + Fib 汇合 +1 = 10）不受影响，见下方日志断言。
+      score: 9
     });
     expect(result.logs).toContainEqual({
       level: 'signal',

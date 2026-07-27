@@ -344,7 +344,8 @@ describe('SchedulerService', () => {
     const store = createInMemoryEaStore();
     await store.setRuntimeMode('90011087', 'cutover');
     await saveTradeableHeartbeat(store);
-    await store.saveTick({ account_id: '90011087', symbol: 'GBPJPY', bid: 218.90, ask: 218.92 });
+    // GBPJPY STOPLEVEL 比例为 0.0012（Phase 5.3），SL 距市价需 > ~0.26
+    await store.saveTick({ account_id: '90011087', symbol: 'GBPJPY', bid: 219.10, ask: 219.12 });
     await store.savePositions({
       account_id: '90011087',
       symbol: 'GBPJPY',
@@ -793,6 +794,498 @@ describe('SchedulerService', () => {
         open_time: '2026-04-13T06:00:00.000Z'
       })
     ]);
+  });
+
+  it('drops replay signals when spread exceeds the market filter limit', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    // XAUUSD 默认点差上限 5.0，spread=8 触发 spread.too_wide blocking
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1, spread: 8 });
+    await store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3335, high: 3337, low: 3333, close: 3336, atr: 2 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: {
+                strategy: 'pullback',
+                side: 'BUY',
+                entry: 3335,
+                stop_loss: 3330,
+                tp1: 3345,
+                tp2: 3355,
+                score: 8,
+                atr: 2
+              },
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('spread.too_wide'));
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(await store.listCommands('90011087')).toEqual([]);
+  });
+
+  it('drops replay signals during the friday close window', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
+    await store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-17T20:00:00.000Z', open: 3335, high: 3337, low: 3333, close: 3336, atr: 2 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: {
+                strategy: 'pullback',
+                side: 'BUY',
+                entry: 3335,
+                stop_loss: 3330,
+                tp1: 3345,
+                tp2: 3355,
+                score: 8,
+                atr: 2
+              },
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      // 2026-04-17 是周五，20:00 UTC 之后进入 friday_close_window
+      () => '2026-04-17T21:00:00.000Z'
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('session.friday_close_window'));
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(await store.listCommands('90011087')).toEqual([]);
+  });
+
+  it('drops replay signals when the EA heartbeat reports the strategy disabled', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      strategies: {
+        breakout_retest: { enabled: false, magic: 20250232, positions: 0 }
+      }
+    });
+    await store.saveTick({ account_id: '90011087', symbol: 'US100Cash', bid: 23150.0, ask: 23151.0 });
+    await store.saveBars({
+      account_id: '90011087',
+      symbol: 'US100Cash',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 23100, high: 23180, low: 23080, close: 23150, atr: 40 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: {
+                strategy: 'breakout_retest',
+                side: 'BUY',
+                entry: 23150,
+                stop_loss: 23100,
+                tp1: 23250,
+                tp2: 23350,
+                score: 8,
+                atr: 40
+              },
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await scheduler.enqueueAnalysis('90011087', 'US100Cash', 'H1');
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('signal_skipped_strategy_disabled'));
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(await store.listCommands('90011087')).toEqual([]);
+  });
+
+  // ---- Phase 5.1 服务端日亏保护 ----
+
+  it('records the daily start equity on first sight and keeps signals flowing', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      equity: 10000
+    });
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
+    await store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3335, high: 3337, low: 3333, close: 3336, atr: 2 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: {
+                strategy: 'pullback',
+                side: 'BUY',
+                entry: 3335,
+                stop_loss: 3330,
+                tp1: 3345,
+                tp2: 3355,
+                score: 8,
+                atr: 2
+              },
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+
+    await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+
+    // 当日首见心跳权益 → 记录 UTC 日起始权益基线，同时正常放行信号
+    expect(await store.getDailyStartEquity('90011087', '2026-04-13')).toBe(10000);
+    expect(await store.listCommands('90011087')).toHaveLength(1);
+  });
+
+  it('blocks live analysis when the daily realized drawdown reaches the limit', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    // 当日起始权益 10000，当前权益 9400 → 回撤 6% ≥ 默认阈值 5%
+    await store.saveDailyStartEquity('90011087', '2026-04-13', 10000);
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      equity: 9400
+    });
+    let calls = 0;
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          calls += 1;
+          return { replay: { signal: null, position_commands: null } };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+      await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('daily_loss_guard_blocked'));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(calls).toBe(0);
+    expect(await store.listCommands('90011087')).toEqual([]);
+  });
+
+  it('resets the daily loss guard baseline when the UTC date rolls over', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    // 前一 UTC 日亏损 6%（10000 → 9400），跨日后应以新基线放行
+    await store.saveDailyStartEquity('90011087', '2026-04-12', 10000);
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      equity: 9400
+    });
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
+    await store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3335, high: 3337, low: 3333, close: 3336, atr: 2 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: {
+                strategy: 'pullback',
+                side: 'BUY',
+                entry: 3335,
+                stop_loss: 3330,
+                tp1: 3345,
+                tp2: 3355,
+                score: 8,
+                atr: 2
+              },
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+
+    await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+
+    // 跨 UTC 日：旧基线不再生效，当日以 9400 建立新基线并正常下发信号
+    expect(await store.getDailyStartEquity('90011087', '2026-04-13')).toBe(9400);
+    expect(await store.listCommands('90011087')).toHaveLength(1);
+  });
+
+  // ---- Phase 5.2 allowedLots 实际生效 ----
+
+  it('clamps signal lots to the riskgate allowedLots ceiling', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await store.saveRegistration({ account_id: '90011087', leverage: 100 });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      equity: 10000,
+      free_margin: 8000
+    });
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
+    await store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3335, high: 3337, low: 3333, close: 3336, atr: 2 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: {
+                strategy: 'pullback',
+                side: 'BUY',
+                entry: 3335,
+                stop_loss: 3330,
+                tp1: 3345,
+                tp2: 3355,
+                score: 8,
+                atr: 2,
+                // 2% 权益风险上限：10000 * 0.02 / (|3336.1 - 3330| * 100) ≈ 0.32 手
+                lots: 1.0
+              },
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('signal_lots_clamped'));
+    } finally {
+      log.mockRestore();
+    }
+
+    const commands = await store.listCommands('90011087');
+    expect(commands).toHaveLength(1);
+    expect(Number(commands[0].lots)).toBeCloseTo(0.32, 10);
+  });
+
+  it('keeps signal lots unchanged when below the riskgate allowedLots ceiling', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await store.saveRegistration({ account_id: '90011087', leverage: 100 });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      market_open: true,
+      is_trade_allowed: true,
+      equity: 10000,
+      free_margin: 8000
+    });
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
+    await store.saveBars({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      bars: [{ time: '2026-04-13T07:00:00.000Z', open: 3335, high: 3337, low: 3333, close: 3336, atr: 2 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: {
+                strategy: 'pullback',
+                side: 'BUY',
+                entry: 3335,
+                stop_loss: 3330,
+                tp1: 3345,
+                tp2: 3355,
+                score: 8,
+                atr: 2,
+                // 0.1 手低于 riskgate 上限（≈0.32），保持原手数
+                lots: 0.1
+              },
+              position_commands: null
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-04-13T08:00:00.000Z'
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await scheduler.enqueueAnalysis('90011087', 'XAUUSD', 'H1');
+      expect(log).not.toHaveBeenCalledWith(expect.stringContaining('signal_lots_clamped'));
+    } finally {
+      log.mockRestore();
+    }
+
+    const commands = await store.listCommands('90011087');
+    expect(commands).toHaveLength(1);
+    expect(commands[0].lots).toBe(0.1);
+  });
+
+  // ---- Phase 5.3 per-symbol STOPLEVEL_MIN_RATIO ----
+
+  it('skips GBPJPY MODIFY inside the raised 0.0012 stoplevel ratio', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    // mid = 218.31，GBPJPY 比例 0.0012 → 最小距离 ~0.262；
+    // new_sl 距市价 0.21，旧默认比例 0.0005（~0.109）会放行，新比例应拦截
+    await store.saveTick({ account_id: '90011087', symbol: 'GBPJPY', bid: 218.30, ask: 218.32 });
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'GBPJPY',
+      positions: [{ ticket: 42370061, symbol: 'GBPJPY', type: 'BUY', open_price: 218.0, lots: 0.02, sl: 217.7, tp: 219.18 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: null,
+              position_commands: [
+                { action: 'MODIFY', ticket: 42370061, new_sl: 218.10, reason: 'group_favorable_addon_BUY' }
+              ]
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-07-17T06:13:55.000Z'
+    );
+
+    await scheduler.enqueuePositionReview('90011087', 'GBPJPY');
+    expect(await store.listCommands('90011087')).toEqual([]);
+  });
+
+  it('queues MODIFY for non-GBPJPY symbols at distances allowed by the default 0.0005 ratio', async () => {
+    const store = createInMemoryEaStore();
+    await store.setRuntimeMode('90011087', 'cutover');
+    await saveTradeableHeartbeat(store);
+    // mid = 3336.0，XAUUSD 用默认比例 0.0005 → 最小距离 ~1.67；
+    // new_sl 距市价 3.0 放行（若误用 GBPJPY 的 0.0012 → ~4.0 会被拦截）
+    await store.saveTick({ account_id: '90011087', symbol: 'XAUUSD', bid: 3335.9, ask: 3336.1 });
+    await store.savePositions({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      positions: [{ ticket: 888, symbol: 'XAUUSD', type: 'BUY', open_price: 3330, lots: 0.1, sl: 3328, tp: 3350 }]
+    });
+    const scheduler = new SchedulerService(
+      {
+        analyzeAccountSymbol() {
+          return {
+            replay: {
+              signal: null,
+              position_commands: [
+                { action: 'MODIFY', ticket: 888, new_sl: 3333.0, reason: 'breakeven_2.2ATR' }
+              ]
+            }
+          };
+        }
+      } as never,
+      new CommandLifecycleService(store),
+      undefined,
+      store,
+      () => '2026-07-17T06:13:55.000Z'
+    );
+
+    await scheduler.enqueuePositionReview('90011087', 'XAUUSD');
+    const commands = await store.listCommands('90011087');
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      action: 'MODIFY',
+      source: 'position_manager',
+      ticket: 888,
+      new_sl: 3333.0
+    });
   });
 });
 

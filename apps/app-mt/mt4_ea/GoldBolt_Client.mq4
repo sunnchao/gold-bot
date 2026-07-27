@@ -99,8 +99,9 @@ extern int      HarmonicPanelY          = 24;
 extern int      HarmonicMaxObjects      = 40;
 
 // ============ 全局变量 ============
-datetime lastPollTime   = 0;
-datetime lastBarTime    = 0;
+datetime lastPollTime    = 0;
+datetime lastBarTime     = 0;
+datetime lastHistoryTime = 0;   // 上次上报已平仓成交的时间戳（服务端 /api/trade_history）
 double   dailyStartEquity = 0;
 int      httpTimeout    = 2000;
 
@@ -673,6 +674,13 @@ void OnTick()
        SendAllBars();
        lastBarTime = now;
     }
+
+    // 每 5 分钟上报一次已平仓成交（绩效追踪）
+    if(gbRegistered && now - lastHistoryTime >= 300)
+    {
+       SendTradeHistory();
+       lastHistoryTime = now;
+    }
    
    // 日切重置
    static int lastDay = 0;
@@ -1032,8 +1040,66 @@ void SendPositions()
          "{\"account_id\":\"%s\",\"symbol\":\"%s\",\"magic\":%d,\"positions\":[%s]}",
          AccountID, baseSymbol, PullbackMagic, positions
       );
-      
+
       HttpPost("/positions", json);
+   }
+}
+
+// ============================================================
+// 上报已平仓成交（绩效追踪：服务端 closed_trades 表）
+// 每次扫描最近 200 条历史订单，上报 close_time 晚于上次已上报时间的记录。
+// 服务端按 (account_id, ticket) 幂等去重，重复上报无副作用。
+// ============================================================
+datetime g_lastReportedCloseTime = 0;
+
+void SendTradeHistory()
+{
+   int total = OrdersHistoryTotal();
+   if(total <= 0) return;
+
+   string trades = "";
+   int count = 0;
+   datetime maxCloseTime = g_lastReportedCloseTime;
+
+   // 从最新往回扫，最多 200 条，遇到已上报的即停
+   int scanned = 0;
+   for(int i = total - 1; i >= 0 && scanned < 200; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY)) continue;
+      scanned++;
+
+      // 只上报市价持仓的平仓记录（跳过挂单删除/余额操作）
+      int ot = OrderType();
+      if(ot != OP_BUY && ot != OP_SELL) continue;
+      if(!IsOurMagic(OrderMagicNumber())) continue;
+      if(OrderCloseTime() <= g_lastReportedCloseTime) break; // 已上报过
+
+      string side = (ot == OP_BUY) ? "BUY" : "SELL";
+      double netProfit = OrderProfit() + OrderSwap() + OrderCommission();
+
+      if(count > 0) trades += ",";
+      trades += StringFormat(
+         "{\"account_id\":\"%s\",\"ticket\":%d,\"magic\":%d,\"symbol\":\"%s\","
+         "\"side\":\"%s\",\"open_price\":%.5f,\"close_price\":%.5f,\"lots\":%.2f,"
+         "\"profit\":%.2f,\"open_time\":\"%s\",\"close_time\":\"%s\"}",
+         AccountID, OrderTicket(), OrderMagicNumber(), JsonSafeText(OrderSymbol()),
+         side, OrderOpenPrice(), OrderClosePrice(), OrderLots(),
+         netProfit,
+         TimeToStr(OrderOpenTime(), TIME_DATE|TIME_SECONDS),
+         TimeToStr(OrderCloseTime(), TIME_DATE|TIME_SECONDS)
+      );
+      count++;
+      if(OrderCloseTime() > maxCloseTime) maxCloseTime = OrderCloseTime();
+   }
+
+   if(count == 0) return;
+
+   string json = "{\"trades\":[" + trades + "]}";
+   string resp = HttpPost("/api/trade_history", json);
+   if(StringLen(resp) > 0 && StringFind(resp, "OK") >= 0)
+   {
+      g_lastReportedCloseTime = maxCloseTime;
+      Print("📊 已上报平仓成交：", count, " 笔");
    }
 }
 
@@ -1444,11 +1510,24 @@ void ExecutePending(string cmd, string cmd_id)
       }
    }
 
-   // 计算手数
+   // 计算手数：优先使用服务端下发的 cmd.lots（AI signal 固定0.01），
+   // 其次使用策略默认手数。挂单路径历史上忽略了 cmd.lots，导致 ai_signal 以
+   // FixedLots(0.10) 而非 0.01 成交（10倍超配）。
    double currentPrice = (type_str == "BUY") ? MarketInfo(brokerSymbol, MODE_ASK) : MarketInfo(brokerSymbol, MODE_BID);
    double sl_distance = MathAbs(currentPrice - sl);
    double lots = CalcLotsForStrategy(strategy, baseSymbol, sl_distance);
+   double cmdLots = GetJsonDouble(cmd, "lots");
+   if(cmdLots > 0.0009)
+      lots = cmdLots;   // 服务端指定手数优先（含0.01固定值）
    lots = NormalizeVolume(brokerSymbol, lots);
+
+   // 挂单同样需要通过本地风控检查（此前 ExecutePending 跳过了 CheckRisk）
+   if(!CheckRisk(type_str))
+   {
+      Print("❌ 风控拒绝挂单：", type_str, " ", baseSymbol);
+      ReportResult(cmd_id, "REJECTED", 0, "risk_check_failed");
+      return;
+   }
 
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);
 
@@ -1703,8 +1782,20 @@ void ExecuteClose(string cmd, string cmd_id)
    }
 
    double closePrice = (ot == OP_BUY) ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK);
-   
-   bool result = OrderClose(ticket, OrderLots(), closePrice, Slippage,
+
+   // 读取服务端指定的平仓手数（用于 TP1/TP2 分批平仓）。
+   // 若未指定或指定值 >= 总手数，则全平。
+   double cmdLots  = GetJsonDouble(cmd, "lots");
+   double totalLots = OrderLots();
+   double closeLots;
+   if(cmdLots > 0.0009 && cmdLots < totalLots - 0.0001)
+      closeLots = NormalizeVolume(sym, cmdLots);  // 部分平仓
+   else
+      closeLots = totalLots;                      // 全平
+
+   Print("📦 平仓手数：指令=", cmdLots, " 持仓=", totalLots, " 执行=", closeLots);
+
+   bool result = OrderClose(ticket, closeLots, closePrice, Slippage,
                             (ot == OP_BUY) ? clrRed : clrGreen);
    if(result)
    {

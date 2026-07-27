@@ -93,6 +93,7 @@ input int      Slippage            = 3;        // 滑点（点数）
 // ============ 全局变量 ============
 datetime lastPollTime      = 0;
 datetime lastBarTime       = 0;
+datetime lastHistoryTime   = 0;       // 上次上报已平仓成交的时间
 double   dailyStartEquity  = 0;
 int      httpTimeout       = 2000;
 bool     spreadSymbolsReady = false;  // 原油品种是否可用
@@ -842,6 +843,13 @@ void OnTick()
       lastBarTime = now;
    }
 
+   // 每 5 分钟上报一次已平仓成交（绩效追踪）
+   if(gbRegistered && now - lastHistoryTime >= 300)
+   {
+      SendTradeHistory();
+      lastHistoryTime = now;
+   }
+
    static int lastDay = -1;
    MqlDateTime tm;
    TimeToStruct(now, tm);
@@ -1145,6 +1153,121 @@ void SendPositions()
 }
 
 // ============================================================
+// 上报已平仓成交（绩效追踪）
+// MT5 以 deal 为单位：DEAL_ENTRY_OUT 即一次平仓事件（部分平仓会有多条）。
+// 开仓价通过 position_id 反查对应的 DEAL_ENTRY_IN。
+// ============================================================
+datetime g_lastReportedCloseTime = 0;
+
+void SendTradeHistory()
+{
+   // 只拉取最近 7 天的历史，避免全量扫描
+   datetime from = TimeCurrent() - 7 * 24 * 3600;
+   if(g_lastReportedCloseTime > from) from = g_lastReportedCloseTime;
+   if(!HistorySelect(from, TimeCurrent())) return;
+
+   int total = HistoryDealsTotal();
+   if(total <= 0) return;
+
+   // 第一遍：收集待上报的平仓 deal（外层 HistorySelect 的选择集不能在遍历中被覆盖）
+   ulong  outTickets[];
+   long   outPositions[];
+   int    outCount = 0;
+   ArrayResize(outTickets, total);
+   ArrayResize(outPositions, total);
+
+   datetime maxCloseTime = g_lastReportedCloseTime;
+
+   for(int i = total - 1; i >= 0 && outCount < 200; i--)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+
+      ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) continue;
+
+      ENUM_DEAL_TYPE dtype = (ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+      if(dtype != DEAL_TYPE_BUY && dtype != DEAL_TYPE_SELL) continue;
+
+      if(!IsOurMagic(HistoryDealGetInteger(dealTicket, DEAL_MAGIC))) continue;
+
+      datetime closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      if(closeTime <= g_lastReportedCloseTime) break;   // 已上报过
+
+      outTickets[outCount]   = dealTicket;
+      outPositions[outCount] = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      outCount++;
+
+      if(closeTime > maxCloseTime) maxCloseTime = closeTime;
+   }
+
+   if(outCount == 0) return;
+
+   // 第二遍：逐笔读取字段并反查开仓价（HistorySelectByPosition 会重置选择集，故放在第二遍）
+   string trades = "";
+   int    emitted = 0;
+
+   for(int k = 0; k < outCount; k++)
+   {
+      ulong dealTicket = outTickets[k];
+      long  positionId = outPositions[k];
+
+      // 切换到该 position 的选择集：平仓 deal 本身也在其中，仍可按 ticket 读取
+      if(!HistorySelectByPosition(positionId)) continue;
+
+      string   symbol     = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+      long     magic      = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
+      datetime closeTime  = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      double   closePrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+      double   lots       = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
+      double   netProfit  = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+                          + HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+                          + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+      // 平仓 deal 的方向与持仓相反：DEAL_TYPE_SELL 平的是 BUY 仓
+      string   side       = ((ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE) == DEAL_TYPE_SELL) ? "BUY" : "SELL";
+
+      if(StringLen(symbol) == 0) continue;
+
+      // 反查开仓 deal
+      double   openPrice = 0;
+      datetime openTime  = closeTime;
+      int      posDeals  = HistoryDealsTotal();
+      for(int j = 0; j < posDeals; j++)
+      {
+         ulong inTicket = HistoryDealGetTicket(j);
+         if(inTicket == 0) continue;
+         if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(inTicket, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+         openPrice = HistoryDealGetDouble(inTicket, DEAL_PRICE);
+         openTime  = (datetime)HistoryDealGetInteger(inTicket, DEAL_TIME);
+         break;
+      }
+
+      if(emitted > 0) trades += ",";
+      trades += StringFormat(
+         "{\"account_id\":\"%s\",\"ticket\":%s,\"magic\":%s,\"symbol\":\"%s\","
+         "\"side\":\"%s\",\"open_price\":%.5f,\"close_price\":%.5f,\"lots\":%.2f,"
+         "\"profit\":%.2f,\"open_time\":\"%s\",\"close_time\":\"%s\"}",
+         AccountID, FormatULongValue(dealTicket), FormatLongValue(magic), symbol,
+         side, openPrice, closePrice, lots,
+         netProfit,
+         TimeToString(openTime, TIME_DATE|TIME_SECONDS),
+         TimeToString(closeTime, TIME_DATE|TIME_SECONDS)
+      );
+      emitted++;
+   }
+
+   if(emitted == 0) return;
+
+   string json = "{\"trades\":[" + trades + "]}";
+   string resp = HttpPost("/api/trade_history", json);
+   if(StringLen(resp) > 0 && StringFind(resp, "OK") >= 0)
+   {
+      g_lastReportedCloseTime = maxCloseTime;
+      Print("📊 已上报平仓成交：", emitted, " 笔");
+   }
+}
+
+// ============================================================
 // 轮询并执行服务端指令
 // EA 只是执行器，不做任何策略判断
 // ============================================================
@@ -1159,15 +1282,15 @@ void PollAndExecute()
    if(count == 0) return;
 
    Print("📨 收到 ", count, " 条指令");
-   string commands_str = GetJsonArray(response, "commands");
+   string commands_str = GetJsonArraySafe(response, "commands");
 
    for(int i = 0; i < count; i++)
    {
       string cmd = GetArrayElement(commands_str, i);
       if(StringLen(cmd) == 0) continue;
 
-      string action = GetJsonString(cmd, "action");
-      string cmd_id = GetJsonString(cmd, "command_id");
+      string action = GetJsonStringSafe(cmd, "action");
+      string cmd_id = GetJsonStringSafe(cmd, "command_id");
 
       if(action == "SIGNAL")
          ExecuteSignal(cmd, cmd_id);
@@ -1175,6 +1298,10 @@ void PollAndExecute()
          ExecuteModify(cmd, cmd_id);
       else if(action == "CLOSE")
          ExecuteClose(cmd, cmd_id);
+      else if(action == "PENDING")
+         ExecutePending(cmd, cmd_id);
+      else if(action == "CANCEL_PENDING")
+         ExecuteCancelPending(cmd, cmd_id);
       else if(action == "CLOSE_PARTIAL")
          ExecuteClosePartial(cmd, cmd_id);
       else if(action == "CLOSE_ALL")
@@ -1523,12 +1650,12 @@ bool SplitLotsForMultiTP_MT5(double totalLots, double &lotsTP1, double &lotsTP2)
       lotsTP2 = 0;
       return false;
    }
-   lotsTP1 = NormalizeVolume(totalLots * 0.6);  // TP1 = 60% (近目标，更大概率触发)
-   if(lotsTP1 <= 0) lotsTP1 = NormalizeVolume(0.01);
-   lotsTP2 = NormalizeVolume(totalLots - lotsTP1);  // TP2 = 剩余 = 40%
+   lotsTP1 = NormalizeVolume(Symbol_, totalLots * 0.6);  // TP1 = 60% (近目标，更大概率触发)
+   if(lotsTP1 <= 0) lotsTP1 = NormalizeVolume(Symbol_, 0.01);
+   lotsTP2 = NormalizeVolume(Symbol_, totalLots - lotsTP1);  // TP2 = 剩余 = 40%
    if(lotsTP1 + lotsTP2 > totalLots + 0.0001)
    {
-      lotsTP1 = NormalizeVolume(totalLots * 0.6);
+      lotsTP1 = NormalizeVolume(Symbol_, totalLots * 0.6);
       lotsTP2 = totalLots - lotsTP1;
    }
    return true;
@@ -1540,7 +1667,7 @@ bool OpenSingleOrderWithTP_MT5(double lots, double price, double sl, double tp,
                                 ulong &outTicket)
 {
    outTicket = 0;
-   lots = NormalizeVolume(lots);
+   lots = NormalizeVolume(Symbol_, lots);
    if(lots <= 0) return false;
 
    PrepareTrade(Symbol_, magic);
@@ -1631,15 +1758,24 @@ void ExecuteOpenWithTPSplit_MT5(string cmd, string cmd_id, string type_str, doub
 // ============================================================
 void ExecuteSignal(string cmd, string cmd_id)
 {
-   string symbol   = GetJsonString(cmd, "symbol");
-   string type_str = GetJsonString(cmd, "type");
+   // 挂单类信号（限价/止损单）转交 ExecutePending（与 MT4 行为一致）
+   string orderType = GetJsonStringSafe(cmd, "order_type");
+   if(orderType == "BUY_LIMIT" || orderType == "BUY_STOP" ||
+      orderType == "SELL_LIMIT" || orderType == "SELL_STOP")
+   {
+      ExecutePending(cmd, cmd_id);
+      return;
+   }
+
+   string symbol   = GetJsonStringSafe(cmd, "symbol");
+   string type_str = GetJsonStringSafe(cmd, "type");
    double sl       = GetJsonDouble(cmd, "sl");
    double tp1      = GetJsonDouble(cmd, "tp1");
    if(tp1 == 0.0) tp1 = GetJsonDouble(cmd, "tp"); // 兼容
    double tp2      = GetJsonDouble(cmd, "tp2");    // Multi-TP 拆单
    bool   tpSplit  = GetJsonBool(cmd, "tp_split"); // Multi-TP 拆单标志
    int    score    = GetJsonInt(cmd, "score");
-   string strategy = GetJsonString(cmd, "strategy");
+   string strategy = GetJsonStringSafe(cmd, "strategy");
 
    Print("📡 信号：", type_str, " | SL=", sl, " TP=", tp1,
          " | ", strategy, " 评分:", score);
@@ -1740,6 +1876,66 @@ void ExecuteSignal(string cmd, string cmd_id)
       Print("✅ 开仓：#", FormatULongValue(ticket), " ", type_str, " ", lots, "手 @ ", price,
             " | Magic=", magicForOrder, " (", strategy, ")");
       ReportResult(cmd_id, "OK", (long)ticket, "");
+
+      // === 加仓后统一修改已有同方向仓位的 SL/TP（与 MT4 行为一致）===
+      double unifiedSL = GetJsonDouble(cmd, "unified_sl");
+      if(unifiedSL > 0)
+      {
+         Print("📐 加仓统一SL: ", unifiedSL, " → 修改已有 ", type_str, " 仓位");
+         int synced = 0;
+         double minDist = (double)SymbolInfoInteger(Symbol_, SYMBOL_TRADE_STOPS_LEVEL) * GetSymbolPoint(Symbol_);
+         for(int j = PositionsTotal() - 1; j >= 0; j--)
+         {
+            if(!SelectPositionByIndex(j)) continue;
+            if(PositionGetString(POSITION_SYMBOL) != Symbol_) continue;
+            if(PositionGetInteger(POSITION_MAGIC) != magicForOrder) continue;
+
+            ulong existTicket = (ulong)PositionGetInteger(POSITION_TICKET);
+            if(existTicket == ticket) continue; // 跳过刚开的新仓
+
+            ENUM_POSITION_TYPE existingType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+            if((type_str == "BUY" && existingType != POSITION_TYPE_BUY) ||
+               (type_str == "SELL" && existingType != POSITION_TYPE_SELL))
+               continue;
+
+            double existSL = PositionGetDouble(POSITION_SL);
+            double existTP = PositionGetDouble(POSITION_TP);
+            double openPx  = PositionGetDouble(POSITION_PRICE_OPEN);
+            double newSL   = unifiedSL;
+            double newTP   = tp1; // 统一 TP1
+
+            // 确保 SL 距离符合 broker 最小要求
+            if(minDist > 0)
+            {
+               if(type_str == "BUY" && MathAbs(openPx - newSL) < minDist)
+                  newSL = openPx - minDist;
+               if(type_str == "SELL" && MathAbs(newSL - openPx) < minDist)
+                  newSL = openPx + minDist;
+            }
+
+            // SL 只能向盈利方向移动（BUY: new >= old, SELL: new <= old）
+            bool slOK = false;
+            if(type_str == "BUY" && newSL >= existSL)  slOK = true;
+            if(type_str == "SELL" && newSL <= existSL) slOK = true;
+
+            if(slOK && (newSL != existSL || newTP != existTP))
+            {
+               PrepareTrade(Symbol_, magicForOrder);
+               if(TradeOperationSucceeded(trade.PositionModify(existTicket, newSL, newTP)))
+               {
+                  synced++;
+                  Print("  ✅ #", FormatULongValue(existTicket), " SL: ", existSL, "→", newSL,
+                        " TP: ", existTP, "→", newTP);
+               }
+               else
+               {
+                  Print("  ⚠️ #", FormatULongValue(existTicket), " 改单失败: ", GetTradeErrorCode());
+               }
+            }
+         }
+         if(synced > 0)
+            Print("📐 加仓统一SL完成: 同步 ", synced, " 个仓位");
+      }
    }
    else if(TradeOperationPartiallyFilled(result))
    {
@@ -1772,6 +1968,276 @@ void ExecuteSignal(string cmd, string cmd_id)
       int err = GetTradeErrorCode();
       Print("❌ 开仓失败：Error#", err);
       ReportResult(cmd_id, "ERROR", 0, IntegerToString(err));
+   }
+}
+
+// ============================================================
+// 执行挂单指令（限价/止损单，与 MT4 ExecutePending 对齐）
+// ============================================================
+void ExecutePending(string cmd, string cmd_id)
+{
+   string signalSymbol = GetJsonStringSafe(cmd, "symbol");
+   string type_str     = GetJsonStringSafe(cmd, "type");
+   string orderType    = GetJsonStringSafe(cmd, "order_type");
+   double entry        = GetJsonDouble(cmd, "entry");
+   double sl           = GetJsonDouble(cmd, "sl");
+   double tp1          = GetJsonDouble(cmd, "tp1");
+   if(tp1 == 0.0) tp1 = GetJsonDouble(cmd, "tp"); // 兼容
+   double tp2          = GetJsonDouble(cmd, "tp2");    // Multi-TP 拆单: TP2
+   bool   tpSplit      = GetJsonBool(cmd, "tp_split"); // Multi-TP 拆单标志
+   int    score        = GetJsonInt(cmd, "score");
+   string strategy     = GetJsonStringSafe(cmd, "strategy");
+   datetime expiration = (datetime)GetJsonDouble(cmd, "expiration");
+
+   Print("📡 挂单信号：", type_str, " | 品种=", Symbol_,
+         " | 入场=", entry, " SL=", sl, " TP=", tp1, " | ", strategy, " 评分:", score);
+
+   if(StringLen(signalSymbol) > 0 && !IsPrimarySymbol(signalSymbol))
+   {
+      Print("❌ 挂单品种不匹配：", signalSymbol, " | 本实例=", Symbol_);
+      ReportResult(cmd_id, "ERROR", 0, "symbol_mismatch");
+      return;
+   }
+
+   if(type_str != "BUY" && type_str != "SELL")
+   {
+      Print("❌ 非法挂单方向：", type_str);
+      ReportResult(cmd_id, "ERROR", 0, "invalid_type");
+      return;
+   }
+
+   int magicForOrder = GetStrategyMagic(strategy);
+   if(magicForOrder <= 0)
+   {
+      Print("❌ 未知策略：", strategy);
+      ReportResult(cmd_id, "ERROR", 0, "invalid_strategy");
+      return;
+   }
+
+   if(!IsStrategyEnabled(strategy))
+   {
+      Print("❌ 策略未启用：", strategy);
+      ReportResult(cmd_id, "ERROR", 0, "strategy_disabled");
+      return;
+   }
+
+   double point = GetSymbolPoint(Symbol_);
+
+   // 确定挂单类型
+   ENUM_ORDER_TYPE pendingType = ORDER_TYPE_BUY_LIMIT;
+   if(orderType == "BUY_LIMIT")
+      pendingType = ORDER_TYPE_BUY_LIMIT;
+   else if(orderType == "BUY_STOP")
+      pendingType = ORDER_TYPE_BUY_STOP;
+   else if(orderType == "SELL_LIMIT")
+      pendingType = ORDER_TYPE_SELL_LIMIT;
+   else if(orderType == "SELL_STOP")
+      pendingType = ORDER_TYPE_SELL_STOP;
+   else
+   {
+      // 自动检测：entry 与当前价格的相对位置
+      if(type_str == "BUY")
+      {
+         double ask = SymbolInfoDouble(Symbol_, SYMBOL_ASK);
+         if(entry <= ask + 5 * point)
+            pendingType = ORDER_TYPE_BUY_LIMIT;  // 低于或接近市价 → 限价买入
+         else
+            pendingType = ORDER_TYPE_BUY_STOP;   // 高于市价 → 止损买入
+      }
+      else // SELL
+      {
+         double bid = SymbolInfoDouble(Symbol_, SYMBOL_BID);
+         if(entry >= bid - 5 * point)
+            pendingType = ORDER_TYPE_SELL_LIMIT; // 高于或接近市价 → 限价卖出
+         else
+            pendingType = ORDER_TYPE_SELL_STOP;  // 低于市价 → 止损卖出
+      }
+   }
+
+   // 检查重复挂单（同品种、同方向、同magic、价格相近）
+   bool newIsBuy = (pendingType == ORDER_TYPE_BUY_LIMIT || pendingType == ORDER_TYPE_BUY_STOP);
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ordTicket = OrderGetTicket(i);
+      if(ordTicket == 0) continue;
+      if(OrderGetString(ORDER_SYMBOL) != Symbol_) continue;
+      if(OrderGetInteger(ORDER_MAGIC) != magicForOrder) continue;
+
+      ENUM_ORDER_TYPE ot = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      bool isBuyPending  = (ot == ORDER_TYPE_BUY_LIMIT || ot == ORDER_TYPE_BUY_STOP);
+      bool isSellPending = (ot == ORDER_TYPE_SELL_LIMIT || ot == ORDER_TYPE_SELL_STOP);
+      if(!isBuyPending && !isSellPending) continue;
+
+      if((newIsBuy && isBuyPending) || (!newIsBuy && isSellPending))
+      {
+         // 价格过于接近（10 点以内）视为重复挂单
+         double existingPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+         if(MathAbs(existingPrice - entry) < 10 * point)
+         {
+            Print("❌ 已有相近价格挂单：", Symbol_, " 现有=", existingPrice, " 新=", entry);
+            ReportResult(cmd_id, "ERROR", 0, "duplicate_pending");
+            return;
+         }
+      }
+   }
+
+   // 计算手数：优先使用服务端下发的 cmd.lots（AI signal 固定0.01），
+   // 其次使用策略默认手数。挂单路径历史上忽略了 cmd.lots，导致 ai_signal 以
+   // FixedLots(0.10) 而非 0.01 成交（10倍超配）。
+   double currentPrice = (type_str == "BUY") ? SymbolInfoDouble(Symbol_, SYMBOL_ASK)
+                                             : SymbolInfoDouble(Symbol_, SYMBOL_BID);
+   double sl_distance = MathAbs(currentPrice - sl);
+   double lots = CalcLotsForStrategy(strategy, sl_distance);
+   double cmdLots = GetJsonDouble(cmd, "lots");
+   if(cmdLots > 0.0009)
+      lots = cmdLots;   // 服务端指定手数优先（含0.01固定值）
+   lots = NormalizeVolume(Symbol_, lots);
+
+   // 挂单同样需要通过本地风控检查
+   if(!CheckRisk(type_str))
+   {
+      Print("❌ 风控拒绝挂单：", type_str, " ", Symbol_);
+      ReportResult(cmd_id, "REJECTED", 0, "risk_check_failed");
+      return;
+   }
+
+   string comment = "GB_" + strategy + "_S" + IntegerToString(score);
+
+   // 过期时间：默认24小时；broker 不支持指定过期时间则回退 GTC
+   if(expiration <= 0)
+      expiration = TimeCurrent() + 24 * 60 * 60;
+   ENUM_ORDER_TYPE_TIME timeType = ORDER_TIME_SPECIFIED;
+   long expModes = SymbolInfoInteger(Symbol_, SYMBOL_EXPIRATION_MODE);
+   if((expModes & SYMBOL_EXPIRATION_SPECIFIED) == 0)
+   {
+      timeType = ORDER_TIME_GTC;
+      expiration = 0;
+   }
+
+   // SL/TP 满足最小止损距离（MT5 挂单 SL/TP 随下单请求提交，非法距离会导致整单被拒）
+   double min_stop = (double)SymbolInfoInteger(Symbol_, SYMBOL_TRADE_STOPS_LEVEL) * point;
+   double final_sl = sl, final_tp1 = tp1, final_tp2 = tp2;
+   if(min_stop > 0)
+   {
+      if(sl > 0 && MathAbs(entry - sl) < min_stop)
+         final_sl = (type_str == "BUY") ? entry - min_stop : entry + min_stop;
+      if(tp1 > 0 && MathAbs(tp1 - entry) < min_stop)
+         final_tp1 = (type_str == "BUY") ? entry + min_stop : entry - min_stop;
+      if(tp2 > 0 && MathAbs(tp2 - entry) < min_stop)
+         final_tp2 = (type_str == "BUY") ? entry + min_stop : entry - min_stop;
+   }
+
+   PrepareTrade(Symbol_, magicForOrder);
+
+   // Multi-TP 拆单: 挂单模式同样支持（两个挂单，同入场价不同 TP）
+   if(tpSplit && tp2 > 0 && MathAbs(tp1 - tp2) > _Point)
+   {
+      double lotsTP1 = 0, lotsTP2 = 0;
+      if(!SplitLotsForMultiTP_MT5(lots, lotsTP1, lotsTP2))
+      {
+         Print("❌ 拆单挂单失败: 手数无效 totalLots=", DoubleToString(lots, 2));
+         ReportResult(cmd_id, "ERROR", 0, "split_lots_invalid");
+         return;
+      }
+
+      ulong ticketA = 0, ticketB = 0;
+      if(TradeOperationSucceeded(trade.OrderOpen(Symbol_, pendingType, lotsTP1, 0.0, entry,
+                                                 final_sl, final_tp1, timeType, expiration,
+                                                 comment + "_A")))
+         ticketA = (ulong)trade.ResultOrder();
+
+      if(TradeOperationSucceeded(trade.OrderOpen(Symbol_, pendingType, lotsTP2, 0.0, entry,
+                                                 final_sl, final_tp2, timeType, expiration,
+                                                 comment + "_B")))
+         ticketB = (ulong)trade.ResultOrder();
+
+      if(ticketA > 0 && ticketB > 0)
+      {
+         Print("✅ 拆单挂单成功: TP1=#", FormatULongValue(ticketA), " (", DoubleToString(lotsTP1, 2), "手) | ",
+               "TP2=#", FormatULongValue(ticketB), " (", DoubleToString(lotsTP2, 2), "手)");
+         ReportResult(cmd_id, "OK", (long)ticketA,
+                      "split_pending;A=" + FormatULongValue(ticketA) + "_" + DoubleToString(lotsTP1, 2) +
+                      ";B=" + FormatULongValue(ticketB) + "_" + DoubleToString(lotsTP2, 2));
+      }
+      else if(ticketA > 0 || ticketB > 0)
+      {
+         Print("⚠️ 拆单挂单部分失败: A=", FormatULongValue(ticketA), " B=", FormatULongValue(ticketB));
+         ReportResult(cmd_id, "PARTIAL", (long)(ticketA > 0 ? ticketA : ticketB),
+                      "split_pending;A=" + FormatULongValue(ticketA) + ";B=" + FormatULongValue(ticketB));
+      }
+      else
+      {
+         Print("❌ 拆单挂单全部失败: Error#", GetTradeErrorCode());
+         ReportResult(cmd_id, "ERROR", 0, "split_all_failed");
+      }
+      return;
+   }
+
+   bool sent = trade.OrderOpen(Symbol_, pendingType, lots, 0.0, entry,
+                               final_sl, final_tp1, timeType, expiration, comment);
+   if(TradeOperationSucceeded(sent))
+   {
+      ulong ticket = (ulong)trade.ResultOrder();
+      Print("✅ 挂单成功：#", FormatULongValue(ticket), " ", type_str, " ", lots, "手 @ ", entry,
+            " | Magic=", magicForOrder, " (", strategy, ")");
+      ReportResult(cmd_id, "OK", (long)ticket, "");
+   }
+   else
+   {
+      int err = GetTradeErrorCode();
+      Print("❌ 挂单失败：Error#", err);
+      ReportResult(cmd_id, "ERROR", 0, IntegerToString(err));
+   }
+}
+
+// ============================================================
+// 取消挂单指令
+// ============================================================
+void ExecuteCancelPending(string cmd, string cmd_id)
+{
+   ulong ticket = (ulong)GetJsonDouble(cmd, "ticket");
+   string reason = GetJsonStringSafe(cmd, "reason");
+
+   if(ticket == 0)
+   {
+      Print("❌ 取消挂单：无效ticket");
+      ReportResult(cmd_id, "ERROR", 0, "invalid_ticket");
+      return;
+   }
+
+   if(!OrderSelect(ticket))
+   {
+      Print("❌ 取消挂单：找不到订单 #", FormatULongValue(ticket));
+      ReportResult(cmd_id, "ERROR", 0, "order_not_found");
+      return;
+   }
+
+   ENUM_ORDER_TYPE ot = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+   if(ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_BUY_STOP &&
+      ot != ORDER_TYPE_SELL_LIMIT && ot != ORDER_TYPE_SELL_STOP)
+   {
+      Print("❌ 取消挂单：#", FormatULongValue(ticket), " 不是挂单（", (int)ot, "）");
+      ReportResult(cmd_id, "ERROR", 0, "not_pending");
+      return;
+   }
+
+   if(!IsOurMagic(OrderGetInteger(ORDER_MAGIC)))
+   {
+      Print("❌ 取消挂单：#", FormatULongValue(ticket), " 不属于本 EA");
+      ReportResult(cmd_id, "ERROR", 0, "order_not_owned");
+      return;
+   }
+
+   if(TradeOperationSucceeded(trade.OrderDelete(ticket)))
+   {
+      Print("🗑️ 取消挂单：#", FormatULongValue(ticket), " | ", reason);
+      ReportResult(cmd_id, "OK", (long)ticket, "");
+   }
+   else
+   {
+      int err = GetTradeErrorCode();
+      Print("❌ 取消挂单失败：#", FormatULongValue(ticket), " Error#", err);
+      ReportResult(cmd_id, "ERROR", (long)ticket, IntegerToString(err));
    }
 }
 
@@ -1834,7 +2300,7 @@ void ExecuteModify(string cmd, string cmd_id)
 void ExecuteClose(string cmd, string cmd_id)
 {
    ulong ticket = (ulong)GetJsonDouble(cmd, "ticket");
-   string reason = GetJsonString(cmd, "reason");
+   string reason = GetJsonStringSafe(cmd, "reason");
 
    Print("📤 平仓：#", FormatULongValue(ticket), " | ", reason);
 
@@ -1863,7 +2329,26 @@ void ExecuteClose(string cmd, string cmd_id)
    long magic = PositionGetInteger(POSITION_MAGIC);
    PrepareTrade(sym, magic);
 
-   bool result = trade.PositionClose(ticket, (ulong)Slippage);
+   // 读取服务端指定的平仓手数（用于 TP1/TP2 分批平仓）。
+   // 若未指定或指定值 >= 总手数，则全平。
+   double cmdLots   = GetJsonDouble(cmd, "lots");
+   double totalLots = PositionGetDouble(POSITION_VOLUME);
+   bool   partial   = false;
+   double closeLots = totalLots;
+   if(cmdLots > 0.0009 && cmdLots < totalLots - 0.0001)
+   {
+      double normalized = NormalizeCloseVolume(sym, cmdLots);
+      if(normalized > 0 && normalized < totalLots - 0.0000001)
+      {
+         closeLots = normalized;
+         partial = true;
+      }
+   }
+
+   Print("📦 平仓手数：指令=", cmdLots, " 持仓=", totalLots, " 执行=", closeLots);
+
+   bool result = partial ? trade.PositionClosePartial(ticket, closeLots, (ulong)Slippage)
+                         : trade.PositionClose(ticket, (ulong)Slippage);
    if(TradeOperationSucceeded(result))
    {
       Print("✅ 平仓成功");
@@ -2226,6 +2711,106 @@ string GetArrayElement(string array_str, int index)
    }
 
    return "";
+}
+
+//+------------------------------------------------------------------+
+//| 安全的 JSON 字符串解析（处理转义）                                |
+//+------------------------------------------------------------------+
+string GetJsonStringSafe(string json, string key)
+{
+   string pattern = "\"" + key + "\":\"";
+   int pos = StringFind(json, pattern);
+   if(pos < 0) return "";
+
+   int start = pos + StringLen(pattern);
+   string result = "";
+   bool escaped = false;
+
+   for(int i = start; i < StringLen(json); i++)
+   {
+      ushort c = StringGetCharacter(json, i);
+
+      if(escaped)
+      {
+         // 处理转义字符
+         if(c == 'n') result += "\n";
+         else if(c == 't') result += "\t";
+         else if(c == 'r') result += "\r";
+         else if(c == '\\') result += "\\";
+         else if(c == '"') result += "\"";
+         else result += ShortToString(c);  // 未知转义，保留原字符
+
+         escaped = false;
+      }
+      else if(c == '\\')
+      {
+         escaped = true;
+      }
+      else if(c == '"')
+      {
+         break;  // 字符串结束
+      }
+      else
+      {
+         result += ShortToString(c);
+      }
+   }
+
+   return result;
+}
+
+//+------------------------------------------------------------------+
+//| 安全的 JSON 数组解析（忽略字符串内的括号）                        |
+//+------------------------------------------------------------------+
+string GetJsonArraySafe(string json, string key)
+{
+   string pattern = "\"" + key + "\":[";
+   int pos = StringFind(json, pattern);
+   if(pos < 0) return "";
+
+   int start = pos + StringLen(pattern) - 1;
+   int bracket_count = 0;
+   int end = start;
+   bool in_string = false;
+   bool escaped = false;
+
+   for(int i = start; i < StringLen(json); i++)
+   {
+      ushort c = StringGetCharacter(json, i);
+
+      if(escaped)
+      {
+         escaped = false;
+         continue;
+      }
+
+      if(c == '\\')
+      {
+         escaped = true;
+         continue;
+      }
+
+      if(c == '"')
+      {
+         in_string = !in_string;
+         continue;
+      }
+
+      if(in_string) continue;  // 忽略字符串内的字符
+
+      if(c == '[') bracket_count++;
+      else if(c == ']')
+      {
+         bracket_count--;
+         if(bracket_count == 0)
+         {
+            end = i;
+            break;
+         }
+      }
+   }
+
+   return StringSubstr(json, start + 1, end - start - 1);
 }
 
 //+------------------------------------------------------------------+
