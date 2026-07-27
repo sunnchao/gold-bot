@@ -35,6 +35,7 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
     entry_max: round2(entryMax),
     sl: round2(numberField(input.tradePlan, 'stop_loss')),
     tp: round2(firstPositiveAIApproveTakeProfit(arrayNumberField(input.tradePlan, 'take_profit'))),
+    // lots<=0：不写入有效手数，EA 走 CalcLotsForStrategy（FixedLots / SymbolLotsMap）
     lots: round2(calcAIApproveLots(numberField(input.tradePlan, 'max_lots'))),
     order_type: input.orderType,
     expiration,

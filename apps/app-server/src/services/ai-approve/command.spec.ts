@@ -42,7 +42,7 @@ describe('AI approve command builder', () => {
       entry_max: 3335.7,
       sl: 3330.46,
       tp: 3344.88,
-      lots: 0.01,
+      lots: 0,
       order_type: 'market',
       expiration: 1776081600,
       score: 80,
@@ -84,7 +84,7 @@ describe('AI approve command builder', () => {
     expect(buyLimit).toMatchObject({
       type: 'BUY',
       entry: 3332.5,
-      lots: 0.01,
+      lots: 0,
       order_type: 'BUY_LIMIT',
       expiration: 1776081600,
       strategy: 'ai_signal'
@@ -112,7 +112,7 @@ describe('AI approve command builder', () => {
     expect(sellLimit).toMatchObject({
       type: 'SELL',
       entry: 3338.5,
-      lots: 0.01,
+      lots: 0,
       order_type: 'SELL_LIMIT',
       expiration: 1776081600,
       strategy: 'ai_signal'

@@ -21,7 +21,7 @@ describe('AI approve pending gate', () => {
       accepted: true,
       currentPrice: 3335.6,
       entry: 3335.6,
-      lots: 0.01,
+      lots: 0,
       h1Atr: 2
     });
   });
@@ -480,7 +480,7 @@ describe('AI approve favorable add-on', () => {
       tradePlan: tradePlan({
         add_on: true,
         add_on_type: 'favorable',
-        max_lots: 0.10,
+        max_lots: 0.05,
         entry_zone: { min: 3336.0, max: 3336.2 },
         execution_type: 'limit',
         requested_order_type: 'BUY_LIMIT'
@@ -488,7 +488,7 @@ describe('AI approve favorable add-on', () => {
       nowIso
     })).resolves.toMatchObject({
       accepted: true,
-      lots: 0.01
+      lots: 0
     });
   });
 
@@ -510,7 +510,7 @@ describe('AI approve favorable add-on', () => {
       tradePlan: tradePlan({
         add_on: true,
         add_on_type: 'favorable',
-        max_lots: 0.10,
+        max_lots: 0.05,
         entry_zone: { min: 3336.6, max: 3336.8 },
         execution_type: 'limit',
         requested_order_type: 'BUY_LIMIT'
@@ -579,7 +579,7 @@ describe('AI approve adverse add-on', () => {
         requested_order_type: 'BUY_LIMIT'
       }),
       nowIso
-    })).resolves.toMatchObject({ accepted: true, lots: 0.01 });
+    })).resolves.toMatchObject({ accepted: true, lots: 0 });
   });
 
   it('rejects adverse add-on when loss < 1.0 ATR (L1)', async () => {

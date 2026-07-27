@@ -10,11 +10,13 @@ export function pickAIApproveEntryPrice(entryZone: EaRecord | undefined): number
 }
 
 export function calcAIApproveLots(maxLots: number): number {
-  // AI signal 手数固定 0.01，忽略 LLM max_lots 缩放（仅要求 max_lots > 0 表示有仓位意图）
+  // AI signal 手数交给 EA 通用配置（UseFixedLots / FixedLots / SymbolLotsMap）。
+  // 服务端不下发 lots（返回 0），EA 在 cmd.lots<=0 时走 CalcLotsForStrategy。
+  // max_lots 仅表示 LLM 有开仓意图，并用于 gate 加仓比例上限校验。
   if (maxLots <= 0) {
     return 0;
   }
-  return 0.01;
+  return 0;
 }
 
 export function firstPositiveAIApproveTakeProfit(values: number[]): number {

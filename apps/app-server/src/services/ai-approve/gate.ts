@@ -68,10 +68,12 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     return reject('entry_zone.invalid');
   }
 
-  let lots = calcAIApproveLots(numberField(input.tradePlan, 'max_lots'));
-  if (lots <= 0) {
+  const maxLots = numberField(input.tradePlan, 'max_lots');
+  if (maxLots <= 0) {
     return reject('lots.too_small');
   }
+  // 0 =  defer to EA FixedLots/SymbolLotsMap（不下发 cmd.lots）
+  let lots = calcAIApproveLots(maxLots);
 
   const h1Bars = await input.store.getBars(input.accountId, input.symbol, 'H1');
   const h1Atr = latestAtr(h1Bars);
@@ -97,6 +99,10 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
       return reject('trend.inverse_confidence');
     }
     if (trend.consensusStrength < 0.3) {
+      // 手数由 EA 决定时服务端无法减半，弱趋势直接拒绝
+      if (lots <= 0) {
+        return reject('trend.weak_lots_below_min');
+      }
       lots /= 2;
       if (lots < 0.01) {
         return reject('trend.weak_lots_below_min');
@@ -127,6 +133,9 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
       return reject('position.add_on_distance');
     }
 
+    // 实际下单手数由 EA 配置决定；加仓比例用 max_lots 作为意图上限做服务端校验
+    const sizeForAddOnLimit = lots > 0 ? lots : maxLots;
+
     if (addOnType === 'favorable') {
       const existingLots = totalLotsOnSide(positions, input.symbol, side);
       if (existingLots <= 0) {
@@ -136,7 +145,7 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
       if (profitAtr < 1.0) {
         return reject('position.favorable_add_profit_not_enough');
       }
-      if (lots > existingLots * 0.5) {
+      if (sizeForAddOnLimit > existingLots * 0.5) {
         return reject('position.favorable_add_lots_too_large');
       }
     }
@@ -169,17 +178,17 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
         return reject('position.adverse_add_count_exceeded');
       }
 
-      if (lots > existingLots * 0.6) {
+      if (sizeForAddOnLimit > existingLots * 0.6) {
         return reject('position.adverse_add_single_lots_too_large');
       }
 
       const initialLots = largestLotsOnSide(positions, input.symbol, side);
-      if (initialLots > 0 && addOnMeta.addOnCount > 0 && existingLots - initialLots + lots > initialLots * 1.5) {
+      if (initialLots > 0 && addOnMeta.addOnCount > 0 && existingLots - initialLots + sizeForAddOnLimit > initialLots * 1.5) {
         return reject('position.adverse_add_cumulative_lots_exceeded');
       }
 
       const maxTotalLots = numberField(input.tradePlan, 'max_total_lots');
-      if (maxTotalLots > 0 && existingLots + lots > maxTotalLots) {
+      if (maxTotalLots > 0 && existingLots + sizeForAddOnLimit > maxTotalLots) {
         return reject('position.adverse_add_total_lots_exceeded');
       }
 
