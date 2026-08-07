@@ -30,7 +30,15 @@ export interface SymbolProfile {
   assetClass: 'metal' | 'forex' | 'index' | 'energy' | 'commodity' | 'crypto';
   /** Whether volume data is reliable (forex OTC volume is unreliable) */
   volumeReliable: boolean;
+  /** Minimum order size in MT4 lots for this symbol/profile */
+  minLots?: number;
+  /** Maximum order size in MT4 lots for this symbol/profile */
+  maxLots?: number;
 }
+
+export const DEFAULT_MIN_LOTS = 0.01;
+export const DEFAULT_MAX_LOTS = 0.5;
+const MICRO_CONTRACT_MIN_LOTS = 0.1;
 
 const PROFILES: Record<string, SymbolProfile> = {
   XAUUSD: {
@@ -51,6 +59,8 @@ const PROFILES: Record<string, SymbolProfile> = {
     priceRange: [1800, 4500],
     assetClass: 'metal',
     volumeReliable: true,
+    minLots: DEFAULT_MIN_LOTS,
+    maxLots: DEFAULT_MAX_LOTS,
   },
   GOLD: {
     symbol: 'GOLD',
@@ -70,6 +80,8 @@ const PROFILES: Record<string, SymbolProfile> = {
     priceRange: [1800, 4500],
     assetClass: 'metal',
     volumeReliable: true,
+    minLots: DEFAULT_MIN_LOTS,
+    maxLots: DEFAULT_MAX_LOTS,
   },
   GBPJPY: {
     symbol: 'GBPJPY',
@@ -89,6 +101,8 @@ const PROFILES: Record<string, SymbolProfile> = {
     priceRange: [150, 250],
     assetClass: 'forex',
     volumeReliable: false,
+    minLots: DEFAULT_MIN_LOTS,
+    maxLots: DEFAULT_MAX_LOTS,
   },
   EURJPY: {
     symbol: 'EURJPY',
@@ -108,6 +122,8 @@ const PROFILES: Record<string, SymbolProfile> = {
     priceRange: [130, 200],
     assetClass: 'forex',
     volumeReliable: false,
+    minLots: DEFAULT_MIN_LOTS,
+    maxLots: DEFAULT_MAX_LOTS,
   },
   USDJPY: {
     symbol: 'USDJPY',
@@ -127,6 +143,8 @@ const PROFILES: Record<string, SymbolProfile> = {
     priceRange: [120, 180],
     assetClass: 'forex',
     volumeReliable: false,
+    minLots: DEFAULT_MIN_LOTS,
+    maxLots: DEFAULT_MAX_LOTS,
   },
   XAGUSD: {
     symbol: 'XAGUSD',
@@ -146,6 +164,8 @@ const PROFILES: Record<string, SymbolProfile> = {
     priceRange: [15, 50],
     assetClass: 'metal',
     volumeReliable: true,
+    minLots: DEFAULT_MIN_LOTS,
+    maxLots: DEFAULT_MAX_LOTS,
   },
   US100CASH: {
     symbol: 'US100CASH',
@@ -165,6 +185,8 @@ const PROFILES: Record<string, SymbolProfile> = {
     priceRange: [15000, 35000],
     assetClass: 'index',
     volumeReliable: true,
+    minLots: DEFAULT_MIN_LOTS,
+    maxLots: DEFAULT_MAX_LOTS,
   },
   USOILCASH: {
     symbol: 'USOILCASH',
@@ -184,6 +206,8 @@ const PROFILES: Record<string, SymbolProfile> = {
     priceRange: [40, 120],
     assetClass: 'commodity',
     volumeReliable: true,
+    minLots: DEFAULT_MIN_LOTS,
+    maxLots: DEFAULT_MAX_LOTS,
   },
   UKOILCASH: {
     symbol: 'UKOILCASH',
@@ -203,8 +227,28 @@ const PROFILES: Record<string, SymbolProfile> = {
     priceRange: [40, 120],
     assetClass: 'commodity',
     volumeReliable: true,
+    minLots: DEFAULT_MIN_LOTS,
+    maxLots: DEFAULT_MAX_LOTS,
   },
 };
+
+function hasMicroContractSuffix(rawSymbol: string): boolean {
+  const normalized = rawSymbol.trim();
+  if (normalized.includes('#')) return true;
+  return /m$/i.test(normalized.replace(/[^A-Z0-9]/gi, ''));
+}
+
+function withLotBounds(profile: SymbolProfile, rawSymbol: string): SymbolProfile {
+  const minLots = hasMicroContractSuffix(rawSymbol)
+    ? MICRO_CONTRACT_MIN_LOTS
+    : profile.minLots ?? DEFAULT_MIN_LOTS;
+
+  return {
+    ...profile,
+    minLots,
+    maxLots: profile.maxLots ?? DEFAULT_MAX_LOTS,
+  };
+}
 
 /**
  * Resolve a SymbolProfile for the given symbol string.
@@ -212,22 +256,22 @@ const PROFILES: Record<string, SymbolProfile> = {
  */
 export function getSymbolProfile(rawSymbol: string): SymbolProfile {
   // Try exact match first
-  if (PROFILES[rawSymbol]) return PROFILES[rawSymbol];
+  if (PROFILES[rawSymbol]) return withLotBounds(PROFILES[rawSymbol], rawSymbol);
 
   // Strip common suffixes (m, #, ., etc.) to find base symbol
   const base = rawSymbol.replace(/[^A-Z0-9]/gi, '').toUpperCase();
-  if (PROFILES[base]) return PROFILES[base];
+  if (PROFILES[base]) return withLotBounds(PROFILES[base], rawSymbol);
 
   // Try prefix matching for known patterns (one-way only: input starts with known key)
   // e.g., "XAUUSDm" → matches "XAUUSD"; but "XAG" should NOT match "XAUUSD"
   for (const [key, profile] of Object.entries(PROFILES)) {
     if (base.startsWith(key)) {
-      return profile;
+      return withLotBounds(profile, rawSymbol);
     }
   }
 
   // Fallback: construct a generic forex profile
-  return {
+  return withLotBounds({
     symbol: rawSymbol,
     name: rawSymbol,
     pricePrecision: 3,
@@ -245,7 +289,7 @@ export function getSymbolProfile(rawSymbol: string): SymbolProfile {
     // No priceRange for generic fallback — validation will use current price heuristic
     assetClass: 'forex',
     volumeReliable: false,
-  };
+  }, rawSymbol);
 }
 
 /**

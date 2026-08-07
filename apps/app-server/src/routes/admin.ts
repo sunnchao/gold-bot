@@ -41,6 +41,13 @@ export type AdminRouteHelpers = {
 
 export async function handleAdminRoute(request: AdminRouteRequest, deps: AdminRouteDeps, helpers: AdminRouteHelpers): Promise<JsonResponse> {
   const parts = request.path.split('/').filter(Boolean);
+  const decode = (value: string): string => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  };
 
   const isAccountBoundRead =
     (parts[0] === 'api' && parts[1] === 'symbols' && parts[2] != null && parts.length === 3) ||
@@ -86,12 +93,14 @@ export async function handleAdminRoute(request: AdminRouteRequest, deps: AdminRo
     if (tokenResult.response != null) {
       return tokenResult.response;
     }
-    if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, parts[3], deps.adminTokens)) {
+    const accountId = decode(parts[3]);
+    const symbol = decode(parts[4]);
+    if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, accountId, deps.adminTokens)) {
       return error(403, 'forbidden');
     }
     return {
       statusCode: 200,
-      body: await helpers.tradingCoreAnalysis(deps.store, parts[3], parts[4], deps.nowIso())
+      body: await helpers.tradingCoreAnalysis(deps.store, accountId, symbol, deps.nowIso())
     };
   }
   if (
@@ -249,7 +258,7 @@ export async function handleAdminRoute(request: AdminRouteRequest, deps: AdminRo
     if (tokenResult.response != null) {
       return tokenResult.response;
     }
-    const accountId = parts[2]!;
+    const accountId = decode(parts[2]!);
     if (!authorizeApiAccount(deps.tokenAccounts, tokenResult.token, accountId, deps.adminTokens)) {
       return error(403, 'forbidden');
     }
@@ -264,19 +273,21 @@ export async function handleAdminRoute(request: AdminRouteRequest, deps: AdminRo
   if (parts[0] === 'api' && parts[1] === 'symbols' && parts[2] != null && parts.length === 3) {
     return {
       statusCode: 200,
-      body: await deps.store.listSymbols(parts[2])
+      body: await deps.store.listSymbols(decode(parts[2]))
     };
   }
   if (parts[0] === 'api' && parts[1] === 'ai_symbols' && parts[2] != null && parts.length === 3) {
     return {
       statusCode: 200,
-      body: await deps.store.listAISymbols(parts[2])
+      body: await deps.store.listAISymbols(decode(parts[2]))
     };
   }
   if (parts[0] === 'api' && parts[1] === 'pending_signal' && parts[2] != null && parts[3] != null && parts.length === 4) {
+    const accountId = decode(parts[2]);
+    const symbol = decode(parts[3]);
     return {
       statusCode: 200,
-      body: await deps.store.getPendingSignals(parts[2], parts[3])
+      body: await deps.store.getPendingSignals(accountId, symbol)
     };
   }
   if (parts[0] === 'api' && parts[1] === 'v1' && parts[2] === 'accounts' && parts.length === 3) {

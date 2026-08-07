@@ -15,7 +15,7 @@ export interface PendingOrderAction {
   stop_loss: number;
   take_profit_1: number;
   take_profit_2?: number;
-  lots: number;                 // 0.01–0.10
+  lots: number;                 // profile-constrained MT4 lots
   order_type: 'limit' | 'stop'; // limit=回调入场, stop=突破入场
   expiry_hours?: number;        // 默认 4
   reason: string;               // 中英双语
@@ -61,7 +61,7 @@ export const TRADE_ACTION_TOOLS = [
         stop_loss: { type: 'number' },
         take_profit_1: { type: 'number' },
         take_profit_2: { type: 'number' },
-        lots: { type: 'number', minimum: 0.01, maximum: 0.5 },
+        lots: { type: 'number' },
         order_type: { type: 'string', enum: ['limit', 'stop'], description: 'limit=回调入场, stop=突破入场' },
         expiry_hours: { type: 'number', default: 4 },
         reason: { type: 'string', description: 'Bilingual explanation (Chinese first, English in parens)' },
@@ -81,7 +81,7 @@ export const TRADE_ACTION_TOOLS = [
         stop_loss: { type: 'number' },
         take_profit_1: { type: 'number' },
         take_profit_2: { type: 'number' },
-        lots: { type: 'number', minimum: 0.01, maximum: 0.5 },
+        lots: { type: 'number' },
         reason: { type: 'string' },
       },
     },

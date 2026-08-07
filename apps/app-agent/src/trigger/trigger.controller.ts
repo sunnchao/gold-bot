@@ -5,7 +5,7 @@ import { WorkflowService } from '../graph/workflow.service.js';
 const ALLOWED_SYMBOLS = new Set([
   'XAUUSD', 'XAGUSD', 'GOLD', 'GBPJPY', 'EURJPY', 'USDJPY',
   'GBPUSD', 'USDCAD', 'EURUSD', 'AUDUSD', 'NZDUSD', 'USDCNH',
-  'US100CASH', 'USOILCASH', 'UKOILCASH',
+  'US100CASH', 'USOILCASH', 'UKOILCASH', 'GOLDM#',
 ]);
 
 /** Cooldown window per (account,symbol) to prevent duplicate analysis */
@@ -64,7 +64,7 @@ export class TriggerController {
 
     // 4. Execute (force=true skips market-closed check)
     const forceAnalyze = force === 'true' || force === '1';
-    await this.workflow.run(account, [normalized], { forceAnalyze });
+    await this.workflow.run(account, [symbol], { forceAnalyze });
 
     return {
       triggered: true,
