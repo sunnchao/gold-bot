@@ -6,7 +6,13 @@ import type { ChanlunAnalysis, ChanlunBar, ElliottWaveAnalysis, TechnicalAnalysi
 import type { GoldbotBar, GoldbotPayload, PendingSignal, HarmonicContextPayload } from '../types/goldbot.js';
 import { TRADE_ACTION_TOOLS, type TradeAction } from '../types/trade-action.js';
 import { validateArbitrationResult, validateTradeRecommendation } from '../utils/price-validator.js';
-import { getSymbolProfile, detectCrossInstrumentPrice, type SymbolProfile } from '../config/symbol-profile.js';
+import {
+  DEFAULT_MAX_LOTS,
+  DEFAULT_MIN_LOTS,
+  getSymbolProfile,
+  detectCrossInstrumentPrice,
+  type SymbolProfile,
+} from '../config/symbol-profile.js';
 import { analyzeChanlun } from '../tools/chanlun-core.js';
 import { analyzeElliottWave } from '../tools/elliott-wave.js';
 import { LlmClientService, type SystemBlock, type UserLayer } from '../tools/llm-client.js';
@@ -1105,7 +1111,16 @@ const COMPREHENSIVE_ANALYSIS_TOOLS = [
   },
 ] as const;
 
-const TRADE_ACTION_DECISION_PROMPT = `You are the final trade execution decision agent.
+function formatLots(lots: number): string {
+  return Number(lots.toFixed(4)).toString();
+}
+
+function buildTradeActionDecisionPrompt(profile: SymbolProfile): string {
+  const minLots = profile.minLots ?? DEFAULT_MIN_LOTS;
+  const maxLots = profile.maxLots ?? DEFAULT_MAX_LOTS;
+  const typicalMaxLots = Math.max(minLots, maxLots / 10);
+
+  return `You are the final trade execution decision agent.
 
 Given the arbitration decision and trade recommendation from the first phase, you MUST call exactly ONE tool:
 
@@ -1120,13 +1135,14 @@ Given the arbitration decision and trade recommendation from the first phase, yo
 
 CRITICAL RULES:
 - If entry_price in the recommendation differs from current price by > 0.5%, USE place_pending_order
-- Lots must be between 0.01 and 0.5 (typically 0.03-0.10 for XAUUSD intraday)
+- Lots must be between ${formatLots(minLots)} and ${formatLots(maxLots)} (typically ${formatLots(minLots)}-${formatLots(typicalMaxLots)} for ${profile.symbol} intraday)
 - expiry_hours defaults to 4 (intraday), set higher only if explicitly warranted
 - reason MUST be bilingual (Chinese first, English in parentheses)
 - For pending orders, verify entry_price is on the correct side of current:
   * buy limit: entry < current (waiting for dip)
   * sell limit: entry > current (waiting for rally)
   If wrong, call do_nothing instead.`;
+}
 
 @Injectable()
 export class ComprehensiveAnalystService {
@@ -1229,7 +1245,7 @@ export class ComprehensiveAnalystService {
     try {
       const result = await this.client.streamLayered(
         [
-          { text: TRADE_ACTION_DECISION_PROMPT, cacheable: true },
+          { text: buildTradeActionDecisionPrompt(profile), cacheable: true },
           {
             text: `Instrument: ${profile.name} (${profile.symbol})`,
             cacheable: true,

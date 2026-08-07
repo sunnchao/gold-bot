@@ -157,10 +157,13 @@ export function validateTradeRecommendation(
     }
   }
 
-  // 4. RR ratio sanity (only if both SL and TP1 are valid and non-zero)
+  // 4. RR ratio sanity (only if SL and a TP target are valid and non-zero)
   if (fixed.stop_loss > 0 && fixed.take_profit_1 > 0 && fixed.entry_price > 0) {
     const slDist = Math.abs(fixed.entry_price - fixed.stop_loss);
-    const tpDist = Math.abs(fixed.take_profit_1 - fixed.entry_price);
+    const rewardTarget = fixed.take_profit_2 !== undefined && fixed.take_profit_2 > 0
+      ? fixed.take_profit_2
+      : fixed.take_profit_1;
+    const tpDist = Math.abs(rewardTarget - fixed.entry_price);
     if (slDist > 0) {
       const rr = tpDist / slDist;
       if (rr < 0.4) {

@@ -325,6 +325,9 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(streamLayered.mock.calls[1][2]).toMatchObject({
       toolChoice: { type: 'any' },
     });
+    expect(streamLayered.mock.calls[1][0][0].text).toContain(
+      'Lots must be between 0.01 and 0.5 (typically 0.01-0.05 for XAUUSD intraday)',
+    );
     expect(result.tradeAction).toEqual({
       type: 'place_pending_order',
       side: 'buy',

@@ -1,4 +1,4 @@
-import type { SymbolProfile } from '../config/symbol-profile.js';
+import { DEFAULT_MAX_LOTS, DEFAULT_MIN_LOTS, type SymbolProfile } from '../config/symbol-profile.js';
 import type { MarketOrderAction, PendingOrderAction, TradeAction } from '../types/trade-action.js';
 
 type ToolUseLike = {
@@ -62,6 +62,16 @@ function getSide(input: Record<string, unknown>): 'buy' | 'sell' | undefined {
   return side === 'buy' || side === 'sell' ? side : undefined;
 }
 
+function validateLots(lots: number, profile: SymbolProfile): string | undefined {
+  const minLots = profile.minLots ?? DEFAULT_MIN_LOTS;
+  const maxLots = profile.maxLots ?? DEFAULT_MAX_LOTS;
+
+  if (lots < minLots || lots > maxLots) {
+    return `lots ${lots} outside allowed range ${minLots}-${maxLots} for ${profile.symbol}`;
+  }
+  return undefined;
+}
+
 export function toolUseToTradeAction(
   toolUse: ToolUseLike,
   currentPrice: number,
@@ -85,6 +95,8 @@ export function toolUseToTradeAction(
     if (!takeProfit2.ok) return doNothing(takeProfit2.reason);
     const lots = readRequiredNumber(toolUse.input, 'lots');
     if (!lots.ok) return doNothing(lots.reason);
+    const lotValidationError = validateLots(lots.value, profile);
+    if (lotValidationError) return doNothing(lotValidationError);
 
     return {
       type: 'place_market_order',
@@ -113,6 +125,8 @@ export function toolUseToTradeAction(
     if (!takeProfit2.ok) return doNothing(takeProfit2.reason);
     const lots = readRequiredNumber(toolUse.input, 'lots');
     if (!lots.ok) return doNothing(lots.reason);
+    const lotValidationError = validateLots(lots.value, profile);
+    if (lotValidationError) return doNothing(lotValidationError);
     const expiryHours = readOptionalNumber(toolUse.input, 'expiry_hours');
     if (!expiryHours.ok) return doNothing(expiryHours.reason);
 
