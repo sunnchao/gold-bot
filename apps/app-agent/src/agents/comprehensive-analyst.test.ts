@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ComprehensiveAnalystService } from './comprehensive-analyst.js';
-import type { LlmClientService } from '../tools/llm-client.js';
+import { LLMClient, type LlmClientService } from '../tools/llm-client.js';
+import type { AppConfigService } from '../config/app-config.service.js';
 import type { GoldbotPayload } from '../types/goldbot.js';
 
 const loggerMock = vi.hoisted(() => ({
@@ -131,6 +132,24 @@ const cacheStats = {
   missTokens: 0,
 };
 
+const appConfig = {
+  llm: {
+    provider: 'openai',
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: 'sk-test-key',
+    model: 'deepseek-v4-pro',
+    fallbackModel: 'deepseek-v4-pro',
+    timeout: 120000,
+    maxRetries: 3,
+    enablePromptCaching: false,
+  },
+  llmTradeModel: 'deepseek-v4-flash-0731',
+} as AppConfigService;
+
+function createService(client: LlmClientService): ComprehensiveAnalystService {
+  return new ComprehensiveAnalystService(client, appConfig);
+}
+
 function indicator(close: number) {
   return {
     close,
@@ -224,6 +243,10 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('sends four prompt layers and keeps computed context stable when only the unclosed bar changes', async () => {
     const streamLayered = vi.fn().mockResolvedValue({
       content: markdownResponse,
@@ -240,7 +263,7 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
       getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
       getModel: () => 'deepseek-v4-pro',
     } as unknown as LlmClientService;
-    const service = new ComprehensiveAnalystService(client);
+    const service = createService(client);
 
     await service.run(payloadWithLastBarClose(2335), 'XAUUSD');
     await service.run(payloadWithLastBarClose(2348), 'XAUUSD');
@@ -279,7 +302,7 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
       getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
       getModel: () => 'deepseek-v4-pro',
     } as unknown as LlmClientService;
-    const service = new ComprehensiveAnalystService(client);
+    const service = createService(client);
 
     await service.run(payloadWithOnlyOneClosedBar(2335), 'XAUUSD');
 
@@ -288,44 +311,45 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
   });
 
   it('populates tradeAction from tool_use second-phase call', async () => {
-    const streamLayered = vi.fn()
-      .mockResolvedValueOnce({
-        content: buySetupMarkdownResponse,
-        cacheStats,
-      })
-      .mockResolvedValueOnce({
-        content: '',
-        cacheStats,
-        toolUse: {
-          id: 't1',
-          name: 'place_pending_order',
-          input: {
-            side: 'buy',
-            entry_price: 4145,
-            stop_loss: 4125,
-            take_profit_1: 4188,
-            take_profit_2: 4205,
-            lots: 0.05,
-            order_type: 'limit',
-            reason: '等待回调至 4145 入场 (wait for pullback to 4145)',
-          },
+    const streamLayered = vi.fn().mockResolvedValueOnce({
+      content: buySetupMarkdownResponse,
+      cacheStats,
+    });
+    const tradeStreamLayered = vi.spyOn(LLMClient.prototype, 'streamLayered').mockResolvedValueOnce({
+      content: '',
+      cacheStats,
+      toolUse: {
+        id: 't1',
+        name: 'place_pending_order',
+        input: {
+          side: 'buy',
+          entry_price: 4145,
+          stop_loss: 4125,
+          take_profit_1: 4188,
+          take_profit_2: 4205,
+          lots: 0.05,
+          order_type: 'limit',
+          reason: '等待回调至 4145 入场 (wait for pullback to 4145)',
         },
-      });
+      },
+    });
     const client = {
       streamLayered,
       invokeLayered: vi.fn(),
       getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
       getModel: () => 'deepseek-v4-pro',
     } as unknown as LlmClientService;
-    const service = new ComprehensiveAnalystService(client);
+    const service = createService(client);
 
     const result = await service.run(payloadWithLastBarClose(4174), 'XAUUSD');
 
-    expect(streamLayered).toHaveBeenCalledTimes(2);
-    expect(streamLayered.mock.calls[1][2]).toMatchObject({
+    expect(streamLayered).toHaveBeenCalledTimes(1);
+    expect(tradeStreamLayered).toHaveBeenCalledTimes(1);
+    expect((tradeStreamLayered.mock.contexts[0] as LLMClient).getModel()).toBe('deepseek-v4-flash-0731');
+    expect(tradeStreamLayered.mock.calls[0][2]).toMatchObject({
       toolChoice: { type: 'any' },
     });
-    expect(streamLayered.mock.calls[1][0][0].text).toContain(
+    expect(tradeStreamLayered.mock.calls[0][0][0].text).toContain(
       'Lots must be between 0.01 and 0.5 (typically 0.01-0.05 for XAUUSD intraday)',
     );
     expect(result.tradeAction).toEqual({
@@ -343,11 +367,12 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
   });
 
   it('falls back to undefined when tool_use call fails', async () => {
-    const streamLayered = vi.fn()
-      .mockResolvedValueOnce({
-        content: buySetupMarkdownResponse,
-        cacheStats,
-      })
+    const streamLayered = vi.fn().mockResolvedValueOnce({
+      content: buySetupMarkdownResponse,
+      cacheStats,
+    });
+    const tradeStreamLayered = vi
+      .spyOn(LLMClient.prototype, 'streamLayered')
       .mockRejectedValueOnce(new Error('timeout'));
     const client = {
       streamLayered,
@@ -355,41 +380,40 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
       getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
       getModel: () => 'deepseek-v4-pro',
     } as unknown as LlmClientService;
-    const service = new ComprehensiveAnalystService(client);
+    const service = createService(client);
 
     const result = await service.run(payloadWithLastBarClose(4174), 'XAUUSD');
 
-    expect(streamLayered).toHaveBeenCalledTimes(2);
+    expect(streamLayered).toHaveBeenCalledTimes(1);
+    expect(tradeStreamLayered).toHaveBeenCalledTimes(1);
     expect(result.tradeAction).toBeUndefined();
   });
 
   it('does not include current price in the second-phase cacheable system block', async () => {
-    const streamLayered = vi.fn()
-      .mockResolvedValueOnce({
-        content: buySetupMarkdownResponse,
-        cacheStats,
-      })
-      .mockResolvedValueOnce({
-        content: '',
-        cacheStats,
-        toolUse: {
-          id: 't1',
-          name: 'do_nothing',
-          input: { reason: 'test' },
-        },
-      });
+    const streamLayered = vi.fn().mockResolvedValueOnce({
+      content: buySetupMarkdownResponse,
+      cacheStats,
+    });
+    const tradeStreamLayered = vi.spyOn(LLMClient.prototype, 'streamLayered').mockResolvedValueOnce({
+      content: '',
+      cacheStats,
+      toolUse: {
+        id: 't1',
+        name: 'do_nothing',
+        input: { reason: 'test' },
+      },
+    });
     const client = {
       streamLayered,
       invokeLayered: vi.fn(),
       getCacheStrategy: () => ({ type: 'anthropic_explicit' as const, ttl: '1h' as const }),
       getModel: () => 'claude-sonnet-4-20250514',
     } as unknown as LlmClientService;
-    const service = new ComprehensiveAnalystService(client);
+    const service = createService(client);
 
     await service.run(payloadWithLastBarClose(4174), 'XAUUSD');
 
-    // Second call is decideTradeAction
-    const secondCallSystemBlocks = streamLayered.mock.calls[1][0];
+    const secondCallSystemBlocks = tradeStreamLayered.mock.calls[0][0];
     expect(secondCallSystemBlocks).toHaveLength(2);
     expect(secondCallSystemBlocks[0]).toMatchObject({ cacheable: true });
     expect(secondCallSystemBlocks[1]).toMatchObject({ cacheable: true });
@@ -449,7 +473,7 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
       getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
       getModel: () => 'deepseek-v4-pro',
     } as unknown as LlmClientService;
-    const service = new ComprehensiveAnalystService(client);
+    const service = createService(client);
 
     // Same closed bars, different harmonic score/completion_pct
     await service.run(payloadWithHarmonicContext(75, 90), 'XAUUSD');
@@ -542,7 +566,7 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
       getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
       getModel: () => 'deepseek-v4-pro',
     } as unknown as LlmClientService;
-    const service = new ComprehensiveAnalystService(client);
+    const service = createService(client);
 
     const result = await service.run(payloadWithLastBarClose(2335), 'XAUUSD');
 
@@ -572,7 +596,7 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
       getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
       getModel: () => 'deepseek-v4-pro',
     } as unknown as LlmClientService;
-    const service = new ComprehensiveAnalystService(client);
+    const service = createService(client);
 
     const result = await service.run(payloadWithLastBarClose(2335), 'XAUUSD');
 

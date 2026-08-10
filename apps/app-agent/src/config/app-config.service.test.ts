@@ -9,6 +9,7 @@ const env = {
   LLM_BASE_URL: 'https://api.openai.com/v1',
   LLM_API_KEY: 'sk-test-key',
   LLM_MODEL: 'gpt-4o',
+  LLM_TRADE_MODEL: 'deepseek-v4-flash-0731',
   LLM_FALLBACK_MODEL: 'gpt-4o-mini',
   LLM_TIMEOUT: '240000',
   LLM_MAX_RETRIES: '3',
@@ -26,6 +27,7 @@ describe('validateConfig', () => {
     expect(config.port).toBe(3100);
     expect(config.accounts).toEqual([{ id: 'acc-001', symbols: ['XAUUSD'] }]);
     expect(config.llmTimeout).toBe(240000);
+    expect(config.llmTradeModel).toBe('deepseek-v4-flash-0731');
   });
 
   it('rejects invalid account JSON', () => {
@@ -45,7 +47,14 @@ describe('AppConfigService', () => {
       apiToken: 'test-token',
     });
     expect(service.llm.model).toBe('gpt-4o');
+    expect(service.llmTradeModel).toBe('deepseek-v4-flash-0731');
     expect(service.accounts[0].symbols).toEqual(['XAUUSD']);
+  });
+
+  it('defaults the trade model when LLM_TRADE_MODEL is not configured', () => {
+    const service = new AppConfigService(validateConfig({ ...env, LLM_TRADE_MODEL: undefined }));
+
+    expect(service.llmTradeModel).toBe('deepseek-v4-flash-0731');
   });
 
   it('updates runtime account symbols while preserving static fallback config', () => {

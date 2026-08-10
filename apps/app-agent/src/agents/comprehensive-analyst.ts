@@ -5,6 +5,7 @@ import type { ComprehensiveAnalysisResult } from '../types/comprehensive.js';
 import type { ChanlunAnalysis, ChanlunBar, ElliottWaveAnalysis, TechnicalAnalysis, WaveAnalystResult, ChanlunAnalystResult, HarmonicAnalysisResult, RiskAssessment, DowTheoryAnalysis, WaveTheoryAnalysis, ChanlunTheoryAnalysis, HarmonicTheoryAnalysis, TradeRecommendation, ArbitrationResult } from '../types/analysis.js';
 import type { GoldbotBar, GoldbotPayload, PendingSignal, HarmonicContextPayload } from '../types/goldbot.js';
 import { TRADE_ACTION_TOOLS, type TradeAction } from '../types/trade-action.js';
+import { AppConfigService } from '../config/app-config.service.js';
 import { validateArbitrationResult, validateTradeRecommendation } from '../utils/price-validator.js';
 import {
   DEFAULT_MAX_LOTS,
@@ -15,7 +16,7 @@ import {
 } from '../config/symbol-profile.js';
 import { analyzeChanlun } from '../tools/chanlun-core.js';
 import { analyzeElliottWave } from '../tools/elliott-wave.js';
-import { LlmClientService, type SystemBlock, type UserLayer } from '../tools/llm-client.js';
+import { LLMClient, LlmClientService, type SystemBlock, type UserLayer } from '../tools/llm-client.js';
 import { toolUseToTradeAction } from './trade-action-converter.js';
 import {
   ArbitrationResultSchema,
@@ -1147,8 +1148,17 @@ CRITICAL RULES:
 @Injectable()
 export class ComprehensiveAnalystService {
   private readonly structureCache = new StructureCache();
+  private readonly tradeClient: LLMClient;
 
-  constructor(private readonly client: LlmClientService) {}
+  constructor(
+    private readonly client: LlmClientService,
+    appConfig: AppConfigService,
+  ) {
+    this.tradeClient = new LLMClient({
+      ...appConfig.llm,
+      model: appConfig.llmTradeModel,
+    });
+  }
 
   /**
    * Phase 4.2：结构化重试兜底。当 Markdown 与 JSON 双格式解析都失败时，
@@ -1243,7 +1253,7 @@ export class ComprehensiveAnalystService {
     ].join('\n');
 
     try {
-      const result = await this.client.streamLayered(
+      const result = await this.tradeClient.streamLayered(
         [
           { text: buildTradeActionDecisionPrompt(profile), cacheable: true },
           {

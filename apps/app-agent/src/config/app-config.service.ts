@@ -18,6 +18,7 @@ const AppConfigSchema = z.object({
   llmBaseUrl: z.string().url(),
   llmApiKey: z.string().min(1),
   llmModel: z.string().min(1),
+  llmTradeModel: z.string().min(1).default('deepseek-v4-flash-0731'),
   llmFallbackModel: z.string().min(1),
   llmTimeout: z.coerce.number().int().positive().default(240000),
   llmMaxRetries: z.coerce.number().int().min(0).default(3),
@@ -59,6 +60,7 @@ export function validateConfig(env: Record<string, unknown>): AppConfig {
     llmBaseUrl: env.LLM_BASE_URL ?? 'https://api.openai.com/v1',
     llmApiKey: env.LLM_API_KEY ?? 'sk-test',
     llmModel: env.LLM_MODEL ?? 'gpt-4o',
+    llmTradeModel: env.LLM_TRADE_MODEL ?? 'deepseek-v4-flash-0731',
     llmFallbackModel: env.LLM_FALLBACK_MODEL ?? 'gpt-4o-mini',
     llmTimeout: env.LLM_TIMEOUT ?? '120000',
     llmMaxRetries: env.LLM_MAX_RETRIES ?? '3',
@@ -124,6 +126,10 @@ export class AppConfigService {
       maxRetries: this.config.llmMaxRetries,
       enablePromptCaching: this.config.llmEnablePromptCaching,
     };
+  }
+
+  get llmTradeModel(): string {
+    return this.config.llmTradeModel;
   }
 
   get scheduleCron(): string {
