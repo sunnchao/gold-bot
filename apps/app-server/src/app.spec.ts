@@ -2917,7 +2917,7 @@ describe('app-server scaffold', () => {
     const publishedEvents: SseEvent[] = [];
     events.subscribe((event) => publishedEvents.push(event));
     const server = await createApiServer({ store, events, nowIso: () => '2026-04-13T16:00:00+08:00' });
-    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveRegistration({ account_id: '90011087', leverage: 500, ai_symbols: ['XAUUSD'] });
     await store.saveHeartbeat({
       account_id: '90011087',
       equity: 10000,
@@ -3030,7 +3030,7 @@ describe('app-server scaffold', () => {
   it('does not queue V2 AI risk commands when the trade-plan risk gate rejects', async () => {
     const store = createInMemoryEaStore();
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
-    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveRegistration({ account_id: '90011087', leverage: 500, ai_symbols: ['XAUUSD'] });
     await store.saveHeartbeat({
       account_id: '90011087',
       equity: 10000,
@@ -3095,7 +3095,7 @@ describe('app-server scaffold', () => {
     await store.setRuntimeMode('90011087', 'shadow');
     const server = await createApiServer({ store, nowIso: () => '2026-04-13T16:00:00+08:00' });
 
-    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveRegistration({ account_id: '90011087', leverage: 500, ai_symbols: ['XAUUSD'] });
     await store.saveHeartbeat({
       account_id: '90011087',
       equity: 10000,
@@ -3187,7 +3187,7 @@ describe('app-server scaffold', () => {
     const nowIso = new Date(nowMs).toISOString();
     const server = await createApiServer({ store, nowIso: () => nowIso });
 
-    await store.saveRegistration({ account_id: '90011087', leverage: 500 });
+    await store.saveRegistration({ account_id: '90011087', leverage: 500, ai_symbols: ['XAUUSD'] });
     await store.saveHeartbeat({
       account_id: '90011087',
       equity: 10000,
@@ -3418,6 +3418,7 @@ describe('app-server scaffold', () => {
     const nowIso = new Date(nowMs).toISOString();
     const server = await createApiServer({ store, nowIso: () => nowIso });
 
+    await store.saveRegistration({ account_id: '90011087', leverage: 500, ai_symbols: ['XAUUSD'] });
     await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',

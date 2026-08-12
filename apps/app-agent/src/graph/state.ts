@@ -11,7 +11,12 @@ import type {
   WaveAnalystResult,
   ChanlunAnalystResult,
 } from "../types/analysis.js";
-import type { ComprehensiveAnalysisResult } from '../types/comprehensive.js';
+import type {
+  AccountView,
+  BarView,
+  ComprehensiveAnalysisResult,
+  MarketInsight,
+} from '../types/comprehensive.js';
 import type { AISignalResult, AnalysisLog } from "../types/agent.js";
 import type { TradeAction } from '../types/trade-action.js';
 
@@ -36,6 +41,12 @@ export const AnalysisGraphState = Annotation.Root({
   /** Full payloads from Goldbot API keyed by symbol */
   payloads: Annotation<SymbolMap<GoldbotPayload> | undefined>(),
 
+  /** Market-first BAR payload views keyed by tradable account symbol */
+  barViews: Annotation<SymbolMap<BarView> | undefined>(),
+
+  /** Market-first account-local payload views keyed by tradable account symbol */
+  accountViews: Annotation<SymbolMap<AccountView> | undefined>(),
+
   /** Pending signal from Goldbot */
   pendingSignal: Annotation<PendingSignal | undefined>(),
 
@@ -47,6 +58,12 @@ export const AnalysisGraphState = Annotation.Root({
 
   /** Comprehensive analyst output keyed by symbol */
   comprehensiveAnalyses: Annotation<SymbolMap<ComprehensiveAnalysisResult> | undefined>(),
+
+  /** Market-first insight cache values keyed by tradable account symbol */
+  marketInsights: Annotation<SymbolMap<MarketInsight> | undefined>(),
+
+  /** Market-first account action outputs keyed by tradable account symbol */
+  accountActions: Annotation<SymbolMap<TradeAction> | undefined>(),
 
   /** Technical analyst output */
   technicalAnalysis: Annotation<TechnicalAnalysis | undefined>(),

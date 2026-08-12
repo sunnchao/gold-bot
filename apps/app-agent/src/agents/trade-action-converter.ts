@@ -1,5 +1,11 @@
 import { DEFAULT_MAX_LOTS, DEFAULT_MIN_LOTS, type SymbolProfile } from '../config/symbol-profile.js';
-import type { MarketOrderAction, PendingOrderAction, TradeAction } from '../types/trade-action.js';
+import type {
+  CloseOrderAction,
+  MarketOrderAction,
+  ModifyOrderAction,
+  PendingOrderAction,
+  TradeAction,
+} from '../types/trade-action.js';
 
 type ToolUseLike = {
   name: string;
@@ -15,6 +21,24 @@ type RequiredNumberParseResult =
 
 function doNothing(reasoning: string): TradeAction {
   return { type: 'do_nothing', reasoning };
+}
+
+function accountDoNothing(accountId: string, reasoning: string): TradeAction {
+  return { type: 'do_nothing', account_id: accountId, reasoning };
+}
+
+function readAccountId(input: Record<string, unknown>): string | undefined {
+  const accountId = typeof input.account_id === 'string' ? input.account_id.trim() : '';
+  return accountId.length > 0 ? accountId : undefined;
+}
+
+function readString(input: Record<string, unknown>, field: string): string | undefined {
+  const value = typeof input[field] === 'string' ? input[field].trim() : '';
+  return value.length > 0 ? value : undefined;
+}
+
+function readSymbol(input: Record<string, unknown>, profile: SymbolProfile, expectedSymbol?: string): string {
+  return readString(input, 'symbol') ?? expectedSymbol ?? profile.symbol;
 }
 
 function formatPrice(price: number, profile: SymbolProfile): string {
@@ -73,6 +97,147 @@ function validateLots(lots: number, profile: SymbolProfile): string | undefined 
 }
 
 export function toolUseToTradeAction(
+  toolUse: ToolUseLike,
+  currentPrice: number,
+  profile: SymbolProfile,
+  expectedSymbol?: string,
+): TradeAction | undefined {
+  const accountId = readAccountId(toolUse.input);
+  if (!accountId) {
+    return undefined;
+  }
+
+  if (toolUse.name === 'do_nothing') {
+    return { ...doNothing(String(toolUse.input.reasoning ?? '')), account_id: accountId };
+  }
+
+  if (toolUse.name === 'place_market_order') {
+    const side = getSide(toolUse.input);
+    if (!side) {
+      return accountDoNothing(accountId, `invalid market order side: ${String(toolUse.input.side)}`);
+    }
+
+    const stopLoss = readRequiredNumber(toolUse.input, 'stop_loss');
+    if (!stopLoss.ok) return accountDoNothing(accountId, stopLoss.reason);
+    const takeProfit1 = readRequiredNumber(toolUse.input, 'take_profit_1');
+    if (!takeProfit1.ok) return accountDoNothing(accountId, takeProfit1.reason);
+    const takeProfit2 = readOptionalNumber(toolUse.input, 'take_profit_2');
+    if (!takeProfit2.ok) return accountDoNothing(accountId, takeProfit2.reason);
+    const lots = readRequiredNumber(toolUse.input, 'lots');
+    if (!lots.ok) return accountDoNothing(accountId, lots.reason);
+    const lotValidationError = validateLots(lots.value, profile);
+    if (lotValidationError) return accountDoNothing(accountId, lotValidationError);
+
+    return {
+      type: 'place_market_order',
+      account_id: accountId,
+      symbol: readSymbol(toolUse.input, profile, expectedSymbol),
+      side,
+      stop_loss: stopLoss.value,
+      take_profit_1: takeProfit1.value,
+      take_profit_2: takeProfit2.value,
+      lots: lots.value,
+      reason: String(toolUse.input.reason ?? ''),
+    } satisfies MarketOrderAction;
+  }
+
+  if (toolUse.name === 'place_pending_order') {
+    const side = getSide(toolUse.input);
+    if (!side) {
+      return accountDoNothing(accountId, `invalid pending order side: ${String(toolUse.input.side)}`);
+    }
+
+    const entryPrice = readRequiredNumber(toolUse.input, 'entry_price');
+    if (!entryPrice.ok) return accountDoNothing(accountId, entryPrice.reason);
+    const stopLoss = readRequiredNumber(toolUse.input, 'stop_loss');
+    if (!stopLoss.ok) return accountDoNothing(accountId, stopLoss.reason);
+    const takeProfit1 = readRequiredNumber(toolUse.input, 'take_profit_1');
+    if (!takeProfit1.ok) return accountDoNothing(accountId, takeProfit1.reason);
+    const takeProfit2 = readOptionalNumber(toolUse.input, 'take_profit_2');
+    if (!takeProfit2.ok) return accountDoNothing(accountId, takeProfit2.reason);
+    const lots = readRequiredNumber(toolUse.input, 'lots');
+    if (!lots.ok) return accountDoNothing(accountId, lots.reason);
+    const lotValidationError = validateLots(lots.value, profile);
+    if (lotValidationError) return accountDoNothing(accountId, lotValidationError);
+    const expiryHours = readOptionalNumber(toolUse.input, 'expiry_hours');
+    if (!expiryHours.ok) return accountDoNothing(accountId, expiryHours.reason);
+
+    const orderType = String(toolUse.input.order_type) === 'stop' ? 'stop' : 'limit';
+
+    if (orderType === 'limit' && Number.isFinite(currentPrice) && currentPrice > 0) {
+      if (side === 'buy' && entryPrice.value >= currentPrice) {
+        return accountDoNothing(
+          accountId,
+          `BUY_LIMIT entry ${formatPrice(entryPrice.value, profile)} >= current ${formatPrice(currentPrice, profile)}, should be below current price`,
+        );
+      }
+      if (side === 'sell' && entryPrice.value <= currentPrice) {
+        return accountDoNothing(
+          accountId,
+          `SELL_LIMIT entry ${formatPrice(entryPrice.value, profile)} <= current ${formatPrice(currentPrice, profile)}, should be above current price`,
+        );
+      }
+    }
+
+    return {
+      type: 'place_pending_order',
+      account_id: accountId,
+      symbol: readSymbol(toolUse.input, profile, expectedSymbol),
+      side,
+      entry_price: entryPrice.value,
+      stop_loss: stopLoss.value,
+      take_profit_1: takeProfit1.value,
+      take_profit_2: takeProfit2.value,
+      lots: lots.value,
+      order_type: orderType,
+      expiry_hours: expiryHours.value ?? 4,
+      reason: String(toolUse.input.reason ?? ''),
+    } satisfies PendingOrderAction;
+  }
+
+  if (toolUse.name === 'modify_order') {
+    const symbol = readString(toolUse.input, 'symbol');
+    if (!symbol) return accountDoNothing(accountId, 'missing modify_order symbol');
+    const ticket = readRequiredNumber(toolUse.input, 'ticket');
+    if (!ticket.ok) return accountDoNothing(accountId, ticket.reason);
+    const newSl = readOptionalNumber(toolUse.input, 'new_sl');
+    if (!newSl.ok) return accountDoNothing(accountId, newSl.reason);
+    const newTp1 = readOptionalNumber(toolUse.input, 'new_tp1');
+    if (!newTp1.ok) return accountDoNothing(accountId, newTp1.reason);
+    const newTp2 = readOptionalNumber(toolUse.input, 'new_tp2');
+    if (!newTp2.ok) return accountDoNothing(accountId, newTp2.reason);
+
+    return {
+      type: 'modify_order',
+      account_id: accountId,
+      symbol,
+      ticket: ticket.value,
+      new_sl: newSl.value,
+      new_tp1: newTp1.value,
+      new_tp2: newTp2.value,
+      reason: String(toolUse.input.reason ?? ''),
+    } satisfies ModifyOrderAction;
+  }
+
+  if (toolUse.name === 'close_order') {
+    const symbol = readString(toolUse.input, 'symbol');
+    if (!symbol) return accountDoNothing(accountId, 'missing close_order symbol');
+    const ticket = readRequiredNumber(toolUse.input, 'ticket');
+    if (!ticket.ok) return accountDoNothing(accountId, ticket.reason);
+
+    return {
+      type: 'close_order',
+      account_id: accountId,
+      symbol,
+      ticket: ticket.value,
+      reason: String(toolUse.input.reason ?? ''),
+    } satisfies CloseOrderAction;
+  }
+
+  return undefined;
+}
+
+export function toolUseToTradeActionLegacy(
   toolUse: ToolUseLike,
   currentPrice: number,
   profile: SymbolProfile,

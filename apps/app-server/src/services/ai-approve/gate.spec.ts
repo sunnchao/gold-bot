@@ -7,6 +7,37 @@ const symbol = 'XAUUSD';
 const nowIso = '2026-04-13T08:00:00.000Z';
 
 describe('AI approve pending gate', () => {
+  it('rejects an account symbol that is not present in ai_symbols', async () => {
+    const store = createInMemoryEaStore();
+    await store.saveRegistration({ account_id: accountId, ai_symbols: ['XAUUSD'] });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol: 'US100Cash',
+      tradePlan: tradePlan({ symbol: 'US100Cash' }),
+      nowIso
+    })).resolves.toEqual({
+      accepted: false,
+      reason: 'account.symbol_not_loaded'
+    });
+  });
+
+  it('fails closed when registration ai_symbols are missing', async () => {
+    const store = createInMemoryEaStore();
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan(),
+      nowIso
+    })).resolves.toEqual({
+      accepted: false,
+      reason: 'account.symbol_not_loaded'
+    });
+  });
+
   it('accepts valid approve plans when market context is Go-compatible', async () => {
     const store = createInMemoryEaStore();
     await seedStrongTrendState(store);
@@ -22,6 +53,24 @@ describe('AI approve pending gate', () => {
       currentPrice: 3335.6,
       entry: 3335.6,
       lots: 0,
+      h1Atr: 2
+    });
+  });
+
+  it('matches ai_symbols case-insensitively after trimming and uses the registered contract symbol', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store, { symbol: 'GOLDm#' });
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol: ' goldm# ',
+      tradePlan: tradePlan({ symbol: 'GOLDm#' }),
+      nowIso
+    })).resolves.toMatchObject({
+      accepted: true,
+      currentPrice: 3335.6,
+      entry: 3335.6,
       h1Atr: 2
     });
   });
@@ -545,10 +594,18 @@ function tradePlan(overrides: EaRecord = {}): EaRecord {
   };
 }
 
-async function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 'bear' | 'neutral' | 'missing-indicators' } = {}): Promise<void> {
+async function seedStrongTrendState(
+  store: EaStore,
+  options: { trend?: 'bull' | 'bear' | 'neutral' | 'missing-indicators'; symbol?: string } = {}
+): Promise<void> {
+  const stateSymbol = options.symbol ?? symbol;
+  await store.saveRegistration({
+    account_id: accountId,
+    ai_symbols: [stateSymbol]
+  });
   await store.saveTick({
     account_id: accountId,
-    symbol,
+    symbol: stateSymbol,
     bid: 3335.5,
     ask: 3335.7,
     spread: 0.2,
@@ -565,7 +622,7 @@ async function seedStrongTrendState(store: EaStore, options: { trend?: 'bull' | 
   for (const timeframe of ['D1', 'H4', 'H1', 'M30', 'M15']) {
     await store.saveBars({
       account_id: accountId,
-      symbol,
+      symbol: stateSymbol,
       timeframe,
       bars: [bar]
     });

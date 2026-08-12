@@ -1,5 +1,6 @@
 import { Controller, Param, Post, Headers, Query, HttpException, HttpStatus, Optional, Inject } from '@nestjs/common';
 import { WorkflowService } from '../graph/workflow.service.js';
+import { BarSourceService } from '../config/bar-source.service.js';
 
 /** Whitelist of allowed symbol values — prevents prompt injection */
 const ALLOWED_SYMBOLS = new Set([
@@ -13,10 +14,15 @@ const IDEMPOTENCY_WINDOW_MS = 60_000;
 
 const recentTriggers = new Map<string, number>();
 
+function normalizeSymbolForMatch(symbol: string): string {
+  return symbol.trim().toUpperCase();
+}
+
 @Controller('api/v2')
 export class TriggerController {
   constructor(
     private readonly workflow: WorkflowService,
+    private readonly barSource: BarSourceService,
     @Optional() @Inject('GOLD_AGENT_API_TOKEN') private readonly apiToken?: string,
   ) {}
 
@@ -33,13 +39,23 @@ export class TriggerController {
     }
 
     // 2. Symbol whitelist — prevents prompt injection
-    const normalized = symbol.toUpperCase();
+    const normalized = normalizeSymbolForMatch(symbol);
     if (!ALLOWED_SYMBOLS.has(normalized)) {
       throw new HttpException({ error: 'bad_request', message: `Symbol '${symbol}' is not allowed` }, HttpStatus.BAD_REQUEST);
     }
 
-    // 3. Idempotency — skip duplicate triggers within 60s
-    const idempotencyKey = `${account}:${normalized}`;
+    // 3. Account ai_symbols whitelist — exact account contract match, fail closed.
+    const accountSymbols = await this.barSource.accountSymbols(account);
+    const tradableSymbol = accountSymbols.find((accountSymbol) => normalizeSymbolForMatch(accountSymbol) === normalized);
+    if (!tradableSymbol) {
+      throw new HttpException(
+        { error: 'symbol_not_loaded', message: `Symbol '${symbol}' is not loaded by account '${account}'` },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // 4. Idempotency — skip duplicate triggers within 60s
+    const idempotencyKey = `${account}:${tradableSymbol}`;
     const lastTrigger = recentTriggers.get(idempotencyKey);
     const now = Date.now();
     if (lastTrigger && (now - lastTrigger) < IDEMPOTENCY_WINDOW_MS) {
@@ -47,7 +63,7 @@ export class TriggerController {
         triggered: false,
         reason: 'recently_triggered',
         account,
-        symbol: normalized,
+        symbol: tradableSymbol,
         timestamp: new Date().toISOString(),
       };
     }
@@ -62,14 +78,14 @@ export class TriggerController {
       }
     }
 
-    // 4. Execute (force=true skips market-closed check)
+    // 5. Execute (force=true skips market-closed check)
     const forceAnalyze = force === 'true' || force === '1';
-    await this.workflow.run(account, [symbol], { forceAnalyze });
+    await this.workflow.run(account, [tradableSymbol], { forceAnalyze });
 
     return {
       triggered: true,
       account,
-      symbol: normalized,
+      symbol: tradableSymbol,
       timestamp: new Date().toISOString(),
     };
   }

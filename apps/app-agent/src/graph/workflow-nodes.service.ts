@@ -5,10 +5,13 @@ import type { GoldbotPayload, PendingSignal } from '../types/goldbot.js';
 import type { ComprehensiveAnalysisResult } from '../types/comprehensive.js';
 import type { TradeAction } from '../types/trade-action.js';
 import { ComprehensiveAnalystService } from '../agents/comprehensive-analyst.js';
+import { BarSourceService, atrOf } from '../config/bar-source.service.js';
+import { AppConfigService } from '../config/app-config.service.js';
 import { PublisherService } from '../agents/publisher.js';
 import { GoldbotApiService } from '../tools/goldbot-api.js';
 import { PinoLoggerService } from '../utils/logger.service.js';
 import { composeFinalSignal } from './compose.js';
+import { MarketInsightCacheService } from './market-insight-cache.service.js';
 
 function createLog(
   node: string,
@@ -25,6 +28,9 @@ export class WorkflowNodesService {
     private readonly comprehensiveAnalyst: ComprehensiveAnalystService,
     private readonly publisher: PublisherService,
     private readonly logger: PinoLoggerService,
+    private readonly config?: AppConfigService,
+    private readonly barSource?: BarSourceService,
+    private readonly marketInsightCache?: MarketInsightCacheService,
   ) {}
 
   private getSymbols(state: AnalysisGraphStateType): string[] {
@@ -71,6 +77,80 @@ export class WorkflowNodesService {
         entries.map(([symbol, value]) => [symbol, value.pendingSignal]),
       ) as Record<string, PendingSignal | undefined>;
       const primarySymbol = symbols[0];
+
+      if (this.config?.marketFirstEnabled === true && this.barSource) {
+        const viewEntries = await Promise.all(
+          symbols.map(async (symbol) => {
+            const accountPayload = payloads[symbol];
+            const resolution = await this.barSource!.barSourceFor(accountId, symbol);
+            let barPayload = accountPayload;
+            let sourceAccount = resolution.sourceAccount;
+            let sourceSymbol = resolution.sourceSymbol;
+            let useShared = resolution.useShared;
+
+            if (resolution.useShared) {
+              try {
+                barPayload = await this.goldbotApi.fetchAnalysisPayload(
+                  resolution.sourceAccount,
+                  resolution.sourceSymbol,
+                );
+              } catch (err) {
+                this.logger.instance.warn(
+                  {
+                    accountId,
+                    symbol,
+                    sourceAccount: resolution.sourceAccount,
+                    sourceSymbol: resolution.sourceSymbol,
+                    err: err instanceof Error ? err.message : String(err),
+                  },
+                  'fetchData: shared BAR payload failed, falling back to account payload',
+                );
+                sourceAccount = accountId;
+                sourceSymbol = symbol;
+                useShared = false;
+                barPayload = accountPayload;
+              }
+            }
+
+            const accountSymbols = await this.barSource!.accountSymbols(accountId);
+            return [symbol, {
+              barView: {
+                canonicalSymbol: resolution.canonicalSymbol,
+                sourceAccount,
+                sourceSymbol,
+                useShared,
+                payload: barPayload,
+                benchmarkPrice: currentPrice(barPayload),
+                atr: atrOf(barPayload),
+              },
+              accountView: {
+                accountId,
+                symbol,
+                payload: accountPayload,
+                pendingSignal: pendingSignals[symbol],
+                aiSymbols: accountSymbols,
+                realtimePrice: currentPrice(accountPayload),
+                atr: atrOf(accountPayload),
+              },
+            }] as const;
+          }),
+        );
+
+        return {
+          payload: payloads[primarySymbol],
+          payloads,
+          barViews: Object.fromEntries(viewEntries.map(([symbol, value]) => [symbol, value.barView])),
+          accountViews: Object.fromEntries(viewEntries.map(([symbol, value]) => [symbol, value.accountView])),
+          pendingSignal: pendingSignals[primarySymbol],
+          pendingSignals,
+          logs: [
+            createLog(
+              'fetchData',
+              `Fetched market/account views for ${symbols.join(', ')}`,
+            ),
+          ],
+        };
+      }
 
       return {
         payload: payloads[primarySymbol],
@@ -170,6 +250,116 @@ export class WorkflowNodesService {
       for (const [sym, pl] of Object.entries(state.payloads)) {
         const bid = pl.market?.bid || pl.market?.ask || 0;
         if (bid > 0) allCurrentPrices[sym] = bid;
+      }
+
+      if (this.config?.marketFirstEnabled === true && this.marketInsightCache) {
+        const entries = await Promise.all(
+          this.getSymbols(state)
+            .filter((symbol) => state.payloads?.[symbol] && state.barViews?.[symbol] && state.accountViews?.[symbol])
+            .map(async (symbol) => {
+              const barView = state.barViews![symbol];
+              const accountView = state.accountViews![symbol];
+              const cached = barView.useShared
+                ? await this.marketInsightCache!.getOrBuild(
+                  barView.canonicalSymbol,
+                  async () => ({
+                    insight: await this.comprehensiveAnalyst.runMarketInsight(
+                      barView,
+                      barView.sourceSymbol,
+                      allCurrentPrices,
+                    ),
+                    benchmarkPrice: barView.benchmarkPrice,
+                    computedAt: Date.now(),
+                    sourceAccount: barView.sourceAccount,
+                  }),
+                )
+                : {
+                  insight: await this.comprehensiveAnalyst.runMarketInsight(
+                    barView,
+                    barView.sourceSymbol,
+                    allCurrentPrices,
+                  ),
+                  benchmarkPrice: barView.benchmarkPrice,
+                  computedAt: Date.now(),
+                  sourceAccount: barView.sourceAccount,
+                };
+              const actions = await this.comprehensiveAnalyst.decideAccountActions(
+                cached.insight,
+                [accountView],
+                cached.benchmarkPrice,
+                barView.atr,
+                this.config!.priceDeviationToleranceAtr,
+              );
+              const result = {
+                ...cached.insight,
+                tradeAction: actions[symbol],
+              } satisfies ComprehensiveAnalysisResult;
+              return [symbol, {
+                result,
+                insight: cached.insight,
+                action: actions[symbol],
+              }] as const;
+            }),
+        );
+
+        const results = Object.fromEntries(
+          entries.map(([symbol, value]) => [symbol, value.result]),
+        ) as Record<string, ComprehensiveAnalysisResult>;
+
+        return {
+          comprehensiveAnalysis: this.selectPrimary(results, state),
+          comprehensiveAnalyses: results,
+          marketInsights: Object.fromEntries(entries.map(([symbol, value]) => [symbol, value.insight])),
+          accountActions: Object.fromEntries(entries.map(([symbol, value]) => [symbol, value.action])),
+          technicalAnalysis: this.selectPrimary(
+            Object.fromEntries(entries.map(([symbol, value]) => [symbol, value.result.technical])),
+            state,
+          ),
+          technicalAnalyses: Object.fromEntries(
+            entries.map(([symbol, value]) => [symbol, value.result.technical]),
+          ),
+          waveAnalysis: this.selectPrimary(
+            Object.fromEntries(entries.map(([symbol, value]) => [symbol, value.result.wave])),
+            state,
+          ),
+          waveAnalyses: Object.fromEntries(
+            entries.map(([symbol, value]) => [symbol, value.result.wave]),
+          ),
+          chanlunAnalysis: this.selectPrimary(
+            Object.fromEntries(entries.map(([symbol, value]) => [symbol, value.result.chanlun])),
+            state,
+          ),
+          chanlunAnalyses: Object.fromEntries(
+            entries.map(([symbol, value]) => [symbol, value.result.chanlun]),
+          ),
+          riskAssessment: this.selectPrimary(
+            Object.fromEntries(entries.map(([symbol, value]) => [symbol, value.result.risk])),
+            state,
+          ),
+          riskAssessments: Object.fromEntries(
+            entries.map(([symbol, value]) => [symbol, value.result.risk]),
+          ),
+          arbitration: this.selectPrimary(
+            Object.fromEntries(entries.map(([symbol, value]) => [symbol, value.result.arbitration])),
+            state,
+          ),
+          arbitrations: Object.fromEntries(
+            entries.map(([symbol, value]) => [symbol, value.result.arbitration]),
+          ),
+          tradeAction: this.selectPrimary(
+            Object.fromEntries(entries.map(([symbol, value]) => [symbol, value.action])),
+            state,
+          ),
+          tradeActions: Object.fromEntries(
+            entries.map(([symbol, value]) => [symbol, value.action]).filter(([, action]) => action !== undefined),
+          ) as Record<string, TradeAction>,
+          logs: [
+            createLog(
+              'comprehensiveAnalysis',
+              `Completed market-first analysis for ${Object.keys(results).join(', ')}`,
+            ),
+          ],
+        };
       }
 
       const entries = await Promise.all(
@@ -371,4 +561,13 @@ export class WorkflowNodesService {
       ],
     };
   }
+}
+
+function currentPrice(payload: GoldbotPayload): number {
+  const bid = payload.market?.bid;
+  const ask = payload.market?.ask;
+  if (Number.isFinite(bid) && Number.isFinite(ask)) {
+    return (bid + ask) / 2;
+  }
+  return Number.isFinite(bid) ? bid : Number.isFinite(ask) ? ask : 0;
 }

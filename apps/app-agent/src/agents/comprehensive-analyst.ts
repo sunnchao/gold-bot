@@ -1,12 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { z } from 'zod';
-import type { ComprehensiveAnalysisResult } from '../types/comprehensive.js';
+import type {
+  AccountView,
+  BarView,
+  ComprehensiveAnalysisResult,
+  MarketInsight,
+  TradeIntent,
+} from '../types/comprehensive.js';
 import type { ChanlunAnalysis, ChanlunBar, ElliottWaveAnalysis, TechnicalAnalysis, WaveAnalystResult, ChanlunAnalystResult, HarmonicAnalysisResult, RiskAssessment, DowTheoryAnalysis, WaveTheoryAnalysis, ChanlunTheoryAnalysis, HarmonicTheoryAnalysis, TradeRecommendation, ArbitrationResult } from '../types/analysis.js';
 import type { GoldbotBar, GoldbotPayload, PendingSignal, HarmonicContextPayload } from '../types/goldbot.js';
-import { TRADE_ACTION_TOOLS, type TradeAction } from '../types/trade-action.js';
+import { TRADE_ACTION_TOOLS, TRADE_ACTION_TOOLS_LEGACY, type TradeAction } from '../types/trade-action.js';
 import { AppConfigService } from '../config/app-config.service.js';
 import { validateArbitrationResult, validateTradeRecommendation } from '../utils/price-validator.js';
+import { atrOf } from '../config/bar-source.service.js';
 import {
   DEFAULT_MAX_LOTS,
   DEFAULT_MIN_LOTS,
@@ -17,7 +24,8 @@ import {
 import { analyzeChanlun } from '../tools/chanlun-core.js';
 import { analyzeElliottWave } from '../tools/elliott-wave.js';
 import { LLMClient, LlmClientService, type SystemBlock, type UserLayer } from '../tools/llm-client.js';
-import { toolUseToTradeAction } from './trade-action-converter.js';
+import { toolUseToTradeAction, toolUseToTradeActionLegacy } from './trade-action-converter.js';
+import { isSymbolLoaded, validateTradeActionForAccount } from './account-action-guard.js';
 import {
   ArbitrationResultSchema,
   ChanlunAnalystResultSchema,
@@ -716,6 +724,7 @@ function buildRealtimeDataPrompt(
   symbol: string,
   profile: SymbolProfile,
   harmonicVolatile: Record<string, unknown> | null,
+  marketOnly = false,
 ): string {
   const currentPrice = payload.market.bid || payload.market.ask || 0;
   const m15 = selectIndicator(payload.indicators, 'M15', 'm15');
@@ -737,11 +746,11 @@ function buildRealtimeDataPrompt(
 ### Market Data
 ${stableStringify(payload.market)}
 
-### Account State
+${marketOnly ? '' : `### Account State
 ${stableStringify(payload.account)}
 
 ### Current Positions
-${stableStringify(payload.positions)}
+${stableStringify(payload.positions)}`}
 
 ### Multi-Timeframe Indicators (Live)
 - **M15:** ${stableStringify(m15)}
@@ -758,12 +767,12 @@ ${stableStringify(payload.positions)}
 ### Harmonic Realtime (volatile)
 ${harmonicVolatile ? stableStringify(harmonicVolatile) : 'none'}
 
-### Pending Signal (from previous analysis cycle)
-${pendingSignal ? stableStringify(pendingSignal) : 'none'}
+${marketOnly ? '' : `### Pending Signal (from previous analysis cycle)
+${pendingSignal ? stableStringify(pendingSignal) : 'none'}`}
 
 ### Final Reminders
 - Output MUST include all 5 top-level sections: TECHNICAL, WAVE, CHANLUN, RISK, ARBITRATION
-- Risk and arbitration sections must reflect account, positions, and pending signal
+- ${marketOnly ? 'Risk and arbitration must describe market structure only; do not infer account-specific actions.' : 'Risk and arbitration sections must reflect account, positions, and pending signal'}
 - All prices must fit instrument range (~${profile.priceRangeHint})
 - **PRICE ANCHOR: Current ${symbol} price is ${currentPrice.toFixed(profile.pricePrecision)}. All SL/TP values MUST be absolute price levels in this same order of magnitude.** Do NOT output ATR values, point distances, or pip offsets as SL/TP.`;
 }
@@ -1145,6 +1154,200 @@ CRITICAL RULES:
   If wrong, call do_nothing instead.`;
 }
 
+function currentPriceFromPayload(payload: GoldbotPayload): number {
+  const bid = toFiniteNumber(payload.market?.bid);
+  const ask = toFiniteNumber(payload.market?.ask);
+  if (bid != null && ask != null) {
+    return (bid + ask) / 2;
+  }
+  return bid ?? ask ?? 0;
+}
+
+function executionPriceFromPayload(payload: GoldbotPayload, side: 'buy' | 'sell'): number {
+  const bid = toFiniteNumber(payload.market?.bid);
+  const ask = toFiniteNumber(payload.market?.ask);
+  if (side === 'buy') {
+    return ask ?? bid ?? 0;
+  }
+  return bid ?? ask ?? 0;
+}
+
+function buildTradeIntent(result: ComprehensiveAnalysisResult, currentPrice: number, atr: number): TradeIntent {
+  const trade = result.arbitration.trade_recommendation;
+  if (!trade || trade.direction === 'hold' || atr <= 0 || currentPrice <= 0) {
+    return {
+      direction: 'hold',
+      entry_trigger: 'none',
+      entry_offset_atr: 0,
+      stop_loss_atr: 0,
+      take_profit_1_atr: 0,
+      rationale: result.arbitration.reasoning,
+    };
+  }
+
+  const entryOffsetAtr = Math.abs(trade.entry_price - currentPrice) / atr;
+  const entryTrigger = entryOffsetAtr > 0.05
+    ? trade.direction === 'buy'
+      ? trade.entry_price < currentPrice ? 'pullback' : 'breakout'
+      : trade.entry_price > currentPrice ? 'pullback' : 'breakout'
+    : 'market';
+
+  return {
+    direction: trade.direction,
+    entry_trigger: entryTrigger,
+    entry_offset_atr: entryOffsetAtr,
+    stop_loss_atr: Math.abs(trade.entry_price - trade.stop_loss) / atr,
+    take_profit_1_atr: Math.abs(trade.take_profit_1 - trade.entry_price) / atr,
+    take_profit_2_atr: trade.take_profit_2 ? Math.abs(trade.take_profit_2 - trade.entry_price) / atr : undefined,
+    rationale: trade.rationale || result.arbitration.reasoning,
+  };
+}
+
+function toMarketInsight(result: ComprehensiveAnalysisResult, currentPrice: number, atr: number): MarketInsight {
+  return {
+    technical: result.technical,
+    wave: result.wave,
+    chanlun: result.chanlun,
+    harmonic: result.harmonic,
+    risk: result.risk,
+    arbitration: result.arbitration,
+    sr_levels: {
+      support: result.technical.support_levels.map((level) => level.price),
+      resistance: result.technical.resistance_levels.map((level) => level.price),
+    },
+    trend_bias: result.technical.bias,
+    confidence: result.arbitration.confidence || result.technical.confidence,
+    trade_intent: buildTradeIntent(result, currentPrice, atr),
+  };
+}
+
+function buildAccountDecisionSystemPrompt(profile: SymbolProfile): string {
+  return `${buildTradeActionDecisionPrompt(profile)}
+
+ACCOUNT-AWARE SAFETY RULES:
+- You are deciding for exactly one account context.
+- Every tool call MUST include the given account_id.
+- The symbol in any action must be the account's own loaded contract symbol, not the shared market-analysis symbol.
+- For modify_order/close_order, only use tickets visible in Current Positions for this account.`;
+}
+
+function buildAccountDecisionPrompt(
+  insight: MarketInsight,
+  accountView: AccountView,
+  benchmarkPrice: number,
+  atr: number,
+  deviationAtr: number,
+  profile: SymbolProfile,
+): string {
+  const payload = accountView.payload;
+  const currentPrice = currentPriceFromPayload(payload);
+  return [
+    '## MARKET INSIGHT SUMMARY',
+    `- Trend Bias: ${insight.trend_bias}`,
+    `- Confidence: ${insight.confidence}`,
+    `- Technical Phase: ${insight.technical.phase}`,
+    `- Arbitration Direction: ${insight.arbitration.final_direction}`,
+    `- Arbitration Action: ${insight.arbitration.action}`,
+    `- Reasoning: ${insight.arbitration.reasoning}`,
+    `- Trade Intent: ${stableStringify(insight.trade_intent)}`,
+    `- Support Levels: ${stableStringify(insight.sr_levels.support.slice(0, 5))}`,
+    `- Resistance Levels: ${stableStringify(insight.sr_levels.resistance.slice(0, 5))}`,
+    '',
+    '## ACCOUNT CONTEXT',
+    `- Account ID: ${accountView.accountId}`,
+    `- Tradable Symbol: ${accountView.symbol}`,
+    `- Loaded ai_symbols: ${stableStringify(accountView.aiSymbols)}`,
+    `- Current ${accountView.symbol} mid price: ${currentPrice.toFixed(profile.pricePrecision)}`,
+    `- Buy execution ask: ${payload.market.ask}`,
+    `- Sell execution bid: ${payload.market.bid}`,
+    `- Market benchmark price: ${benchmarkPrice.toFixed(profile.pricePrecision)}`,
+    `- ATR: ${atr}`,
+    `- Quote Deviation ATR: ${deviationAtr}`,
+    '',
+    '## ACCOUNT STATE',
+    stableStringify(payload.account),
+    '',
+    '## CURRENT POSITIONS',
+    payload.positions.length > 0 ? stableStringify(payload.positions) : 'none',
+    '',
+    '## PENDING SIGNAL',
+    accountView.pendingSignal ? stableStringify(accountView.pendingSignal) : 'none',
+    '',
+    '## EXECUTION PRICE RULE',
+    `Rebuild absolute entry/SL/TP from this account's bid/ask for ${accountView.symbol}. Do not copy absolute prices from the shared market account.`,
+  ].join('\n');
+}
+
+function rebuildAccountOrderFromInsight(
+  action: Extract<TradeAction, { type: 'place_market_order' | 'place_pending_order' }>,
+  insight: MarketInsight,
+  payload: GoldbotPayload,
+  atr: number,
+): Extract<TradeAction, { type: 'place_market_order' | 'place_pending_order' }> {
+  const currentPrice = currentPriceFromPayload(payload);
+  const executionPrice = action.type === 'place_market_order'
+    ? executionPriceFromPayload(payload, action.side)
+    : currentPrice;
+  if (executionPrice <= 0) {
+    return action;
+  }
+
+  const intent = insight.trade_intent;
+  const entryOffset = atr > 0 ? Math.max(0, intent.entry_offset_atr) * atr : 0;
+  const anchor = action.type === 'place_market_order'
+    ? executionPrice
+    : resolveAccountEntryPrice(action.side, intent.entry_trigger, currentPrice, entryOffset, action.entry_price);
+  const fallbackStopDistance = atr > 0 ? atr * 1.5 : 0;
+  const fallbackTpDistance = atr > 0 ? atr * 3 : 0;
+  const slDistance = atr > 0 && intent.stop_loss_atr > 0
+    ? intent.stop_loss_atr * atr
+    : Math.abs(anchor - action.stop_loss) || fallbackStopDistance;
+  const tp1Distance = atr > 0 && intent.take_profit_1_atr > 0
+    ? intent.take_profit_1_atr * atr
+    : Math.abs(action.take_profit_1 - anchor) || fallbackTpDistance;
+  const tp2Distance = atr > 0 && intent.take_profit_2_atr != null && intent.take_profit_2_atr > 0
+    ? intent.take_profit_2_atr * atr
+    : action.take_profit_2 != null ? Math.abs(action.take_profit_2 - anchor) : undefined;
+  const levels = {
+    stop_loss: action.side === 'buy' ? anchor - slDistance : anchor + slDistance,
+    take_profit_1: action.side === 'buy' ? anchor + tp1Distance : anchor - tp1Distance,
+    take_profit_2: tp2Distance == null
+      ? undefined
+      : action.side === 'buy'
+        ? anchor + tp2Distance
+        : anchor - tp2Distance,
+  };
+
+  if (action.type === 'place_market_order') {
+    return {
+      ...action,
+      ...levels,
+    };
+  }
+
+  return {
+    ...action,
+    entry_price: anchor,
+    ...levels,
+  };
+}
+
+function resolveAccountEntryPrice(
+  side: 'buy' | 'sell',
+  trigger: TradeIntent['entry_trigger'],
+  currentPrice: number,
+  offset: number,
+  fallback: number,
+): number {
+  if (offset <= 0 || trigger === 'market' || trigger === 'none') {
+    return currentPrice;
+  }
+  if (side === 'buy') {
+    return trigger === 'pullback' ? currentPrice - offset : currentPrice + offset;
+  }
+  return trigger === 'pullback' ? currentPrice + offset : currentPrice - offset;
+}
+
 @Injectable()
 export class ComprehensiveAnalystService {
   private readonly structureCache = new StructureCache();
@@ -1263,7 +1466,7 @@ export class ComprehensiveAnalystService {
         ],
         [{ text: summary, cacheable: false }],
         {
-          tools: TRADE_ACTION_TOOLS as any,
+          tools: TRADE_ACTION_TOOLS_LEGACY as any,
           toolChoice: { type: 'any' },
         },
       );
@@ -1281,7 +1484,7 @@ export class ComprehensiveAnalystService {
         );
       }
 
-      return toolUseToTradeAction(result.toolUse, currentPrice, profile);
+      return toolUseToTradeActionLegacy(result.toolUse, currentPrice, profile);
     } catch (err) {
       logger.warn(
         { symbol: profile.symbol, err: err instanceof Error ? err.message : String(err) },
@@ -1296,6 +1499,7 @@ export class ComprehensiveAnalystService {
     symbol: string,
     pendingSignal?: PendingSignal,
     allCurrentPrices?: Record<string, number>,
+    options: { marketOnly?: boolean; skipTradeAction?: boolean } = {},
   ): Promise<ComprehensiveAnalysisResult> {
     const logger = getLogger();
     const profile = getSymbolProfile(symbol);
@@ -1313,7 +1517,7 @@ export class ComprehensiveAnalystService {
     // Layer 3: Real-time data (price, positions, indicators) → no cache.
     const userLayers = [
       { text: structureResult.staticContextText, cacheable: true },
-      { text: buildRealtimeDataPrompt(payload, pendingSignal, symbol, profile, structureResult.harmonicVolatile), cacheable: false },
+      { text: buildRealtimeDataPrompt(payload, pendingSignal, symbol, profile, structureResult.harmonicVolatile, options.marketOnly === true), cacheable: false },
     ];
 
     let raw: string;
@@ -1510,7 +1714,7 @@ export class ComprehensiveAnalystService {
       }
     }
 
-    if (result.arbitration) {
+    if (result.arbitration && options.skipTradeAction !== true) {
       const tradeAction = await this.decideTradeAction(result.arbitration, payload, profile);
       if (tradeAction) {
         result.tradeAction = tradeAction;
@@ -1522,5 +1726,174 @@ export class ComprehensiveAnalystService {
     }
 
     return result;
+  }
+
+  async runMarketInsight(
+    barView: BarView,
+    symbol = barView.sourceSymbol,
+    allCurrentPrices?: Record<string, number>,
+  ): Promise<MarketInsight> {
+    const result = await this.run(
+      barView.payload,
+      symbol,
+      undefined,
+      allCurrentPrices,
+      { marketOnly: true, skipTradeAction: true },
+    );
+    const benchmarkPrice = barView.benchmarkPrice || currentPriceFromPayload(barView.payload);
+    return toMarketInsight(result, benchmarkPrice, barView.atr || atrOf(barView.payload));
+  }
+
+  async decideAccountActions(
+    insight: MarketInsight,
+    accountViews: AccountView[],
+    benchmarkPrice: number,
+    benchmarkAtr: number,
+    toleranceAtr = 0.25,
+  ): Promise<Record<string, TradeAction>> {
+    const entries = await Promise.all(
+      accountViews.map(async (accountView) => {
+        const action = await this.decideAccountAction(
+          insight,
+          accountView,
+          benchmarkPrice,
+          benchmarkAtr,
+          toleranceAtr,
+        );
+        return [accountView.symbol, action] as const;
+      }),
+    );
+    return Object.fromEntries(entries) as Record<string, TradeAction>;
+  }
+
+  private async decideAccountAction(
+    insight: MarketInsight,
+    accountView: AccountView,
+    benchmarkPrice: number,
+    benchmarkAtr: number,
+    toleranceAtr: number,
+  ): Promise<TradeAction> {
+    const logger = getLogger();
+    if (!isSymbolLoaded(accountView)) {
+      return {
+        type: 'do_nothing',
+        account_id: accountView.accountId,
+        reasoning: 'account.symbol_not_loaded',
+      };
+    }
+
+    const atr = benchmarkAtr > 0 ? benchmarkAtr : accountView.atr;
+    if (atr <= 0) {
+      logger.warn(
+        {
+          accountId: accountView.accountId,
+          symbol: accountView.symbol,
+          benchmarkAtr,
+          accountAtr: accountView.atr,
+        },
+        'accountDecision: ATR unavailable',
+      );
+      return {
+        type: 'do_nothing',
+        account_id: accountView.accountId,
+        reasoning: 'price.atr_unavailable',
+      };
+    }
+    const deviation = Math.abs(benchmarkPrice - accountView.realtimePrice);
+    if (deviation > toleranceAtr * atr) {
+      logger.warn(
+        {
+          accountId: accountView.accountId,
+          symbol: accountView.symbol,
+          benchmarkPrice,
+          realtimePrice: accountView.realtimePrice,
+          atr,
+          toleranceAtr,
+        },
+        'accountDecision: price deviation too large',
+      );
+      return {
+        type: 'do_nothing',
+        account_id: accountView.accountId,
+        reasoning: 'price.deviation_too_large',
+      };
+    }
+
+    const profile = getSymbolProfile(accountView.symbol);
+    const currentPrice = currentPriceFromPayload(accountView.payload);
+    const prompt = buildAccountDecisionPrompt(
+      insight,
+      accountView,
+      benchmarkPrice,
+      atr,
+      atr > 0 ? deviation / atr : 0,
+      profile,
+    );
+
+    try {
+      const result = await this.tradeClient.streamLayered(
+        [
+          { text: buildAccountDecisionSystemPrompt(profile), cacheable: true },
+          {
+            text: `Instrument: ${profile.name} (${profile.symbol})`,
+            cacheable: true,
+          },
+        ],
+        [{ text: prompt, cacheable: false }],
+        {
+          tools: TRADE_ACTION_TOOLS as any,
+          toolChoice: { type: 'any' },
+        },
+      );
+
+      if (!result.toolUse) {
+        return {
+          type: 'do_nothing',
+          account_id: accountView.accountId,
+          reasoning: 'tool_use.missing',
+        };
+      }
+
+      const action = toolUseToTradeAction(result.toolUse, currentPrice, profile, accountView.symbol);
+      if (!action) {
+        return {
+          type: 'do_nothing',
+          account_id: accountView.accountId,
+          reasoning: 'tool_use.account_id_missing',
+        };
+      }
+      const guarded = validateTradeActionForAccount(action, accountView);
+      if (!guarded.ok) {
+        return {
+          type: 'do_nothing',
+          account_id: accountView.accountId,
+          reasoning: guarded.reason,
+        };
+      }
+
+      if (action.type === 'place_market_order' || action.type === 'place_pending_order') {
+        return {
+          ...rebuildAccountOrderFromInsight(action, insight, accountView.payload, accountView.atr || atr),
+          account_id: accountView.accountId,
+          symbol: accountView.symbol,
+        };
+      }
+
+      return action;
+    } catch (err) {
+      logger.warn(
+        {
+          accountId: accountView.accountId,
+          symbol: accountView.symbol,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        'accountDecision: tool_use call failed',
+      );
+      return {
+        type: 'do_nothing',
+        account_id: accountView.accountId,
+        reasoning: 'tool_use.failed',
+      };
+    }
   }
 }

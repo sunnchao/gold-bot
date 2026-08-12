@@ -10,6 +10,15 @@ export const AccountConfigSchema = z.object({
 
 export type AccountConfig = z.infer<typeof AccountConfigSchema>;
 
+const BooleanConfigSchema = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'off', ''].includes(normalized)) return false;
+  }
+  return value;
+}, z.boolean());
+
 const AppConfigSchema = z.object({
   goldbotApiUrl: z.string().url(),
   goldbotApiToken: z.string().min(1),
@@ -23,6 +32,10 @@ const AppConfigSchema = z.object({
   llmTimeout: z.coerce.number().int().positive().default(240000),
   llmMaxRetries: z.coerce.number().int().min(0).default(3),
   llmEnablePromptCaching: z.coerce.boolean().default(false),
+  marketFirstEnabled: BooleanConfigSchema.default(false),
+  marketBarAccount: z.string().min(1).default('90011087'),
+  marketInsightTtlMs: z.coerce.number().int().positive().default(600000),
+  priceDeviationToleranceAtr: z.coerce.number().positive().default(0.25),
   scheduleCron: z.string().min(1).default('*/5 * * * *'),
   accounts: z.array(AccountConfigSchema).min(1, 'At least one account is required'),
   logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
@@ -65,6 +78,10 @@ export function validateConfig(env: Record<string, unknown>): AppConfig {
     llmTimeout: env.LLM_TIMEOUT ?? '120000',
     llmMaxRetries: env.LLM_MAX_RETRIES ?? '3',
     llmEnablePromptCaching: env.LLM_ENABLE_PROMPT_CACHING ?? 'false',
+    marketFirstEnabled: env.MARKET_FIRST_ENABLED ?? 'false',
+    marketBarAccount: env.MARKET_BAR_ACCOUNT ?? '90011087',
+    marketInsightTtlMs: env.MARKET_INSIGHT_TTL_MS ?? '600000',
+    priceDeviationToleranceAtr: env.PRICE_DEVIATION_TOLERANCE_ATR ?? '0.25',
     scheduleCron: env.SCHEDULE_CRON ?? '*/5 * * * *',
     accounts: parseAccounts(env),
     logLevel: env.LOG_LEVEL ?? 'info',
@@ -130,6 +147,22 @@ export class AppConfigService {
 
   get llmTradeModel(): string {
     return this.config.llmTradeModel;
+  }
+
+  get marketFirstEnabled(): boolean {
+    return this.config.marketFirstEnabled;
+  }
+
+  get marketBarAccount(): string {
+    return this.config.marketBarAccount;
+  }
+
+  get marketInsightTtlMs(): number {
+    return this.config.marketInsightTtlMs;
+  }
+
+  get priceDeviationToleranceAtr(): number {
+    return this.config.priceDeviationToleranceAtr;
   }
 
   get scheduleCron(): string {

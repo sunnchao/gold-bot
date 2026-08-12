@@ -7,6 +7,8 @@ describe('composeFinalSignal AI order intent', () => {
   it('adds explicit market intent for current-price trade actions', () => {
     const signal = composeFinalSignal(stateWithTradeAction({
       type: 'place_market_order',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
       side: 'buy',
       stop_loss: 3330,
       take_profit_1: 3345,
@@ -27,6 +29,8 @@ describe('composeFinalSignal AI order intent', () => {
   it('maps buy limit trade actions to BUY_LIMIT intent', () => {
     const signal = composeFinalSignal(stateWithTradeAction({
       type: 'place_pending_order',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
       side: 'buy',
       entry_price: 3332.5,
       stop_loss: 3328,
@@ -50,6 +54,8 @@ describe('composeFinalSignal AI order intent', () => {
   it('end-to-end: buy limit at 4145 produces BUY_LIMIT trade plan', () => {
     const state = stateWithTradeAction({
       type: 'place_pending_order',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
       side: 'buy',
       entry_price: 4145,
       stop_loss: 4125,
@@ -95,6 +101,8 @@ describe('composeFinalSignal AI order intent', () => {
   it('maps sell limit trade actions to SELL_LIMIT intent', () => {
     const signal = composeFinalSignal(stateWithTradeAction({
       type: 'place_pending_order',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
       side: 'sell',
       entry_price: 3338.5,
       stop_loss: 3344,
@@ -118,6 +126,8 @@ describe('composeFinalSignal AI order intent', () => {
   it('does not publish executable approve plans for pending stop trade actions', () => {
     const signal = composeFinalSignal(stateWithTradeAction({
       type: 'place_pending_order',
+      account_id: '90011087',
+      symbol: 'XAUUSD',
       side: 'buy',
       entry_price: 3342,
       stop_loss: 3335,
@@ -129,6 +139,80 @@ describe('composeFinalSignal AI order intent', () => {
     }));
 
     expect(signal?.trade_plan).toBeUndefined();
+  });
+
+  it.each([
+    'price.deviation_too_large',
+    'account.symbol_not_loaded',
+  ])('vetoes market-first open insights when account action is %s', (reasoning) => {
+    const state = stateWithTradeAction({
+      type: 'do_nothing',
+      account_id: '90011087',
+      reasoning,
+    });
+    const signal = composeFinalSignal({
+      ...state,
+      marketInsights: {
+        XAUUSD: state.comprehensiveAnalysis as any,
+      },
+      accountActions: {
+        XAUUSD: state.tradeAction!,
+      },
+      arbitration: {
+        ...state.arbitration!,
+        final_direction: 'buy',
+        action: 'open',
+        confidence: 80,
+      },
+    } as AnalysisGraphStateType);
+
+    expect(signal?.arbitration).toMatchObject({
+      direction: 'hold',
+      action: 'hold',
+    });
+    expect(signal?.trade_plan).toBeUndefined();
+    expect(signal?.dual_trade_plan).toBeUndefined();
+  });
+
+  it('allows market-first trade plans only from account-aware opening actions', () => {
+    const signal = composeFinalSignal({
+      ...stateWithTradeAction({
+        type: 'place_market_order',
+        account_id: '90011087',
+        symbol: 'XAUUSD',
+        side: 'buy',
+        stop_loss: 3330,
+        take_profit_1: 3345,
+        lots: 0.01,
+        reason: 'account approved',
+      }),
+      marketInsights: {
+        XAUUSD: {} as any,
+      },
+      accountActions: {
+        XAUUSD: {
+          type: 'place_market_order',
+          account_id: '90011087',
+          symbol: 'XAUUSD',
+          side: 'buy',
+          stop_loss: 3330,
+          take_profit_1: 3345,
+          lots: 0.01,
+          reason: 'account approved',
+        },
+      },
+    } as AnalysisGraphStateType);
+
+    expect(signal?.arbitration).toMatchObject({
+      direction: 'buy',
+      action: 'open',
+    });
+    expect(signal?.trade_plan).toMatchObject({
+      mode: 'approve',
+      side: 'buy',
+      execution_type: 'market',
+      requested_order_type: 'market',
+    });
   });
 
   it('adds explicit market intent to dual approve trade plans', () => {

@@ -56,8 +56,20 @@ export function createAIApproveCooldown(): AIApproveCooldown {
   };
 }
 
+function normalizeSymbolForMatch(symbol: string): string {
+  return symbol.trim().toUpperCase();
+}
+
 export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateInput): Promise<AIApprovePendingGateResult> {
-  const tick = (await input.store.getLatestTick(input.accountId, input.symbol)) ?? {};
+  const registration = await input.store.getRegistration(input.accountId);
+  const aiSymbols = stringArrayField(registration, 'ai_symbols');
+  const normalizedSymbol = normalizeSymbolForMatch(input.symbol);
+  const tradableSymbol = aiSymbols.find((symbol) => normalizeSymbolForMatch(symbol) === normalizedSymbol);
+  if (aiSymbols.length === 0 || !tradableSymbol) {
+    return reject('account.symbol_not_loaded');
+  }
+
+  const tick = (await input.store.getLatestTick(input.accountId, tradableSymbol)) ?? {};
   const currentPrice = currentPriceFromTick(tick);
   const executionPrice = executionPriceFromTick(tick, stringField(input.tradePlan, 'side'));
   if (currentPrice <= 0) {
@@ -76,7 +88,7 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
   // 0 =  defer to EA FixedLots/SymbolLotsMap（不下发 cmd.lots）
   let lots = calcAIApproveLots(maxLots);
 
-  const h1Bars = await input.store.getBars(input.accountId, input.symbol, 'H1');
+  const h1Bars = await input.store.getBars(input.accountId, tradableSymbol, 'H1');
   const h1Atr = latestAtr(h1Bars);
   const orderIntent = resolveAIApproveOrderIntent(input.tradePlan, executionPrice, entry, h1Atr);
   if (!orderIntent.accepted) {
@@ -88,11 +100,11 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
   }
 
   const trend = buildAIApproveTrendContext({
-    D1: await input.store.getBars(input.accountId, input.symbol, 'D1'),
-    H4: await input.store.getBars(input.accountId, input.symbol, 'H4'),
+    D1: await input.store.getBars(input.accountId, tradableSymbol, 'D1'),
+    H4: await input.store.getBars(input.accountId, tradableSymbol, 'H4'),
     H1: h1Bars,
-    M30: await input.store.getBars(input.accountId, input.symbol, 'M30'),
-    M15: await input.store.getBars(input.accountId, input.symbol, 'M15')
+    M30: await input.store.getBars(input.accountId, tradableSymbol, 'M30'),
+    M15: await input.store.getBars(input.accountId, tradableSymbol, 'M15')
   });
   const signalDirection = stringField(input.tradePlan, 'side').trim().toLowerCase() === 'sell' ? 'BEAR' : 'BULL';
   if (trend.hasIndicatorContext) {
@@ -111,17 +123,17 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     }
   }
 
-  const positions = await input.store.getPositions(input.accountId, input.symbol);
+  const positions = await input.store.getPositions(input.accountId, tradableSymbol);
   const side = stringField(input.tradePlan, 'side');
-  if (hasOpenPositionOnSide(positions, input.symbol, side, 'ai_signal')) {
+  if (hasOpenPositionOnSide(positions, tradableSymbol, side, 'ai_signal')) {
     if (booleanField(input.tradePlan, 'add_on') !== true) {
       return reject('position.same_side');
     }
-    const averagePrice = averageEntryPrice(positions, input.symbol, side);
+    const averagePrice = averageEntryPrice(positions, tradableSymbol, side);
     if (averagePrice <= 0) {
       return reject('position.average_entry_missing');
     }
-    const m30Atr = latestAtr(await input.store.getBars(input.accountId, input.symbol, 'M30'));
+    const m30Atr = latestAtr(await input.store.getBars(input.accountId, tradableSymbol, 'M30'));
     if (m30Atr <= 0) {
       return reject('position.m30_atr_missing');
     }
@@ -138,11 +150,11 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     const sizeForAddOnLimit = lots > 0 ? lots : maxLots;
 
     if (addOnType === 'favorable') {
-      const existingLots = totalLotsOnSide(positions, input.symbol, side);
+      const existingLots = totalLotsOnSide(positions, tradableSymbol, side);
       if (existingLots <= 0) {
         return reject('position.favorable_add_no_existing_lots');
       }
-      const profitAtr = calculateProfitAtr(positions, input.symbol, side, currentPrice, m30Atr);
+      const profitAtr = calculateProfitAtr(positions, tradableSymbol, side, currentPrice, m30Atr);
       if (profitAtr < 1.0) {
         return reject('position.favorable_add_profit_not_enough');
       }
@@ -152,19 +164,19 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     }
 
     if (addOnType === 'adverse') {
-      const existingLots = totalLotsOnSide(positions, input.symbol, side);
+      const existingLots = totalLotsOnSide(positions, tradableSymbol, side);
       if (existingLots <= 0) {
         return reject('position.adverse_add_no_existing_lots');
       }
 
-      const lossAtr = calculateLossAtr(positions, input.symbol, side, currentPrice, m30Atr);
+      const lossAtr = calculateLossAtr(positions, tradableSymbol, side, currentPrice, m30Atr);
       const level = addOnLevel >= 1 && addOnLevel <= 3 ? addOnLevel : inferAdverseLevel(lossAtr);
       const lossThreshold = level >= 3 ? 3.5 : level === 2 ? 2.0 : 1.0;
       if (lossAtr < lossThreshold) {
         return reject('position.adverse_add_loss_not_enough');
       }
 
-      const positionStates = input.positionStates ?? await input.store.loadPositionStates(input.accountId, input.symbol);
+      const positionStates = input.positionStates ?? await input.store.loadPositionStates(input.accountId, tradableSymbol);
       const addOnMeta = latestAdverseAddOnState(positionStates);
       const intervalMs = level >= 3 ? 90 * 60 * 1000 : level === 2 ? 45 * 60 * 1000 : 0;
       if (intervalMs > 0 && addOnMeta.lastAddOnTime.length > 0) {
@@ -183,7 +195,7 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
         return reject('position.adverse_add_single_lots_too_large');
       }
 
-      const initialLots = largestLotsOnSide(positions, input.symbol, side);
+      const initialLots = largestLotsOnSide(positions, tradableSymbol, side);
       if (initialLots > 0 && addOnMeta.addOnCount > 0 && existingLots - initialLots + sizeForAddOnLimit > initialLots * 1.5) {
         return reject('position.adverse_add_cumulative_lots_exceeded');
       }
@@ -205,17 +217,17 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
     }
   }
 
-  if (await input.store.hasActiveAIApprovePending(input.accountId, input.symbol, side, input.nowIso)) {
+  if (await input.store.hasActiveAIApprovePending(input.accountId, tradableSymbol, side, input.nowIso)) {
     return reject('pending.duplicate');
   }
 
   // 每品种每日限额（Phase 4.1）：当日（UTC）该品种已下发的 AI 信号 ≥ 上限时拒绝，
   // 阻断同日高频反向互扫。draft/shadow_only 不计入（未真正下发）。
-  if (await countAIApproveSignalsToday(input.store, input.accountId, input.symbol, input.nowIso) >= AI_APPROVE_MAX_DAILY_SIGNALS_PER_SYMBOL) {
+  if (await countAIApproveSignalsToday(input.store, input.accountId, tradableSymbol, input.nowIso) >= AI_APPROVE_MAX_DAILY_SIGNALS_PER_SYMBOL) {
     return reject('daily_limit.symbol');
   }
 
-  if (input.cooldown?.active(input.symbol, input.nowIso, AI_APPROVE_COOLDOWN_MS) === true) {
+  if (input.cooldown?.active(tradableSymbol, input.nowIso, AI_APPROVE_COOLDOWN_MS) === true) {
     return reject('cooldown.active');
   }
 
@@ -436,6 +448,13 @@ function numberField(record: EaRecord, field: string): number {
 function stringField(record: EaRecord, field: string): string {
   const value = record[field];
   return typeof value === 'string' ? value : '';
+}
+
+function stringArrayField(record: EaRecord | undefined, field: string): string[] {
+  const value = record?.[field];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
 }
 
 function booleanField(record: EaRecord, field: string): boolean {

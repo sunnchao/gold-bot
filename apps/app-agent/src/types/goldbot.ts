@@ -74,6 +74,7 @@ export interface AccountInfo {
 
 export interface PositionInfo {
   ticket: number;
+  symbol?: string;
   strategy: string;
   magic?: number;
   direction: 'buy' | 'sell' | 'BUY' | 'SELL';

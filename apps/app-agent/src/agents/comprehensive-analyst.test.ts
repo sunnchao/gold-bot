@@ -3,6 +3,8 @@ import { ComprehensiveAnalystService } from './comprehensive-analyst.js';
 import { LLMClient, type LlmClientService } from '../tools/llm-client.js';
 import type { AppConfigService } from '../config/app-config.service.js';
 import type { GoldbotPayload } from '../types/goldbot.js';
+import type { MarketInsight } from '../types/comprehensive.js';
+import { TRADE_ACTION_TOOLS_LEGACY } from '../types/trade-action.js';
 
 const loggerMock = vi.hoisted(() => ({
   debug: vi.fn(),
@@ -322,6 +324,8 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
         id: 't1',
         name: 'place_pending_order',
         input: {
+          account_id: 'acc-001',
+          symbol: 'XAUUSD',
           side: 'buy',
           entry_price: 4145,
           stop_loss: 4125,
@@ -347,6 +351,7 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(tradeStreamLayered).toHaveBeenCalledTimes(1);
     expect((tradeStreamLayered.mock.contexts[0] as LLMClient).getModel()).toBe('deepseek-v4-flash-0731');
     expect(tradeStreamLayered.mock.calls[0][2]).toMatchObject({
+      tools: TRADE_ACTION_TOOLS_LEGACY,
       toolChoice: { type: 'any' },
     });
     expect(tradeStreamLayered.mock.calls[0][0][0].text).toContain(
@@ -387,6 +392,139 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(streamLayered).toHaveBeenCalledTimes(1);
     expect(tradeStreamLayered).toHaveBeenCalledTimes(1);
     expect(result.tradeAction).toBeUndefined();
+  });
+
+  it('returns do_nothing when account price deviation exceeds ATR tolerance', async () => {
+    const client = {
+      streamLayered: vi.fn(),
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = createService(client);
+    const marketInsight = {
+      technical: {
+        bias: 'bullish',
+        confidence: 80,
+        phase: 'trending',
+        indicators_summary: 'trend',
+        support_levels: [],
+        resistance_levels: [],
+        recommendation: 'none',
+        rationale: 'trend',
+      },
+      wave: {
+        wave_confirmation: 'partial',
+        extension_wave: null,
+        corrective_type: null,
+        trend_strength: 'moderate',
+        target_levels: { level_1_618: 4188, level_2_0: 4205 },
+        confidence: 70,
+        rationale: 'wave',
+      },
+      chanlun: {
+        trend: 'up',
+        strength: 'moderate',
+        latest_signal: 'buy',
+        hub_state: 'active',
+        confidence: 70,
+        rationale: 'chanlun',
+      },
+      harmonic: {
+        detected_pattern: 'none',
+        direction: 'neutral',
+        timeframe: 'N/A',
+        completion_pct: 0,
+        confidence: 0,
+        d_zone_price: 0,
+        entry_zone: 'N/A',
+        stop_loss: 0,
+        take_profit_1: 0,
+        take_profit_2: 0,
+        rationale: 'none',
+      },
+      risk: {
+        riskLevel: 'low',
+        maxPositionSize: 0.1,
+        suggestedSL: 4168,
+        suggestedTP: 4188,
+        warnings: [],
+        addOn: false,
+      },
+      arbitration: {
+        final_direction: 'buy',
+        confidence: 80,
+        primary_contradiction: 'none',
+        phase: 'trend',
+        reasoning: 'buy',
+        action: 'open',
+        united_front_analysis: 'aligned',
+      },
+      sr_levels: { support: [], resistance: [] },
+      trend_bias: 'bullish',
+      confidence: 80,
+      trade_intent: {
+        direction: 'buy',
+        entry_trigger: 'market',
+        entry_offset_atr: 0,
+        stop_loss_atr: 1.5,
+        take_profit_1_atr: 3,
+        rationale: 'buy',
+      },
+    } satisfies MarketInsight;
+
+    const actions = await service.decideAccountActions(
+      marketInsight,
+      [{
+        accountId: '81124211',
+        symbol: 'GOLDm#',
+        payload: payloadWithLastBarClose(4176),
+        aiSymbols: ['GOLDm#'],
+        realtimePrice: 4176,
+        atr: 4,
+      }],
+      4174,
+      4,
+      0.25,
+    );
+
+    expect(actions['GOLDm#']).toEqual({
+      type: 'do_nothing',
+      account_id: '81124211',
+      reasoning: 'price.deviation_too_large',
+    });
+  });
+
+  it('returns do_nothing when account ATR is unavailable', async () => {
+    const client = {
+      streamLayered: vi.fn(),
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = createService(client);
+
+    const actions = await service.decideAccountActions(
+      {} as MarketInsight,
+      [{
+        accountId: '81124211',
+        symbol: 'GOLDm#',
+        payload: payloadWithLastBarClose(4174),
+        aiSymbols: ['GOLDm#'],
+        realtimePrice: 4174,
+        atr: 0,
+      }],
+      4174,
+      0,
+      0.25,
+    );
+
+    expect(actions['GOLDm#']).toEqual({
+      type: 'do_nothing',
+      account_id: '81124211',
+      reasoning: 'price.atr_unavailable',
+    });
+    expect(client.streamLayered).not.toHaveBeenCalled();
   });
 
   it('does not include current price in the second-phase cacheable system block', async () => {

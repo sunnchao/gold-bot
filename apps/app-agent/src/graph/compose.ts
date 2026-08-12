@@ -9,7 +9,7 @@ import type {
   TradePlanSide,
 } from '../types/agent.js';
 import type { ArbitrationResult } from '../types/analysis.js';
-import type { PendingOrderAction, MarketOrderAction } from '../types/trade-action.js';
+import type { PendingOrderAction, MarketOrderAction, TradeAction } from '../types/trade-action.js';
 
 const TRADE_PLAN_SCHEMA_VERSION = 'trade_plan.v1' as const;
 const TRADE_PLAN_EXPIRY_MS = 15 * 60 * 1000;
@@ -138,6 +138,8 @@ function buildTradePlanFromTradeAction(
   action: PendingOrderAction | MarketOrderAction,
 ): TradePlan | undefined {
   if (!state.arbitration) return undefined;
+  if (action.account_id && action.account_id !== state.accountId) return undefined;
+  if (action.symbol && !sameSymbol(action.symbol, state.symbol)) return undefined;
   const isMarket = action.type === 'place_market_order';
   if (!isMarket && action.order_type === 'stop') {
     return undefined;
@@ -179,6 +181,25 @@ function buildTradePlanFromTradeAction(
     narrative: action.reason,
     add_on: state.riskAssessment?.addOn ?? false,
   };
+}
+
+function isMarketFirstState(state: AnalysisGraphStateType): boolean {
+  return state.accountActions != null || state.marketInsights != null;
+}
+
+function sameSymbol(left: string | undefined, right: string): boolean {
+  return left != null && left.trim().toUpperCase() === right.trim().toUpperCase();
+}
+
+function isAccountAwareOpenAction(
+  state: AnalysisGraphStateType,
+  action: TradeAction | undefined,
+): action is PendingOrderAction | MarketOrderAction {
+  return (
+    (action?.type === 'place_market_order' || action?.type === 'place_pending_order') &&
+    action.account_id === state.accountId &&
+    sameSymbol(action.symbol, state.symbol)
+  );
 }
 
 function buildTradePlan(state: AnalysisGraphStateType, confidence: number): TradePlan | undefined {
@@ -414,10 +435,46 @@ export function composeFinalSignal(state: AnalysisGraphStateType): AISignalResul
     confidence = gatedConfidence;
   }
 
-  const effectiveState =
+  const marketFirst = isMarketFirstState(state);
+  const accountTradeAction = isAccountAwareOpenAction(state, state.tradeAction)
+    ? state.tradeAction
+    : undefined;
+  if (marketFirst && arbitration.action === 'open' && !accountTradeAction) {
+    arbitration = {
+      ...arbitration,
+      action: 'hold',
+      final_direction: 'hold',
+      reasoning: `${arbitration.reasoning} | account_action_veto`,
+    };
+  }
+
+  const tradeAction = marketFirst
+    ? arbitration.action === 'open' ? accountTradeAction : undefined
+    : arbitration.action === 'open' &&
+      (state.tradeAction?.type === 'place_market_order' || state.tradeAction?.type === 'place_pending_order')
+      ? state.tradeAction
+      : undefined;
+  let effectiveState =
     arbitration === state.arbitration ? state : { ...state, arbitration };
-  const tradeAction =
-    arbitration.action === 'open' ? state.tradeAction : undefined;
+  const tradePlan = tradeAction
+    ? buildTradePlanFromTradeAction(effectiveState, tradeAction)
+    : marketFirst
+      ? undefined
+      : buildTradePlan(effectiveState, confidence);
+  if (marketFirst && arbitration.action === 'open' && !tradePlan) {
+    arbitration = {
+      ...arbitration,
+      action: 'hold',
+      final_direction: 'hold',
+      reasoning: arbitration.reasoning.includes('account_action_veto')
+        ? arbitration.reasoning
+        : `${arbitration.reasoning} | account_action_veto`,
+    };
+    effectiveState = { ...state, arbitration };
+  }
+  const dualTradePlan = !marketFirst && arbitration.action === 'open'
+    ? buildDualTradePlan(effectiveState, confidence)
+    : undefined;
 
   return {
     bias,
@@ -474,11 +531,7 @@ export function composeFinalSignal(state: AnalysisGraphStateType): AISignalResul
     wave_theory: arbitration?.wave_theory,
     chanlun_theory: arbitration?.chanlun_theory,
     trade_recommendation: arbitration?.trade_recommendation,
-    trade_plan: (tradeAction && tradeAction.type !== 'do_nothing')
-      ? buildTradePlanFromTradeAction(effectiveState, tradeAction)
-      : buildTradePlan(effectiveState, confidence),
-    dual_trade_plan: arbitration.action === 'open'
-      ? buildDualTradePlan(effectiveState, confidence)
-      : undefined,
+    trade_plan: tradePlan,
+    dual_trade_plan: dualTradePlan,
   };
 }

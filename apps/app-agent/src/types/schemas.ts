@@ -333,6 +333,8 @@ export const IndicatorPackSchema = z.object({
   r1: z.number().optional(),
   s1: z.number().optional(),
   bars_count: z.number().optional(),
+  macd_divergence: z.enum(['bullish', 'bearish']).nullable().optional(),
+  rsi_divergence: z.enum(['bullish', 'bearish']).nullable().optional(),
 });
 
 export const MarketDataSchema = z.object({
@@ -360,6 +362,7 @@ export const AccountInfoSchema = z.object({
 // PositionInfoSchema - matches Go API aurex.PositionSummary
 export const PositionInfoSchema = z.object({
   ticket: z.number().int().positive(),
+  symbol: z.string().min(1).optional(),
   strategy: z.string().min(1),
   magic: z.number().int().optional(),
   direction: z.enum(['buy', 'sell', 'BUY', 'SELL']),
