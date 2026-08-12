@@ -232,6 +232,10 @@ const PROFILES: Record<string, SymbolProfile> = {
   },
 };
 
+const MICRO_BASE_ALIASES: Record<string, string> = {
+  SILVERM: 'XAGUSD',
+};
+
 function hasMicroContractSuffix(rawSymbol: string): boolean {
   const normalized = rawSymbol.trim();
   if (normalized.includes('#')) return true;
@@ -260,6 +264,9 @@ export function getSymbolProfile(rawSymbol: string): SymbolProfile {
 
   // Strip common suffixes (m, #, ., etc.) to find base symbol
   const base = rawSymbol.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+  const alias = MICRO_BASE_ALIASES[base];
+  if (alias && PROFILES[alias]) return withLotBounds(PROFILES[alias], rawSymbol);
+
   if (PROFILES[base]) return withLotBounds(PROFILES[base], rawSymbol);
 
   // Try prefix matching for known patterns (one-way only: input starts with known key)

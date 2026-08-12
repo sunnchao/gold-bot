@@ -5,7 +5,7 @@ import { WorkflowService } from '../graph/workflow.service.js';
 const ALLOWED_SYMBOLS = new Set([
   'XAUUSD', 'XAGUSD', 'GOLD', 'GBPJPY', 'EURJPY', 'USDJPY',
   'GBPUSD', 'USDCAD', 'EURUSD', 'AUDUSD', 'NZDUSD', 'USDCNH',
-  'US100CASH', 'USOILCASH', 'UKOILCASH', 'GOLDM#',
+  'US100CASH', 'USOILCASH', 'UKOILCASH', 'GOLDM#', 'SILVERM#',
 ]);
 
 /** Cooldown window per (account,symbol) to prevent duplicate analysis */

@@ -17,4 +17,20 @@ describe('getSymbolProfile lot bounds', () => {
 
     expect(getSymbolProfile('GOLD').minLots).toBe(0.01);
   });
+
+  it('resolves XM-style micro silver symbols to the XAGUSD profile with micro lot bounds', () => {
+    const profile = getSymbolProfile('SILVERm#');
+
+    expect(profile.minLots).toBe(0.1);
+    expect(profile.assetClass).toBe('metal');
+    expect(profile.priceRange).toEqual([15, 50]);
+  });
+
+  it('resolves lowercase XM-style micro silver symbols to the XAGUSD profile', () => {
+    const profile = getSymbolProfile('silverm#');
+
+    expect(profile.minLots).toBe(0.1);
+    expect(profile.assetClass).toBe('metal');
+    expect(profile.priceRange).toEqual([15, 50]);
+  });
 });
