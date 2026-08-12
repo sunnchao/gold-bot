@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  resolveAIApproveExecutableTakeProfits,
   resolveAIApproveOrderIntent,
   validateAIApproveProtectionDirection
 } from './rules.js';
@@ -302,6 +303,75 @@ describe('AI approve order intent rules', () => {
       tradePlan({ stop_loss: 3330, take_profit: [-1, 0] }),
       3335.6
     )).toEqual({ accepted: false, reason: 'protection.invalid_direction' });
+  });
+});
+
+describe('AI approve take profit normalization', () => {
+  it('sorts executable BUY targets from near TP1 to far TP2 and gates R:R on the far TP2', () => {
+    const result = resolveAIApproveExecutableTakeProfits({
+      side: 'buy',
+      entry: 3335.7,
+      stopLoss: 3330,
+      takeProfitValues: [3350, 3342.825]
+    });
+
+    expect(result).toMatchObject({
+      accepted: true,
+      tp1: 3342.825,
+      tp2: 3350,
+      legacyTakeProfit: 3350,
+      tpSplit: true,
+      targets: [
+        { label: 'TP1', value: 3342.825 },
+        { label: 'TP2', value: 3350 }
+      ]
+    });
+    expect(result.accepted).toBe(true);
+    if (result.accepted) {
+      expect(result.targets[0].rr).toBeCloseTo(1.25, 12);
+      expect(result.targets[1].rr).toBeCloseTo(2.508771929824561, 12);
+    }
+  });
+
+  it('accepts staged targets when the near TP1 is below the floor as long as the far TP2 qualifies', () => {
+    const result = resolveAIApproveExecutableTakeProfits({
+      side: 'buy',
+      entry: 3335.7,
+      stopLoss: 3330,
+      takeProfitValues: [3340, 3342.825]
+    });
+
+    expect(result).toMatchObject({
+      accepted: true,
+      tp1: 3340,
+      tp2: 3342.825,
+      legacyTakeProfit: 3342.825,
+      tpSplit: true
+    });
+  });
+
+  it('rejects staged targets when even the far TP2 is below the R:R floor', () => {
+    expect(resolveAIApproveExecutableTakeProfits({
+      side: 'buy',
+      entry: 3335.7,
+      stopLoss: 3330,
+      takeProfitValues: [3340, 3341]
+    })).toEqual({ accepted: false, reason: 'rr.below_minimum', label: 'TP2' });
+  });
+
+  it('keeps single-target plans executable when the only target qualifies', () => {
+    expect(resolveAIApproveExecutableTakeProfits({
+      side: 'sell',
+      entry: 3335.5,
+      stopLoss: 3340,
+      takeProfitValues: [3329.875]
+    })).toMatchObject({
+      accepted: true,
+      tp1: 3329.875,
+      tp2: 0,
+      legacyTakeProfit: 3329.875,
+      tpSplit: false
+    });
   });
 });
 

@@ -175,7 +175,8 @@ function pullbackBuyBars() {
     rsi: 45,
     ema20: 95.8,
     ema50: 90,
-    macd_hist: 1
+    macd_hist: 1,
+    r1: 97.5
   }));
 
   bars[48] = {
@@ -4630,13 +4631,7 @@ describe('app-server scaffold', () => {
     };
     expect(body.status).toBe('OK');
     expect(body.generated_at).toBe('2026-04-13T08:00:00Z');
-    expect(body.replay?.signal).toMatchObject({
-      strategy: 'pullback',
-      side: 'BUY',
-      entry: 3335.75,
-      // 6 → 7：9cf7bec 对齐 SR-SLTP/goldFib parity 后 oracle 评分为 7（与 engine.spec.ts 同一 fixture 一致）。
-      score: 7
-    });
+    expect(body.replay?.signal).toBeNull();
     expect(body.replay?.logs).toEqual(
       expect.arrayContaining([
         {
@@ -4648,6 +4643,11 @@ describe('app-server scaffold', () => {
           level: 'info',
           strategy: 'M15确认',
           msg: '⏭ pullback | M15未确认: RSI=77.2≥40'
+        },
+        {
+          level: 'warn',
+          strategy: 'R:R过滤',
+          msg: '⚠️ 信号 R:R=0.875 < 1.25 拒绝 ⏭'
         }
       ])
     );

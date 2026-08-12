@@ -40,8 +40,11 @@ describe('AI approve command builder', () => {
       entry: 3335.6,
       entry_min: 3335.5,
       entry_max: 3335.7,
-      sl: 3330.46,
-      tp: 3344.88,
+      sl: 3330.456,
+      tp: 3344.876,
+      tp1: 3344.876,
+      tp2: 0,
+      tp_split: false,
       lots: 0,
       order_type: 'market',
       expiration: 1776081600,
@@ -120,6 +123,96 @@ describe('AI approve command builder', () => {
 
     expect([buyLimit.order_type, sellLimit.order_type]).not.toContain('BUY_STOP');
     expect([buyLimit.order_type, sellLimit.order_type]).not.toContain('SELL_STOP');
+  });
+
+  it('builds staged take profit payloads using TP2 as the primary legacy tp target', () => {
+    const command = buildAIApproveCommandCandidate({
+      accountId: '90011087',
+      symbol: 'XAUUSD',
+      nowIso: '2026-04-13T08:00:00Z',
+      orderType: 'market',
+      riskGate: { decision_id: 'tpv1_tp2', mode: 'approve', symbol: 'XAUUSD' },
+      tradePlan: {
+        decision_id: 'tpv1_tp2',
+        mode: 'approve',
+        side: 'buy',
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        stop_loss: 3330,
+        take_profit: [3340, 3345],
+        max_lots: 0.01,
+        confidence: 76,
+        narrative: 'staged target'
+      }
+    });
+
+    expect(command).toMatchObject({
+      tp: 3345,
+      tp1: 3340,
+      tp2: 3345,
+      tp_split: true
+    });
+  });
+
+  it('normalizes staged take profits by distance instead of trusting array order', () => {
+    const command = buildAIApproveCommandCandidate({
+      accountId: '90011087',
+      symbol: 'XAUUSD',
+      nowIso: '2026-04-13T08:00:00Z',
+      orderType: 'market',
+      riskGate: { decision_id: 'tpv1_tp_order', mode: 'approve', symbol: 'XAUUSD' },
+      tradePlan: {
+        decision_id: 'tpv1_tp_order',
+        mode: 'approve',
+        side: 'buy',
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        stop_loss: 3330,
+        take_profit: [3345, 3340],
+        max_lots: 0.01,
+        confidence: 76,
+        narrative: 'targets arrived far-to-near'
+      }
+    });
+
+    expect(command).toMatchObject({
+      tp: 3345,
+      tp1: 3340,
+      tp2: 3345,
+      tp_split: true
+    });
+  });
+
+  it('preserves EURUSD input precision in the EA payload', () => {
+    const command = buildAIApproveCommandCandidate({
+      accountId: '90011087',
+      symbol: 'EURUSD',
+      nowIso: '2026-04-13T08:00:00Z',
+      orderType: 'market',
+      riskGate: { decision_id: 'tpv1_eurusd_precision', mode: 'approve', symbol: 'EURUSD' },
+      tradePlan: {
+        decision_id: 'tpv1_eurusd_precision',
+        mode: 'approve',
+        side: 'buy',
+        entry_zone: { min: 1.09500, max: 1.09500 },
+        stop_loss: 1.09420,
+        take_profit: [1.09650],
+        max_lots: 0.01,
+        confidence: 76,
+        narrative: 'preserve five digit forex prices'
+      }
+    });
+
+    expect(command).toMatchObject({
+      entry: 1.095,
+      entry_min: 1.095,
+      entry_max: 1.095,
+      sl: 1.0942,
+      tp: 1.0965,
+      tp1: 1.0965,
+      tp2: 0
+    });
+    expect(command.entry).not.toBe(1.1);
+    expect(command.sl).not.toBe(1.09);
+    expect(command.tp).not.toBe(1.1);
   });
 
   it('builds adverse SIGNAL with scale_in_add_on_type/level and unified_sl = min openPrice (BUY)', () => {

@@ -1,8 +1,8 @@
 import type { CommandCandidate, EaRecord } from '@gold-bot/persistence';
 import {
   calcAIApproveLots,
-  firstPositiveAIApproveTakeProfit,
   pickAIApproveEntryPrice,
+  resolveAIApproveExecutableTakeProfits,
   round2,
   type AIApproveOrderType
 } from './rules.js';
@@ -25,18 +25,31 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
   const entry = pickAIApproveEntryPrice(entryZone);
   const confidence = numberField(input.tradePlan, 'confidence');
   const expiration = unixSeconds(input.nowIso) + 4 * 60 * 60;
+  const takeProfitValues = arrayNumberField(input.tradePlan, 'take_profit');
+  const stopLoss = numberField(input.tradePlan, 'stop_loss');
+  const takeProfits = resolveAIApproveExecutableTakeProfits({
+    side,
+    entry,
+    stopLoss,
+    takeProfitValues
+  });
+  if (!takeProfits.accepted) {
+    throw new Error(`AI approve command received invalid ${takeProfits.label}: ${takeProfits.reason}`);
+  }
   const candidate: CommandCandidate = {
     command_id: `ai_pending_${input.accountId}_${input.symbol}_${unixNanos(input.nowIso)}`,
     action: 'SIGNAL',
     symbol: input.symbol,
     type: side,
-    entry: round2(entry),
-    entry_min: round2(entryMin),
-    entry_max: round2(entryMax),
-    sl: round2(numberField(input.tradePlan, 'stop_loss')),
-    tp: round2(firstPositiveAIApproveTakeProfit(arrayNumberField(input.tradePlan, 'take_profit'))),
+    entry,
+    entry_min: entryMin,
+    entry_max: entryMax,
+    sl: stopLoss,
+    tp: takeProfits.legacyTakeProfit,
+    tp1: takeProfits.tp1,
+    tp2: takeProfits.tp2,
     // lots<=0：不写入有效手数，EA 走 CalcLotsForStrategy（FixedLots / SymbolLotsMap）
-    lots: round2(calcAIApproveLots(numberField(input.tradePlan, 'max_lots'))),
+    lots: calcAIApproveLots(numberField(input.tradePlan, 'max_lots')),
     order_type: input.orderType,
     expiration,
     score: confidence,
@@ -46,7 +59,8 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
     decision_id: stringField(input.tradePlan, 'decision_id'),
     reason: stringField(input.tradePlan, 'narrative'),
     trade_plan_mode: stringField(input.tradePlan, 'mode'),
-    risk_gate: input.riskGate
+    risk_gate: input.riskGate,
+    tp_split: takeProfits.tpSplit
   };
 
   const addOnType = stringField(input.tradePlan, 'add_on_type');

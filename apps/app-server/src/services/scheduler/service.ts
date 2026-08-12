@@ -283,7 +283,7 @@ export class SchedulerService {
       analysis_mode: analysisMode,
       order_type: orderType,
       // Multi-TP split flag: true when signal has TP2, instructing EA to split into 2 orders
-      // (40% lots @ TP1 + 60% lots @ TP2). EA handles lot distribution; ensures total ≤ plan lots.
+      // (60% lots @ TP1 + 40% lots @ TP2). EA handles lot distribution; ensures total ≤ plan lots.
       tp_split: shouldSplitTP
     };
     if (commandLots > 0) {

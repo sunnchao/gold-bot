@@ -2,6 +2,7 @@ import { type EaRecord, type EaStore, type PositionStateRecord } from '@gold-bot
 import {
   calcAIApproveLots,
   pickAIApproveEntryPrice,
+  resolveAIApproveExecutableTakeProfits,
   resolveAIApproveOrderIntent,
   validateAIApproveProtectionDirection,
   type AIApproveOrderType
@@ -223,23 +224,19 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
   }
 
   // R:R 下限过滤：实盘数据显示约40%的AI信号 R:R < 1.0（含0.25、0.35等），
-  // 数学期望接近负值。要求最低1.2，过滤无效入场同时保留高质量信号。
+  // 数学期望接近负值。要求最低1.25，过滤无效入场同时保留高质量信号。
   // 市价单以当前执行价（bid/ask）计算，限价单以指定入场价计算，两者不同。
-  const MIN_RR_RATIO = 1.2;
   const stopLoss = numberField(input.tradePlan, 'stop_loss');
   const takeProfitValues = arrayNumberField(input.tradePlan, 'take_profit');
-  const takeProfit = takeProfitValues.find((v) => v > 0) ?? 0;
-  if (stopLoss > 0 && takeProfit > 0) {
-    const rrEntry = orderIntent.orderType === 'market' ? executionPrice : entry;
-    if (rrEntry > 0) {
-      const slDistance = Math.abs(rrEntry - stopLoss);
-      const tpDistance = signalDirection === 'BULL'
-        ? takeProfit - rrEntry
-        : rrEntry - takeProfit;
-      if (slDistance > 0 && tpDistance / slDistance < MIN_RR_RATIO) {
-        return reject('rr.below_minimum');
-      }
-    }
+  const rrEntry = orderIntent.orderType === 'market' ? executionPrice : entry;
+  const takeProfits = resolveAIApproveExecutableTakeProfits({
+    side: signalDirection === 'BULL' ? 'buy' : 'sell',
+    entry: rrEntry,
+    stopLoss,
+    takeProfitValues
+  });
+  if (!takeProfits.accepted) {
+    return reject(takeProfits.reason);
   }
 
   return {
@@ -255,6 +252,7 @@ export async function evaluateAIApprovePendingGate(input: AIApprovePendingGateIn
 function reject(reason: string): AIApprovePendingGateResult {
   return { accepted: false, reason };
 }
+
 
 /**
  * 当日（UTC）该品种已进入队列的 ai_approve 信号数。按 created_at 的 UTC 日期

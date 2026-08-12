@@ -59,20 +59,12 @@ describe('strategy engine replay-backed slice', () => {
       bars: snapshot.bars
     });
 
-    expect(result.decision).toBe('signal');
-    expect(result.signal).toEqual({
-      strategy: 'pullback',
-      side: 'BUY',
-      entry: 3335.75,
-      stopLoss: 3333.59,
-      tp1: 3337.64,
-      tp2: 3337.64,
-      score: 7
-    });
+    expect(result.decision).toBe('no_signal');
+    expect(result.signal).toBeNull();
     expect(result.logs).toContainEqual({
-      level: 'signal',
-      strategy: '汇总',
-      message: '✅ 发出信号: BUY @ 3335.75 | SL=3333.59 | 策略=pullback | 评分=7'
+      level: 'warn',
+      strategy: 'R:R过滤',
+      message: '⚠️ 信号 R:R=0.875 < 1.25 拒绝 ⏭'
     });
     expect(result.canProduceLiveCommands).toBe(false);
   });
@@ -148,7 +140,7 @@ describe('strategy engine replay-backed slice', () => {
       entry: 95,
       stopLoss: 93.13,
       tp1: 95.8,
-      tp2: 96.13,
+      tp2: 97.5,
       score: 10
     });
     expect(result.logs).toContainEqual({
@@ -190,7 +182,7 @@ describe('strategy engine replay-backed slice', () => {
       entry: 95,
       stopLoss: 93,
       tp1: 95.8,
-      tp2: 96.13,
+      tp2: 97.5,
       // 10 → 9：1ffbea7 起趋势评级门槛从 D1 改为 H4（applyTrendRatingPenalty 只要有 H4 即生效），
       // 该 fixture 多周期共识偏弱（H4/H1 均 NEUTRAL、无 M30）触发 -1 扣分。策略层原始评分仍为 10（见日志）。
       score: 9
@@ -198,7 +190,7 @@ describe('strategy engine replay-backed slice', () => {
     expect(result.logs).toContainEqual({
       level: 'info',
       strategy: 'AI止损',
-      message: '🤖 AI止损覆盖: 93.43 → 93.00 (基于支撑阻力位)'
+      message: '🤖 AI止损覆盖: 93.13 → 93.00 (基于支撑阻力位)'
     });
   });
 
@@ -209,6 +201,9 @@ describe('strategy engine replay-backed slice', () => {
       price: 1.09567,
       bars: {
         H1: eurusdPullbackBuyBars()
+      },
+      aiResult: {
+        suggested_tp: 1.09619
       }
     });
 
@@ -218,8 +213,8 @@ describe('strategy engine replay-backed slice', () => {
       side: 'BUY',
       entry: 1.09567,
       stopLoss: 1.09535,
-      tp1: 1.09593,
-      tp2: 1.09593,
+      tp1: 1.09619,
+      tp2: 1.09619,
       score: 9
     });
   });
@@ -300,8 +295,8 @@ describe('strategy engine replay-backed slice', () => {
       side: 'BUY',
       entry: 102.2,
       stopLoss: 99.6,
-      tp1: 102.81,
-      tp2: 102.81,
+      tp1: 106,
+      tp2: 106,
       score: 10
     });
     expect(result.logs).toContainEqual({
@@ -326,8 +321,8 @@ describe('strategy engine replay-backed slice', () => {
       side: 'SELL',
       entry: 97.8,
       stopLoss: 100.4,
-      tp1: 97.19,
-      tp2: 97.19,
+      tp1: 94,
+      tp2: 94,
       score: 9
     });
     expect(result.logs).toContainEqual({
@@ -349,22 +344,17 @@ describe('strategy engine replay-backed slice', () => {
       }
     });
 
-    expect(result.decision).toBe('signal');
-    expect(result.signal).toEqual({
+    expect(result.decision).toBe('no_signal');
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual({
+      level: 'info',
       strategy: 'pullback',
-      side: 'BUY',
-      entry: 95,
-      stopLoss: 88,
-      tp1: 95.8,
-      tp2: 96,
-      // 10 → 9：1ffbea7 起趋势评级门槛从 D1 改为 H4，该 fixture 多周期共识偏弱触发 -1 扣分。
-      // 策略层原始评分（基础 9 + Fib 汇合 +1 = 10）不受影响，见下方日志断言。
-      score: 9
+      message: '🌀 pullback+FIB: fib786 止损距离超限 (3.50 ATR > 1.5) 回退 ⏭'
     });
     expect(result.logs).toContainEqual({
-      level: 'signal',
-      strategy: '趋势回调',
-      message: '🟢 BUY 评分=10 | EMA20回调 dist=0.80 | MACD柱>0 | RSI=45.0<50 | ADX=35.0>30 | 连续2根回调到位'
+      level: 'warn',
+      strategy: 'R:R过滤',
+      message: '⚠️ 信号 R:R=0.535 < 1.25 拒绝 ⏭'
     });
     expect(result.canProduceLiveCommands).toBe(false);
   });
@@ -614,6 +604,7 @@ function breakoutRetestBuyBars() {
     bar.macd_hist = offset === 4 ? 0.3 : 0;
     bar.volume = offset === 4 ? 160 : 100;
     bar.vol_sma = 100;
+    bar.bb_upper = offset === 4 ? 106 : undefined;
   }
   return { H1: bars };
 }
@@ -657,6 +648,7 @@ function breakoutRetestSellBars() {
     bar.macd_hist = offset === 4 ? -0.3 : 0;
     bar.volume = offset === 4 ? 160 : 100;
     bar.vol_sma = 100;
+    bar.bb_lower = offset === 4 ? 94 : undefined;
   }
   return { H1: bars };
 }
@@ -743,7 +735,8 @@ function pullbackBuyBars() {
     rsi: 45,
     ema20: 95.8,
     ema50: 90,
-    macd_hist: 1
+    macd_hist: 1,
+    r1: 97.5
   }));
 
   bars[48] = {
@@ -771,7 +764,8 @@ function eurusdPullbackBuyBars() {
     rsi: 45,
     ema20: 1.0957,
     ema50: 1.09,
-    macd_hist: 0.0001
+    macd_hist: 0.0001,
+    bb_upper: 1.09608
   }));
 
   bars[48] = {

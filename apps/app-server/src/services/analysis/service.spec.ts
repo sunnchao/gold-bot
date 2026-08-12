@@ -116,7 +116,8 @@ function pullbackBuyBars() {
     rsi: 45,
     ema20: 95.8,
     ema50: 90,
-    macd_hist: 1
+    macd_hist: 1,
+    r1: 97.5
   }));
 
   bars[48] = {

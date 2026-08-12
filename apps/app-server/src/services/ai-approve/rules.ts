@@ -23,6 +23,13 @@ export function firstPositiveAIApproveTakeProfit(values: number[]): number {
   return values.find((value) => value > 0) ?? 0;
 }
 
+export function primaryAIApproveTakeProfit(values: number[]): number {
+  const positiveValues = values.filter((value) => value > 0);
+  return positiveValues.at(-1) ?? 0;
+}
+
+export const AI_APPROVE_MIN_RR = 1.25;
+
 export type AIApproveOrderType = 'market' | 'BUY_LIMIT' | 'SELL_LIMIT';
 
 export type AIApproveOrderIntentResult =
@@ -32,6 +39,101 @@ export type AIApproveOrderIntentResult =
 export type AIApproveProtectionResult =
   | { accepted: true }
   | { accepted: false; reason: string };
+
+export type AIApproveTakeProfitLabel = 'TP1' | 'TP2';
+
+export type AIApproveExecutableTakeProfit = {
+  label: AIApproveTakeProfitLabel;
+  value: number;
+  rr: number;
+};
+
+export type AIApproveExecutableTakeProfitsResult =
+  | {
+      accepted: true;
+      tp1: number;
+      tp2: number;
+      legacyTakeProfit: number;
+      tpSplit: boolean;
+      targets: AIApproveExecutableTakeProfit[];
+    }
+  | {
+      accepted: false;
+      reason: 'rr.invalid' | 'rr.below_minimum';
+      label: AIApproveTakeProfitLabel;
+    };
+
+export function resolveAIApproveExecutableTakeProfits(input: {
+  side: string;
+  entry: number;
+  stopLoss: number;
+  takeProfitValues: number[];
+  minRiskReward?: number;
+}): AIApproveExecutableTakeProfitsResult {
+  const side = input.side.trim().toLowerCase();
+  if (side !== 'buy' && side !== 'sell') {
+    return rejectTakeProfit('rr.invalid', 'TP1');
+  }
+  if (!isPositiveFinite(input.entry) || !isPositiveFinite(input.stopLoss)) {
+    return rejectTakeProfit('rr.invalid', 'TP1');
+  }
+
+  const risk = side === 'buy' ? input.entry - input.stopLoss : input.stopLoss - input.entry;
+  if (!isPositiveFinite(risk)) {
+    return rejectTakeProfit('rr.invalid', 'TP1');
+  }
+
+  const positiveTargets: number[] = [];
+  for (const value of input.takeProfitValues) {
+    if (!Number.isFinite(value)) {
+      return rejectTakeProfit('rr.invalid', labelForTargetIndex(positiveTargets.length));
+    }
+    if (value > 0) {
+      positiveTargets.push(value);
+    }
+  }
+  if (positiveTargets.length === 0) {
+    return rejectTakeProfit('rr.invalid', 'TP1');
+  }
+
+  const orderedTargets = positiveTargets
+    .slice()
+    .sort((left, right) => side === 'buy' ? left - right : right - left);
+  const executableValues = uniqueSortedNumbers(orderedTargets).slice(0, 2);
+  const minRiskReward = input.minRiskReward ?? AI_APPROVE_MIN_RR;
+  const targets: AIApproveExecutableTakeProfit[] = [];
+  for (let index = 0; index < executableValues.length; index += 1) {
+    const value = executableValues[index];
+    const label = labelForTargetIndex(index);
+    const reward = side === 'buy' ? value - input.entry : input.entry - value;
+    if (!isPositiveFinite(reward)) {
+      return rejectTakeProfit('rr.invalid', label);
+    }
+    const rr = reward / risk;
+    if (!Number.isFinite(rr)) {
+      return rejectTakeProfit('rr.invalid', label);
+    }
+    // 盈亏比严格按最远目标（TP2 / primary）计算并卡 1.25；
+    // TP1 只要求方向/几何有效，不逐子单卡 R:R。
+    const isPrimary = index === executableValues.length - 1;
+    if (isPrimary && minRiskReward > 0 && rr + 1e-12 < minRiskReward) {
+      return rejectTakeProfit('rr.below_minimum', label);
+    }
+    targets.push({ label, value, rr });
+  }
+
+  const tp1 = targets[0]?.value ?? 0;
+  const tp2 = targets.length > 1 ? targets[1].value : 0;
+  const tpSplit = tp1 > 0 && tp2 > 0 && tp1 !== tp2;
+  return {
+    accepted: true,
+    tp1,
+    tp2: tpSplit ? tp2 : 0,
+    legacyTakeProfit: tpSplit ? tp2 : tp1,
+    tpSplit,
+    targets
+  };
+}
 
 export function resolveAIApproveOrderIntent(
   tradePlan: EaRecord,
@@ -112,33 +214,26 @@ export function resolveAIApproveOrderIntent(
 export function validateAIApproveProtectionDirection(tradePlan: EaRecord, entry: number): AIApproveProtectionResult {
   const side = stringField(tradePlan, 'side').trim().toUpperCase();
   const stopLoss = numberField(tradePlan, 'stop_loss');
-  const takeProfit = firstPositiveAIApproveTakeProfit(arrayNumberField(tradePlan, 'take_profit'));
-  if (entry <= 0 || stopLoss <= 0 || takeProfit <= 0) {
-    return { accepted: false, reason: 'protection.invalid_direction' };
-  }
-  if (side === 'BUY' && stopLoss < entry && takeProfit > entry) {
-    return { accepted: true };
-  }
-  if (side === 'SELL' && stopLoss > entry && takeProfit < entry) {
-    return { accepted: true };
-  }
-  return { accepted: false, reason: 'protection.invalid_direction' };
+  const resolvedTakeProfits = resolveAIApproveExecutableTakeProfits({
+    side,
+    entry,
+    stopLoss,
+    takeProfitValues: arrayNumberField(tradePlan, 'take_profit'),
+    minRiskReward: 0
+  });
+  return resolvedTakeProfits.accepted ? { accepted: true } : { accepted: false, reason: 'protection.invalid_direction' };
 }
 
 function isTriggeredLimitWithinProtection(tradePlan: EaRecord, currentPrice: number): boolean {
   const side = stringField(tradePlan, 'side').trim().toUpperCase();
   const stopLoss = numberField(tradePlan, 'stop_loss');
-  const takeProfit = firstPositiveAIApproveTakeProfit(arrayNumberField(tradePlan, 'take_profit'));
-  if (currentPrice <= 0 || stopLoss <= 0 || takeProfit <= 0) {
-    return false;
-  }
-  if (side === 'BUY') {
-    return currentPrice > stopLoss && currentPrice < takeProfit;
-  }
-  if (side === 'SELL') {
-    return currentPrice < stopLoss && currentPrice > takeProfit;
-  }
-  return false;
+  return resolveAIApproveExecutableTakeProfits({
+    side,
+    entry: currentPrice,
+    stopLoss,
+    takeProfitValues: arrayNumberField(tradePlan, 'take_profit'),
+    minRiskReward: 0
+  }).accepted;
 }
 
 export function round2(value: number): number {
@@ -158,4 +253,23 @@ function stringField(record: EaRecord, field: string): string {
 function arrayNumberField(record: EaRecord, field: string): number[] {
   const value = record[field];
   return Array.isArray(value) ? value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item)) : [];
+}
+
+function rejectTakeProfit(
+  reason: 'rr.invalid' | 'rr.below_minimum',
+  label: AIApproveTakeProfitLabel
+): AIApproveExecutableTakeProfitsResult {
+  return { accepted: false, reason, label };
+}
+
+function labelForTargetIndex(index: number): AIApproveTakeProfitLabel {
+  return index <= 0 ? 'TP1' : 'TP2';
+}
+
+function isPositiveFinite(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
+}
+
+function uniqueSortedNumbers(values: number[]): number[] {
+  return values.filter((value, index, array) => index === 0 || value !== array[index - 1]);
 }

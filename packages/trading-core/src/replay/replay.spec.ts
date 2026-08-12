@@ -21,7 +21,7 @@ describe('replay harness Go oracle slice', () => {
 
     expect(snapshot.current_price).toBe(3335.75);
     expect(snapshot.bars?.H1).toHaveLength(65);
-    expect(expected.signal?.strategy).toBe('pullback');
+    expect(expected.signal).toBeNull();
   });
 
   it('matches the Go oracle signal and position command output for the frozen replay fixture', () => {
@@ -171,7 +171,7 @@ describe('replay harness Go oracle slice', () => {
       entry: 95,
       stop_loss: 93,
       tp1: 95.8,
-      tp2: 96.13,
+      tp2: 97.5,
       score: 9,
       strategy: 'pullback',
       atr: 2,
@@ -232,7 +232,7 @@ describe('replay harness Go oracle slice', () => {
     expect(result.logs).toContainEqual({
       level: 'info',
       strategy: 'AI止盈',
-      msg: '🤖 AI止盈覆盖: TP1=95.80→100.00, TP2=96.13→100.00'
+      msg: '🤖 AI止盈覆盖: TP1=95.80→100.00, TP2=97.50→100.00'
     });
     expect(result.logs).toContainEqual({
       level: 'signal',
@@ -240,6 +240,85 @@ describe('replay harness Go oracle slice', () => {
       msg: '✅ 发出信号: BUY @ 95.00 | SL=93.13 | 策略=pullback | 评分=9'
     });
     expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('rejects final BUY signals whose R:R is 1.249 after AI take profit override', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars()
+      },
+      ai_result: {
+        suggested_tp: 97.33563
+      }
+    });
+
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual({
+      level: 'warn',
+      strategy: 'R:R过滤',
+      msg: '⚠️ 信号 R:R=1.249 < 1.25 拒绝 ⏭'
+    });
+    expect(result.logs).not.toContainEqual(expect.objectContaining({ level: 'signal', strategy: '汇总' }));
+  });
+
+  it('accepts final BUY signals whose R:R is exactly 1.25 after AI take profit override', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars()
+      },
+      ai_result: {
+        suggested_tp: 97.3375
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      strategy: 'pullback',
+      entry: 95,
+      stop_loss: 93.13,
+      tp1: 97.3375,
+      tp2: 97.3375
+    });
+    expect(result.logs).not.toContainEqual(expect.objectContaining({ strategy: 'R:R过滤' }));
+  });
+
+  it('rejects invalid final R:R geometry instead of silently passing it through', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 100,
+      bars: {
+        H1: zeroDistanceRoundedPullbackBuyBars()
+      }
+    });
+
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual({
+      level: 'warn',
+      strategy: 'R:R过滤',
+      msg: '⚠️ 信号 R:R无效 拒绝: invalid_risk ⏭'
+    });
+    expect(result.logs).not.toContainEqual(expect.objectContaining({ level: 'signal', strategy: '汇总' }));
+  });
+
+  it('accepts final split signals when TP1 R:R is below 1.25 but TP2 qualifies', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      current_price: 95,
+      bars: {
+        H1: pullbackBuyBars()
+      }
+    });
+
+    expect(result.signal).not.toBeNull();
+    expect(result.signal?.strategy).toBe('pullback');
+    const signal = result.signal!;
+    const rrTp2 = (signal.tp2 - signal.entry) / (signal.entry - signal.stop_loss);
+    expect(rrTp2).toBeGreaterThanOrEqual(1.25);
+    expect(result.logs).not.toContainEqual(expect.objectContaining({ level: 'warn', strategy: 'R:R过滤' }));
   });
 
   it('returns audit-only position command advisories when replay has complete position state', () => {
@@ -397,7 +476,7 @@ describe('replay harness Go oracle slice', () => {
       entry: 95,
       stop_loss: 93.13,
       tp1: 95.8,
-      tp2: 96.13,
+      tp2: 97.5,
       score: 10,
       strategy: 'pullback',
       atr: 2,
@@ -533,7 +612,7 @@ describe('replay harness Go oracle slice', () => {
       strategy: 'pullback',
       stop_loss: 93.13,
       tp1: 95.8,
-      tp2: 96.13
+      tp2: 97.5
     });
   });
 
@@ -648,7 +727,7 @@ describe('replay harness Go oracle slice', () => {
       entry: 95,
       stop_loss: 93.13,
       tp1: 95.8,
-      tp2: 96.13,
+      tp2: 97.5,
       score: 7,
       strategy: 'pullback',
       atr: 2,
@@ -770,8 +849,8 @@ describe('replay harness Go oracle slice', () => {
       side: 'BUY',
       entry: 102.2,
       stop_loss: 99.6,
-      tp1: 102.81,
-      tp2: 102.81,
+      tp1: 106,
+      tp2: 106,
       score: 10,
       strategy: 'breakout_retest',
       atr: 2,
@@ -804,8 +883,8 @@ describe('replay harness Go oracle slice', () => {
       side: 'SELL',
       entry: 97.8,
       stop_loss: 100.4,
-      tp1: 97.19,
-      tp2: 97.19,
+      tp1: 94,
+      tp2: 94,
       score: 9,
       strategy: 'breakout_retest',
       atr: 2,
@@ -827,7 +906,7 @@ describe('replay harness Go oracle slice', () => {
     expect(result.canProduceLiveCommands).toBe(false);
   });
 
-  it('matches a fib-enhanced pullback BUY slice with fib786 stop loss', () => {
+  it('rejects a wide fib-enhanced pullback BUY when final R:R is below the global guard', () => {
     const result = runReplay({
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -838,31 +917,45 @@ describe('replay harness Go oracle slice', () => {
       }
     });
 
-    expect(result.signal).toEqual({
-      side: 'BUY',
-      entry: 95,
-      stop_loss: 88,
-      tp1: 95.8,
-      tp2: 96,
-      score: 9,
+    expect(result.signal).toBeNull();
+    expect(result.logs).toContainEqual({
+      level: 'info',
       strategy: 'pullback',
-      atr: 2,
-      all_strategies: [
-        {
-          strategy: 'pullback',
-          side: 'BUY',
-          score: 9,
-          entry: 95,
-          stop_loss: 88
-        }
-      ]
+      msg: '🌀 pullback+FIB: fib786 止损距离超限 (3.50 ATR > 1.5) 回退 ⏭'
     });
     expect(result.logs).toContainEqual({
-      level: 'signal',
-      strategy: '趋势回调',
-      msg: '🟢 BUY 评分=10 | EMA20回调 dist=0.80 | MACD柱>0 | RSI=45.0<50 | ADX=35.0>30 | 连续2根回调到位'
+      level: 'warn',
+      strategy: 'R:R过滤',
+      msg: '⚠️ 信号 R:R=0.535 < 1.25 拒绝 ⏭'
     });
     expect(result.canProduceLiveCommands).toBe(false);
+  });
+
+  it('keeps a narrow fib-enhanced pullback BUY when fib stop loss preserves R:R', () => {
+    const result = runReplay({
+      account_id: '90011087',
+      symbol: 'XAUUSD',
+      current_price: 95,
+      bars: {
+        H1: pullbackNarrowFibBuyBars(),
+        H4: pullbackFibH4BarsUp()
+      }
+    });
+
+    expect(result.signal).toMatchObject({
+      side: 'BUY',
+      entry: 95,
+      stop_loss: 93.6,
+      tp1: 98.36,
+      tp2: 98.36,
+      score: 10,
+      strategy: 'pullback'
+    });
+    expect(result.signal).not.toBeNull();
+    const signal = result.signal!;
+    const rr = (signal.tp1 - signal.entry) / (signal.entry - signal.stop_loss);
+    expect(rr).toBeGreaterThanOrEqual(1.25);
+    expect(result.logs).not.toContainEqual(expect.objectContaining({ strategy: 'R:R过滤' }));
   });
 
   it('enriches raw replay bars with Go Fibonacci retracement levels used by pullback fib gating', () => {
@@ -880,10 +973,10 @@ describe('replay harness Go oracle slice', () => {
       side: 'BUY',
       strategy: 'pullback',
       entry: 95,
-      stop_loss: 88.78,
-      tp1: 95.8,
-      tp2: 95.8,
-      score: 9
+      stop_loss: 93.6,
+      tp1: 97.96,
+      tp2: 97.96,
+      score: 10
     });
   });
 
@@ -902,8 +995,8 @@ describe('replay harness Go oracle slice', () => {
       strategy: 'pullback',
       entry: 1.1,
       stop_loss: 1.0987,
-      tp1: 1.1008,
-      tp2: 1.1008
+      tp1: 1.1017,
+      tp2: 1.1017
     });
   });
 
@@ -922,8 +1015,8 @@ describe('replay harness Go oracle slice', () => {
       strategy: 'pullback',
       entry: 1.1,
       stop_loss: 1.09919,
-      tp1: 1.10041,
-      tp2: 1.10041
+      tp1: 1.1011,
+      tp2: 1.1011
     });
   });
 
@@ -940,8 +1033,8 @@ describe('replay harness Go oracle slice', () => {
       strategy: 'breakout_retest',
       entry: 102.2,
       stop_loss: 99.6,
-      tp1: 103.1,
-      tp2: 103.1
+      tp1: 106,
+      tp2: 106
     });
   });
 
@@ -961,7 +1054,7 @@ describe('replay harness Go oracle slice', () => {
       entry: 1.25,
       stop_loss: 1.2513,
       tp1: 1.2492,
-      tp2: 1.2492
+      tp2: 1.2475
     });
   });
 
@@ -1409,8 +1502,8 @@ describe('replay harness Go oracle slice', () => {
       entry: 100.4,
       atr: 2,
       stop_loss: 98.07,
-      tp1: 102.34,
-      tp2: 102.34
+      tp1: 104,
+      tp2: 104
     });
   });
 
@@ -1650,6 +1743,8 @@ function breakoutRetestBuyBars() {
     bar.macd_hist = offset === 4 ? 0.3 : 0;
     bar.volume = offset === 4 ? 160 : 100;
     bar.vol_sma = 100;
+    bar.bb_upper = offset === 4 ? 106 : undefined;
+    bar.r1 = offset === 4 ? 106 : undefined;
   }
   return { H1: bars };
 }
@@ -1693,6 +1788,8 @@ function breakoutRetestSellBars() {
     bar.macd_hist = offset === 4 ? -0.3 : 0;
     bar.volume = offset === 4 ? 160 : 100;
     bar.vol_sma = 100;
+    bar.bb_lower = offset === 4 ? 94 : undefined;
+    bar.s1 = offset === 4 ? 94 : undefined;
   }
   return { H1: bars };
 }
@@ -1709,7 +1806,8 @@ function pullbackFibBuyBars() {
     rsi: 45,
     ema20: 95.8,
     ema50: 90,
-    macd_hist: 1
+    macd_hist: 1,
+    r1: 97.5
   }));
 
   bars[48] = {
@@ -1732,26 +1830,63 @@ function rawPullbackFibBuyBars() {
   const bars = Array.from({ length: 50 }, (_, index) => ({
     time: `2026-04-15T${String(index).padStart(2, '0')}:00:00.000Z`,
     open: 95,
-    high: 100,
-    low: 87,
+    high: 101.14,
+    low: 92.82,
     close: 95,
     atr: 2,
     adx: 35,
     rsi: 45,
-    ema20: 95.8,
-    ema50: 90,
+    ema20: 94.8,
+    ema50: 93.8,
     macd_hist: 1
   }));
 
   bars[48] = {
     ...bars[48],
-    close: 95.2,
-    open: 95.2
+    close: 94.9,
+    open: 94.9,
+    high: 95,
+    low: 94.8
   };
   bars[49] = {
     ...bars[49],
     close: 95,
     open: 95
+  };
+  return bars;
+}
+
+function pullbackNarrowFibBuyBars() {
+  const bars = Array.from({ length: 50 }, (_, index) => ({
+    time: `2026-04-15T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 95,
+    high: 96,
+    low: 94,
+    close: 95,
+    atr: 2,
+    adx: 35,
+    rsi: 45,
+    ema20: 94.8,
+    ema50: 93.8,
+    macd_hist: 1,
+    bb_upper: 100,
+    bb_lower: 92
+  }));
+
+  bars[48] = {
+    ...bars[48],
+    close: 94.9,
+    open: 94.9,
+    high: 95,
+    low: 94.8
+  };
+  bars[49] = {
+    ...bars[49],
+    close: 95,
+    open: 95,
+    fib_382: 98.36,
+    fib_618: 96,
+    fib_786: 94.6
   };
   return bars;
 }
@@ -1769,7 +1904,7 @@ function pullbackBuyBarsWithBBSupportResistance() {
     ema20: 1.09995,
     ema50: 1.09994,
     macd_hist: 0.0001,
-    bb_upper: 1.1008,
+    bb_upper: 1.1017,
     bb_lower: 1.0992,
     fib_382: 0,
     fib_618: 0,
@@ -1793,8 +1928,8 @@ function pullbackBuyBarsWithRawPivotSupportResistance() {
   bars[48] = {
     ...bars[48],
     open: 1.1,
-    high: 1.1011,
-    low: 1.0993,
+    high: 1.1017,
+    low: 1.0999,
     close: 1.1
   };
   bars[49] = {
@@ -1802,7 +1937,11 @@ function pullbackBuyBarsWithRawPivotSupportResistance() {
     high: 1.1,
     low: 1.1,
     close: 1.1,
-    open: 1.1
+    open: 1.1,
+    s1: 1.09969,
+    r1: 1.1011,
+    fib_382: 1.1011,
+    fib_618: 1.09969
   };
   return bars;
 }
@@ -1811,9 +1950,16 @@ function breakoutRetestBuyBarsWithPivotSupportResistance() {
   const bars = breakoutRetestBuyBars().H1.map((bar) => ({ ...bar }));
   bars[53] = {
     ...bars[53],
-    high: 106.2,
+    open: 112,
+    high: 112,
     low: 100.6,
-    close: 103.4
+    close: 112
+  };
+  bars[54] = {
+    ...bars[54],
+    s1: 100.6,
+    r1: 106,
+    bb_upper: 106
   };
   return { H1: bars };
 }
@@ -1835,7 +1981,7 @@ function pullbackSellBarsWithBBSupportResistance() {
     bb_lower: 1.2492,
     fib_382: 0,
     fib_618: 0,
-    fib_786: 0
+    fib_786: 1.2475
   }));
   bars[48].close = 1.25004;
   bars[48].open = 1.25004;
@@ -1871,7 +2017,8 @@ function pullbackBuyBars() {
     rsi: 45,
     ema20: 95.8,
     ema50: 90,
-    macd_hist: 1
+    macd_hist: 1,
+    r1: 97.5
   }));
 
   bars[48] = {
@@ -1884,6 +2031,27 @@ function pullbackBuyBars() {
     close: 95,
     open: 95
   };
+  return bars;
+}
+
+function zeroDistanceRoundedPullbackBuyBars() {
+  const bars = Array.from({ length: 50 }, (_, index) => ({
+    time: `2026-04-16T${String(index).padStart(2, '0')}:00:00.000Z`,
+    open: 100,
+    high: 100,
+    low: 100,
+    close: 100,
+    atr: 0.001,
+    adx: 35,
+    rsi: 45,
+    ema20: 100,
+    ema50: 99,
+    macd_hist: 1
+  }));
+  bars[48].close = 100;
+  bars[48].open = 100;
+  bars[49].close = 100;
+  bars[49].open = 100;
   return bars;
 }
 
@@ -2262,9 +2430,14 @@ function counterPullbackBuyBarsWithPivotSupportResistance() {
   const bars = counterPullbackBuyBars().map((bar) => ({ ...bar, atr: 999 }));
   bars[18] = {
     ...bars[18],
-    high: 104.4,
+    high: 107.4,
     low: 99.4,
     close: 101.4
+  };
+  bars[19] = {
+    ...bars[19],
+    s1: 99.07,
+    r1: 104
   };
   return bars;
 }

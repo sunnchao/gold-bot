@@ -26,6 +26,117 @@ describe('AI approve pending gate', () => {
     });
   });
 
+  it('rejects otherwise valid approve plans when execution R:R is 1.249', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        take_profit: [3342.8193]
+      }),
+      nowIso
+    })).resolves.toEqual({
+      accepted: false,
+      reason: 'rr.below_minimum'
+    });
+  });
+
+  it('accepts otherwise valid approve plans when execution R:R is exactly 1.25', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        take_profit: [3342.825]
+      }),
+      nowIso
+    })).resolves.toMatchObject({
+      accepted: true,
+      currentPrice: 3335.6,
+      entry: 3335.6
+    });
+  });
+
+  it('accepts staged approve plans when TP1 R:R is below 1.25 as long as the far TP2 qualifies', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        take_profit: [3340, 3342.825]
+      }),
+      nowIso
+    })).resolves.toMatchObject({
+      accepted: true,
+      currentPrice: 3335.6,
+      entry: 3335.6
+    });
+  });
+
+  it('rejects staged approve plans when TP1 is invalid even if TP2 qualifies', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        take_profit: [3335.65, 3342.825]
+      }),
+      nowIso
+    })).resolves.toEqual({
+      accepted: false,
+      reason: 'rr.invalid'
+    });
+  });
+
+  it('normalizes staged approve targets by distance before validating each executable child target', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        take_profit: [3350, 3342.825]
+      }),
+      nowIso
+    })).resolves.toMatchObject({
+      accepted: true,
+      currentPrice: 3335.6,
+      entry: 3335.6
+    });
+  });
+
+  it('rejects market approve plans whose final execution R:R geometry is invalid', async () => {
+    const store = createInMemoryEaStore();
+    await seedStrongTrendState(store);
+
+    await expect(evaluateAIApprovePendingGate({
+      store,
+      accountId,
+      symbol,
+      tradePlan: tradePlan({
+        take_profit: [3335.65]
+      }),
+      nowIso
+    })).resolves.toEqual({
+      accepted: false,
+      reason: 'rr.invalid'
+    });
+  });
+
   it('rejects active duplicate AI approve pending commands', async () => {
     const store = createInMemoryEaStore();
     await seedStrongTrendState(store);

@@ -239,6 +239,9 @@ type ReplayTraditionalConfig = {
   srMaxDistATR: number;
   srBufferATR: number;
   pullbackFibEnabled: boolean;
+  pullbackFibMaxSLDistATR: number;
+  pullbackFibMinRR: number;
+  minRR: number;
   minScore: number;
   h4ADXThreshold: number;
   h4RequireConsecutive: number;
@@ -281,6 +284,9 @@ function replayTraditionalConfig(cfg: StrategyConfig): ReplayTraditionalConfig {
     srMaxDistATR: cfg.srMaxDistATR,
     srBufferATR: cfg.srBufferATR,
     pullbackFibEnabled: cfg.pullbackFib.retracementEnabled,
+    pullbackFibMaxSLDistATR: cfg.pullbackFib.maxFibSLDistATR,
+    pullbackFibMinRR: cfg.pullbackFib.fibMinRR,
+    minRR: cfg.minRR,
     minScore: cfg.minScore,
     h4ADXThreshold: cfg.h4ADXThreshold,
     h4RequireConsecutive: cfg.h4RequireConsecutive
@@ -369,10 +375,11 @@ export function runReplay(raw: unknown): ReplayResult {
   const positionFilterResult = applyPositionConflictFilter(minScoreResult.signal, positions);
   const aiStopLossResult = applyAIStopLossOverride(positionFilterResult.signal, snapshot.ai_result);
   const aiTakeProfitResult = applyAITakeProfitOverride(aiStopLossResult.signal, snapshot.ai_result);
+  const rrFilterResult = applyMinRRFilter(aiTakeProfitResult.signal, traditionalConfig.minRR);
   const positionReview = evaluateReplayPositionCommands(snapshot, enrichedH1, currentPrice);
 
   return {
-    signal: aiTakeProfitResult.signal,
+    signal: rrFilterResult.signal,
     logs: buildReplayLogs(
       snapshot,
       enrichedH1,
@@ -384,11 +391,12 @@ export function runReplay(raw: unknown): ReplayResult {
       currentPrice,
       rawSignal,
       boostedSignal,
-      aiTakeProfitResult.signal,
+      rrFilterResult.signal,
       h4FilterResult.logs,
       minScoreResult.logs,
       positionFilterResult.logs,
       [...aiStopLossResult.logs, ...aiTakeProfitResult.logs],
+      rrFilterResult.logs,
       momentumConfig,
       traditionalConfig,
       smcContext,
@@ -522,6 +530,42 @@ function applyMinScoreFilter(signal: ReplaySignal | null, minScore: number): { s
       }
     ]
   };
+}
+
+function applyMinRRFilter(signal: ReplaySignal | null, minRR: number): { signal: ReplaySignal | null; logs: ReplayLog[] } {
+  if (signal == null) {
+    return { signal, logs: [] };
+  }
+
+  // 盈亏比严格按最远目标（TP2 优先，无 TP2 则 TP1）计算；
+  // 无效几何（方向错误/零距离/非有限）直接拒绝。
+  const takeProfit = primarySignalTakeProfit(signal);
+  const rr = signalRiskRewardDetail({ ...signal, tp1: takeProfit, tp2: undefined });
+  if (!rr.valid) {
+    return {
+      signal: null,
+      logs: [
+        {
+          level: 'warn',
+          strategy: 'R:R过滤',
+          msg: `⚠️ 信号 R:R无效 拒绝: ${rr.reason} ⏭`
+        }
+      ]
+    };
+  }
+  if (rr.value + 1e-12 < minRR) {
+    return {
+      signal: null,
+      logs: [
+        {
+          level: 'warn',
+          strategy: 'R:R过滤',
+          msg: `⚠️ 信号 R:R=${formatRiskReward(rr.value)} < ${formatRiskReward(minRR)} 拒绝 ⏭`
+        }
+      ]
+    };
+  }
+  return { signal, logs: [] };
 }
 
 function selectHighestScore(candidates: ReplaySignal[]): ReplaySignal | null {
@@ -1036,6 +1080,7 @@ function buildReplayLogs(
   minScoreFilterLogs: ReplayLog[],
   positionFilterLogs: ReplayLog[],
   aiOverrideLogs: ReplayLog[],
+  rrFilterLogs: ReplayLog[],
   momentumConfig: MomentumScalpConfig,
   traditionalConfig: ReplayTraditionalConfig,
   smc: ReplaySmcContext | undefined,
@@ -1065,6 +1110,7 @@ function buildReplayLogs(
   logs.push(...minScoreFilterLogs);
   logs.push(...positionFilterLogs);
   logs.push(...aiOverrideLogs);
+  logs.push(...rrFilterLogs);
 
   if (rawSignal != null && boostedSignal != null && m15.length >= 14) {
     logs.push(m15ConfirmationLog(rawSignal, boostedSignal, m15, price));
@@ -1171,7 +1217,7 @@ function pullbackLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: nu
     if (last.rsi >= config.pullback.rsiOverbought) {
       return { level: 'info', strategy: name, msg: `多头趋势 | RSI=${formatFixed(last.rsi, 1)} ≥ ${formatFixed(config.pullback.rsiOverbought, 0)},超买 ⏭` };
     }
-    const fibGate = evaluatePullbackFibGate('BUY', last, h4, price, 2, config.pullbackFibEnabled);
+    const fibGate = evaluatePullbackFibGate('BUY', last, h4, price, 2, config);
     if (fibGate.rejectLog != null) {
       return fibGate.rejectLog;
     }
@@ -1203,7 +1249,7 @@ function pullbackLog(h1: EnrichedReplayBar[], h4: EnrichedReplayBar[], price: nu
     if (last.rsi <= config.pullback.rsiOversold) {
       return { level: 'info', strategy: name, msg: `空头趋势 | RSI=${formatFixed(last.rsi, 1)} ≤ ${formatFixed(config.pullback.rsiOversold, 0)},超卖 ⏭` };
     }
-    const fibGate = evaluatePullbackFibGate('SELL', last, h4, price, 2, config.pullbackFibEnabled);
+    const fibGate = evaluatePullbackFibGate('SELL', last, h4, price, 2, config);
     if (fibGate.rejectLog != null) {
       return fibGate.rejectLog;
     }
@@ -1237,13 +1283,13 @@ function evaluatePullbackFibGate(
   h4: EnrichedReplayBar[],
   price: number,
   pricePrecision: number,
-  enabled: boolean
+  config: ReplayTraditionalConfig
 ): {
   scoreBonus: number;
   stopLoss?: number;
   rejectLog?: ReplayLog;
 } {
-  if (!enabled) {
+  if (!config.pullbackFibEnabled) {
     return { scoreBonus: 0 };
   }
   const fib = explicitPullbackFib(last);
@@ -1278,9 +1324,22 @@ function evaluatePullbackFibGate(
     };
   }
 
+  const stopLoss = roundToPrecision(side === 'BUY' ? fib.fib786 - last.atr * 0.5 : fib.fib786 + last.atr * 0.5, pricePrecision);
+  const stopLossDistATR = Math.abs(price - stopLoss) / last.atr;
+  if (Math.abs(price - stopLoss) > last.atr * config.pullbackFibMaxSLDistATR) {
+    return {
+      scoreBonus: 1,
+      rejectLog: {
+        level: 'info',
+        strategy: 'pullback',
+        msg: `🌀 pullback+FIB: fib786 止损距离超限 (${formatFixed(stopLossDistATR, 2)} ATR > ${config.pullbackFibMaxSLDistATR}) 回退 ⏭`
+      }
+    };
+  }
+
   return {
     scoreBonus: 1,
-    stopLoss: roundToPrecision(side === 'BUY' ? fib.fib786 - last.atr * 0.5 : fib.fib786 + last.atr * 0.5, pricePrecision)
+    stopLoss
   };
 }
 
@@ -2275,17 +2334,8 @@ function evaluatePullbackSignal(
       pricePrecision,
       config
     );
-    const fibGate = evaluatePullbackFibGate('BUY', last, h4, price, pricePrecision, config.pullbackFibEnabled);
-    if (fibGate.rejectLog != null) {
-      return null;
-    }
-    if (fibGate.stopLoss != null) {
-      signal.score = Math.min(signal.score + fibGate.scoreBonus, 10);
-      signal.stop_loss = fibGate.stopLoss;
-      signal.all_strategies[0].score = signal.score;
-      signal.all_strategies[0].stop_loss = signal.stop_loss;
-    }
-    return signal;
+    const fibGate = evaluatePullbackFibGate('BUY', last, h4, price, pricePrecision, config);
+    return applyPullbackFibGateToSignal(signal, fibGate, 'BUY', last, price, pricePrecision, config);
   }
 
   if (last.ema20 < last.ema50 && price < last.ema50) {
@@ -2302,20 +2352,152 @@ function evaluatePullbackSignal(
       pricePrecision,
       config
     );
-    const fibGate = evaluatePullbackFibGate('SELL', last, h4, price, pricePrecision, config.pullbackFibEnabled);
-    if (fibGate.rejectLog != null) {
-      return null;
-    }
-    if (fibGate.stopLoss != null) {
-      signal.score = Math.min(signal.score + fibGate.scoreBonus, 10);
-      signal.stop_loss = fibGate.stopLoss;
-      signal.all_strategies[0].score = signal.score;
-      signal.all_strategies[0].stop_loss = signal.stop_loss;
-    }
-    return signal;
+    const fibGate = evaluatePullbackFibGate('SELL', last, h4, price, pricePrecision, config);
+    return applyPullbackFibGateToSignal(signal, fibGate, 'SELL', last, price, pricePrecision, config);
   }
 
   return null;
+}
+
+function applyPullbackFibGateToSignal(
+  signal: ReplaySignal,
+  fibGate: { scoreBonus: number; stopLoss?: number; rejectLog?: ReplayLog },
+  side: 'BUY' | 'SELL',
+  last: EnrichedReplayBar,
+  price: number,
+  pricePrecision: number,
+  config: ReplayTraditionalConfig
+): ReplaySignal | null {
+  if (fibGate.rejectLog != null && fibGate.scoreBonus <= 0) {
+    return null;
+  }
+
+  if (fibGate.scoreBonus > 0) {
+    signal.score = Math.min(signal.score + fibGate.scoreBonus, 10);
+    signal.all_strategies[0].score = signal.score;
+  }
+
+  if (fibGate.stopLoss == null) {
+    return signal;
+  }
+
+  let skipFibStopLoss = false;
+  const rr = signalRiskReward(side, price, fibGate.stopLoss, signal.tp1);
+  if (rr == null || rr < config.pullbackFibMinRR) {
+    const liftedTp = pullbackFibLiftedTakeProfit(side, price, fibGate.stopLoss, signal.tp1, last, pricePrecision, config.pullbackFibMinRR);
+    if (liftedTp == null) {
+      skipFibStopLoss = true;
+    } else {
+      signal.tp1 = liftedTp;
+      if (side === 'BUY' && signal.tp2 < signal.tp1) {
+        signal.tp2 = signal.tp1;
+      }
+      if (side === 'SELL' && signal.tp2 > signal.tp1) {
+        signal.tp2 = signal.tp1;
+      }
+    }
+  }
+
+  if (!skipFibStopLoss) {
+    signal.stop_loss = fibGate.stopLoss;
+    signal.all_strategies[0].stop_loss = signal.stop_loss;
+  }
+  return signal;
+}
+
+function pullbackFibLiftedTakeProfit(
+  side: 'BUY' | 'SELL',
+  price: number,
+  stopLoss: number,
+  currentTp: number,
+  last: EnrichedReplayBar,
+  pricePrecision: number,
+  minRR: number
+): number | null {
+  const risk = signalRisk(side, price, stopLoss);
+  const nextLevel = nearestPullbackFibTakeProfitLevel(side, last, price);
+  if (risk == null || nextLevel == null) {
+    return null;
+  }
+
+  const minRewardTp = side === 'BUY' ? price + risk * minRR : price - risk * minRR;
+  const candidateTp = side === 'BUY' ? Math.min(nextLevel, minRewardTp) : Math.max(nextLevel, minRewardTp);
+  const roundedTp = roundToPrecision(candidateTp, pricePrecision);
+  const improvesTp = side === 'BUY' ? roundedTp > currentTp : roundedTp < currentTp;
+  const sideValid = side === 'BUY' ? roundedTp > price : roundedTp < price;
+  const liftedRR = signalRiskReward(side, price, stopLoss, roundedTp);
+  if (!improvesTp || !sideValid || liftedRR == null || liftedRR < minRR) {
+    return null;
+  }
+  return roundedTp;
+}
+
+function nearestPullbackFibTakeProfitLevel(side: 'BUY' | 'SELL', last: EnrichedReplayBar, price: number): number | null {
+  const levels = side === 'BUY'
+    ? [last.ema20, last.bb_upper, last.fib382, last.r1]
+    : [last.ema20, last.bb_lower, last.fib618, last.fib786, last.s1];
+  const candidates = levels.filter((level): level is number =>
+    level != null &&
+    Number.isFinite(level) &&
+    level > 0 &&
+    (side === 'BUY' ? level > price : level < price)
+  );
+  if (candidates.length === 0) {
+    return null;
+  }
+  return candidates.reduce((best, level) => (Math.abs(level - price) < Math.abs(best - price) ? level : best));
+}
+
+function signalRisk(side: 'BUY' | 'SELL', entry: number, stopLoss: number): number | null {
+  if (!Number.isFinite(entry) || !Number.isFinite(stopLoss) || entry <= 0 || stopLoss <= 0) {
+    return null;
+  }
+  const risk = side === 'BUY' ? entry - stopLoss : stopLoss - entry;
+  return Number.isFinite(risk) && risk > 0 ? risk : null;
+}
+
+function signalRiskReward(side: 'BUY' | 'SELL', entry: number, stopLoss: number, takeProfit: number): number | null {
+  const detail = signalRiskRewardDetail({ side, entry, stop_loss: stopLoss, tp1: takeProfit });
+  return detail.valid ? detail.value : null;
+}
+
+function signalRiskRewardDetail(signal: Pick<ReplaySignal, 'side' | 'entry' | 'stop_loss' | 'tp1'> & Partial<Pick<ReplaySignal, 'tp2'>>): { valid: true; value: number } | { valid: false; reason: string } {
+  const entry = signal.entry;
+  const stopLoss = signal.stop_loss;
+  const takeProfit = primarySignalTakeProfit(signal);
+  if (!Number.isFinite(entry) || !Number.isFinite(stopLoss) || !Number.isFinite(takeProfit)) {
+    return { valid: false, reason: 'non_finite' };
+  }
+  if (entry <= 0 || stopLoss <= 0 || takeProfit <= 0) {
+    return { valid: false, reason: 'non_positive' };
+  }
+
+  const risk = signal.side === 'BUY' ? entry - stopLoss : stopLoss - entry;
+  if (!Number.isFinite(risk) || risk <= 0) {
+    return { valid: false, reason: 'invalid_risk' };
+  }
+
+  const reward = signal.side === 'BUY' ? takeProfit - entry : entry - takeProfit;
+  if (!Number.isFinite(reward) || reward <= 0) {
+    return { valid: false, reason: 'invalid_reward' };
+  }
+
+  const value = reward / risk;
+  if (!Number.isFinite(value)) {
+    return { valid: false, reason: 'non_finite' };
+  }
+  return { valid: true, value };
+}
+
+function primarySignalTakeProfit(signal: Pick<ReplaySignal, 'side' | 'entry' | 'tp1'> & Partial<Pick<ReplaySignal, 'tp2'>>): number {
+  const tp2 = signal.tp2 ?? 0;
+  if (tp2 > 0 && signal.side === 'BUY' && tp2 > signal.entry && tp2 > signal.tp1) {
+    return tp2;
+  }
+  if (tp2 > 0 && signal.side === 'SELL' && tp2 < signal.entry && tp2 < signal.tp1) {
+    return tp2;
+  }
+  return signal.tp1;
 }
 
 function evaluateBreakoutRetestSignal(h1: EnrichedReplayBar[], price: number, pricePrecision: number, config: ReplayTraditionalConfig): ReplaySignal | null {
@@ -3402,6 +3584,10 @@ function roundToSignificantDigits(value: number, digits: number): number {
 
 function formatFixed(value: number, precision: number): string {
   return value.toFixed(precision);
+}
+
+function formatRiskReward(value: number): string {
+  return value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 function formatFixedHalfEven(value: number, precision: number): string {

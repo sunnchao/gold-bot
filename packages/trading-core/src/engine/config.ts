@@ -17,6 +17,8 @@ export type PullbackFibConfig = {
   stopLossOuterATR: number;
   usePendingOrder: boolean;
   pendingOrderLevel: string;
+  maxFibSLDistATR: number;
+  fibMinRR: number;
 };
 
 export type TrendConfig = {
@@ -94,6 +96,9 @@ export type StrategyConfig = {
 
   // Minimum signal score
   minScore: number;
+
+  // Global deformity guard for final traditional signals
+  minRR: number;
 
   // MomentumScalp strategy
   momentumScalpMinADX: number;
@@ -185,6 +190,7 @@ export function defaultStrategyConfig(): StrategyConfig {
     m15ConfirmRSIThreshold: 40.0,
 
     minScore: 5,
+    minRR: 1.25,
 
     momentumScalpMinADX: 20.0,
     momentumScalpEMAPeriod1: 5,
@@ -216,6 +222,8 @@ export function defaultStrategyConfig(): StrategyConfig {
       stopLossOuterATR: 0.5,
       usePendingOrder: false,
       pendingOrderLevel: '618',
+      maxFibSLDistATR: 1.5,
+      fibMinRR: 1.25,
     },
     trend: defaultTrendConfig(),
   };
