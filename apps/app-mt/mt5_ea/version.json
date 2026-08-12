@@ -1,5 +1,1 @@
-{
-  "version": "2.9.1",
-  "build": 11,
-  "changelog": "Multi-TP拆单比例调整: TP1(近) 60% / TP2(远) 40% (原 40/60)，适应内日交易风格 - TP1先落袋获小半仓位，TP2保留仓位给大趋势；总手数仍严格等于服务端下发；向后兼容"
-}
+{"version":"2.9.3","build":13,"changelog":"MT5 同步 MT4 功能：max_spread 上报、positions 增加 order_class/strategy 并上报挂单、register/heartbeat 增加 ai_symbols、多品种支持(Symbols/AISymbols/SymbolSuffix)、可视化桥接"}
