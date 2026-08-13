@@ -34,6 +34,8 @@ export interface CacheStats {
   creationTokens: number;
   hitTokens: number;
   missTokens: number;
+  /** Fresh (non-cached) input tokens — denominator for cache hit rate. */
+  inputTokens: number;
 }
 
 interface ModelPattern {
@@ -337,30 +339,49 @@ export class LLMClient {
       return current;
     }
 
-    const usageRecord = usage as Record<string, unknown>;
-    const details = usageRecord.prompt_tokens_details;
-    const promptTokenDetails = details && typeof details === 'object'
-      ? details as Record<string, unknown>
-      : undefined;
+    const rec = (v: unknown): Record<string, unknown> | undefined =>
+      v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
 
+    const usageRecord = usage as Record<string, unknown>;
+
+    // Anthropic-style top-level fields — also emitted by OpenAI-semantic gateways
+    // (this deployment's gateway returns these even for DeepSeek models).
     const readTokens = usageRecord.cache_read_input_tokens;
     const creationTokens = usageRecord.cache_creation_input_tokens;
+    const inputTokens = usageRecord.input_tokens;
+
+    // DeepSeek-native cache fields (present only when talking to DeepSeek directly).
     const deepseekHitTokens = usageRecord.prompt_cache_hit_tokens;
     const deepseekMissTokens = usageRecord.prompt_cache_miss_tokens;
-    const openAiCachedTokens = promptTokenDetails?.cached_tokens;
+
+    // OpenAI-style cached tokens: top-level prompt_tokens_details, and nested under
+    // billing_usage.openai_usage.prompt_tokens_details (this gateway's real location).
+    const openAiCachedTokens = rec(usageRecord.prompt_tokens_details)?.cached_tokens;
+    const openaiUsage = rec(rec(usageRecord.billing_usage)?.openai_usage);
+    const nestedCachedTokens = rec(openaiUsage?.prompt_tokens_details)?.cached_tokens;
+
     const kimiCachedTokens = usageRecord.cached_tokens;
 
-    return {
-      readTokens: typeof readTokens === 'number' ? readTokens : current.readTokens,
-      creationTokens: typeof creationTokens === 'number' ? creationTokens : current.creationTokens,
-      hitTokens: typeof deepseekHitTokens === 'number'
-        ? deepseekHitTokens
-        : typeof openAiCachedTokens === 'number'
-          ? openAiCachedTokens
+    const read = typeof readTokens === 'number' ? readTokens : current.readTokens;
+    const created = typeof creationTokens === 'number' ? creationTokens : current.creationTokens;
+    const fresh = typeof inputTokens === 'number' ? inputTokens : current.inputTokens;
+    const hit = typeof deepseekHitTokens === 'number'
+      ? deepseekHitTokens
+      : typeof openAiCachedTokens === 'number'
+        ? openAiCachedTokens
+        : typeof nestedCachedTokens === 'number'
+          ? nestedCachedTokens
           : typeof kimiCachedTokens === 'number'
             ? kimiCachedTokens
-            : current.hitTokens,
-      missTokens: typeof deepseekMissTokens === 'number' ? deepseekMissTokens : current.missTokens,
+            : current.hitTokens;
+    const miss = typeof deepseekMissTokens === 'number' ? deepseekMissTokens : current.missTokens;
+
+    return {
+      readTokens: read,
+      creationTokens: created,
+      hitTokens: hit,
+      missTokens: miss,
+      inputTokens: fresh,
     };
   }
 
@@ -484,6 +505,7 @@ export class LLMClient {
         creationTokens: 0,
         hitTokens: 0,
         missTokens: 0,
+        inputTokens: 0,
       },
     };
     const parseState: AnthropicSseParseState = {};
