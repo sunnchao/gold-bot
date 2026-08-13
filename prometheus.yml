@@ -17,3 +17,11 @@ scrape_configs:
           service: 'gold-bot-server'
     metrics_path: '/metrics'
     scrape_interval: 15s
+
+  - job_name: 'gold-bot-agent'
+    static_configs:
+      - targets: ['agents:3100']
+        labels:
+          service: 'gold-bot-agent'
+    metrics_path: '/metrics'
+    scrape_interval: 15s

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { getLogger } from '../utils/logger.js';
 import { AppConfigService } from '../config/app-config.service.js';
+import { recordLlmCacheUsage } from '../metrics/llm-cache-metrics.js';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const DEFAULT_MAX_TOKENS = 8192;
@@ -679,6 +680,8 @@ export class LLMClient {
       if (result.toolUse) {
         responseBody.toolUse = result.toolUse;
       }
+
+      recordLlmCacheUsage(result.cacheStats, this.config.model);
 
       return responseBody;
     } catch (err) {

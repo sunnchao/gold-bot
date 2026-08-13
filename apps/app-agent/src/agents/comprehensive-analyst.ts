@@ -34,7 +34,7 @@ import {
   TechnicalAnalysisSchema,
   WaveAnalystResultSchema,
 } from '../types/schemas.js';
-import { selectIndicator } from '../utils/goldbot-indicators.js';
+import { selectIndicator, type IndicatorSnapshot } from '../utils/goldbot-indicators.js';
 import { getLogger } from '../utils/logger.js';
 import { safeParseResponse } from '../utils/parse.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
@@ -447,6 +447,7 @@ class StructureCache {
     const candlestickPatterns = summarizeCandlestickPatterns(payload);
     const harmonicCtxStable = sanitizeHarmonicContextStable(payload);
     const harmonicCtxVolatile = sanitizeHarmonicContextVolatile(payload);
+    const staticPivots = extractStaticPivots(payload);
     // Hash on the SUMMARIZED structures, not the full ones: the render output
     // only depends on the trimmed windows, so an old-bar change that falls
     // outside the window should NOT invalidate this cacheable layer.
@@ -455,6 +456,7 @@ class StructureCache {
       summarizeChanlunStructure(chanlunStructure),
       candlestickPatterns,
       harmonicCtxStable ?? 'none',
+      staticPivots,
     ]);
     const cached = this.cache.get(symbol);
 
@@ -467,6 +469,7 @@ class StructureCache {
       chanlunStructure,
       candlestickPatterns,
       harmonicCtxStable,
+      staticPivots,
     );
     this.cache.set(symbol, {
       hash,
@@ -732,14 +735,75 @@ function summarizeChanlunStructure(chanlun: ChanlunAnalysis): Record<string, unk
   };
 }
 
+/**
+ * Indicator fields computed from the PREVIOUS closed bar (pivot points). They
+ * stay fixed for the life of the current forming bar, so they belong in the
+ * cacheable prefix rather than the per-tick realtime layer.
+ *
+ * Fibonacci retracement fields (fib_236…fib_786) are deliberately EXCLUDED:
+ * app-server computes them from a 50-bar window that INCLUDES the forming bar,
+ * so they move every tick and must stay in the dynamic layer.
+ */
+const PIVOT_FIELDS = ['pp', 'r1', 's1'] as const;
+// Slow → fast. The cacheable prefix must list the slowest-changing timeframe
+// first so a fast (M15/M30) bar close only invalidates the tail of the prefix
+// rather than the whole cached region.
+const STATIC_TIMEFRAME_ORDER = ['H4', 'H1', 'M30', 'M15'] as const;
+
+function extractStaticPivots(payload: GoldbotPayload): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const timeframe of STATIC_TIMEFRAME_ORDER) {
+    const indicator = selectIndicator(payload.indicators, timeframe, timeframe.toLowerCase());
+    const pivot: Record<string, unknown> = {};
+    for (const field of PIVOT_FIELDS) {
+      const value = indicator[field];
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        pivot[field] = value;
+      }
+    }
+    if (Object.keys(pivot).length > 0) {
+      out[timeframe] = pivot;
+    }
+  }
+  return out;
+}
+
+/** Per-timeframe ordered render (NOT stableStringify over the whole map, which
+ * would re-sort keys alphabetically and destroy the slow→fast ordering). */
+function renderStaticPivots(staticPivots: Record<string, unknown>): string {
+  const sections: string[] = [];
+  for (const timeframe of STATIC_TIMEFRAME_ORDER) {
+    const pivot = staticPivots[timeframe];
+    if (pivot && typeof pivot === 'object' && Object.keys(pivot as Record<string, unknown>).length > 0) {
+      sections.push(`- ${timeframe}: ${stableStringify(pivot)}`);
+    }
+  }
+  return sections.length > 0 ? sections.join('\n') : 'none';
+}
+
+/** Split candlestick patterns by timeframe so a fast bar close only churns the
+ * matching timeframe's line, not the whole block. */
+function renderCandlestickPatterns(candlestickPatterns: Record<string, string[]>): string {
+  const sections: string[] = [];
+  for (const timeframe of STATIC_TIMEFRAME_ORDER) {
+    const patterns = candlestickPatterns[timeframe];
+    if (Array.isArray(patterns) && patterns.length > 0) {
+      sections.push(`- ${timeframe}: ${stableStringify(patterns)}`);
+    }
+  }
+  return sections.length > 0 ? sections.join('\n') : 'none';
+}
+
 function renderStaticContextPrompt(
   waveStructure: ElliottWaveAnalysis,
   chanlunStructure: ChanlunAnalysis,
   candlestickPatterns: Record<string, string[]>,
   harmonicCtx: Record<string, unknown> | null,
+  staticPivots: Record<string, unknown>,
 ): string {
   // Anchor-based: forward minimal structural summaries instead of full computed
   // structures — the raw bar sequences would balloon this cacheable layer.
+  // Ordering is slow→fast so the cacheable prefix stays stable longest.
   return `## COMPUTED ANALYSIS STRUCTURES (Anchor mapping — caching eligible)
 
 ### WAVE_STRUCT
@@ -748,11 +812,14 @@ ${stableStringify(summarizeWaveStructure(waveStructure))}
 ### CHANLUN_STRUCT
 ${stableStringify(summarizeChanlunStructure(chanlunStructure))}
 
-### CANDLESTICK_PATTERNS
-${Object.keys(candlestickPatterns).length > 0 ? stableStringify(candlestickPatterns) : 'none'}
-
 ### HARMONIC_CTX
 ${harmonicCtx ? stableStringify(harmonicCtx) : 'none'}
+
+### PIVOT_LEVELS
+${renderStaticPivots(staticPivots)}
+
+### CANDLESTICK_PATTERNS
+${renderCandlestickPatterns(candlestickPatterns)}
 
 Refer to the anchors defined in system prompt for interpretation rules.`;
 }
@@ -763,6 +830,62 @@ function buildStaticContextPrompt(
   structureCache: StructureCache,
 ): { staticContextText: string; harmonicVolatile: Record<string, unknown> | null } {
   return structureCache.getOrBuild(symbol, payload);
+}
+
+/**
+ * Account fields that never change between analysis cycles. equity/balance/
+ * margin/free_margin move every tick (and `connected` reflects live broker
+ * state), so they stay in the realtime layer; the rest are constant for the
+ * account's lifetime and belong in the cacheable prefix.
+ */
+const STATIC_ACCOUNT_KEYS = ['account_id', 'currency', 'leverage', 'broker', 'server_name'] as const;
+
+function partitionAccount(account: GoldbotPayload['account']): {
+  staticFields: Record<string, unknown>;
+  dynamicFields: Record<string, unknown>;
+} {
+  const staticFields: Record<string, unknown> = {};
+  const dynamicFields: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(account)) {
+    if ((STATIC_ACCOUNT_KEYS as readonly string[]).includes(key)) {
+      staticFields[key] = value;
+    } else {
+      dynamicFields[key] = value;
+    }
+  }
+  return { staticFields, dynamicFields };
+}
+
+/**
+ * Strategy mapping is an EA-side contract (never changes between requests) and
+ * the static account fields are constant for the account's lifetime. Both are
+ * hoisted out of the per-tick realtime layer into the cacheable prefix so they
+ * stop being re-billed as fresh input tokens every cycle.
+ */
+function buildStaticAccountAndStrategyText(payload: GoldbotPayload, marketOnly: boolean): string {
+  const sections = [
+    `### STRATEGY_MAPPING (EA-side contract)
+${stableStringify(payload.strategy_mapping)}`,
+  ];
+  if (!marketOnly) {
+    sections.push(`### ACCOUNT_STATIC
+${stableStringify(partitionAccount(payload.account).staticFields)}`);
+  }
+  return `## STATIC ACCOUNT & STRATEGY CONTEXT (caching eligible)
+
+${sections.join('\n\n')}`;
+}
+
+/**
+ * Remove pivot fields that were hoisted into the cacheable prefix, so they are
+ * not billed twice in the dynamic layer.
+ */
+function stripHoistedPivotFields(indicator: IndicatorSnapshot): IndicatorSnapshot {
+  const out: IndicatorSnapshot = { ...indicator };
+  for (const field of PIVOT_FIELDS) {
+    delete out[field];
+  }
+  return out;
 }
 
 /**
@@ -778,10 +901,10 @@ function buildRealtimeDataPrompt(
   marketOnly = false,
 ): string {
   const currentPrice = payload.market.bid || payload.market.ask || 0;
-  const m15 = selectIndicator(payload.indicators, 'M15', 'm15');
-  const m30 = selectIndicator(payload.indicators, 'M30', 'm30');
-  const h1 = selectIndicator(payload.indicators, 'H1', 'h1');
-  const h4 = selectIndicator(payload.indicators, 'H4', 'h4');
+  const m15 = stripHoistedPivotFields(selectIndicator(payload.indicators, 'M15', 'm15'));
+  const m30 = stripHoistedPivotFields(selectIndicator(payload.indicators, 'M30', 'm30'));
+  const h1 = stripHoistedPivotFields(selectIndicator(payload.indicators, 'H1', 'h1'));
+  const h4 = stripHoistedPivotFields(selectIndicator(payload.indicators, 'H4', 'h4'));
 
   // mt4_server_time changes every tick — strip it so the volatile layer
   // only differs on meaningful state changes, not wall-clock noise.
@@ -792,13 +915,12 @@ function buildRealtimeDataPrompt(
 ### Current Price & Market Context
 - **${symbol}: ${currentPrice.toFixed(profile.pricePrecision)}**
 - Market status: ${stableStringify(stableMarketStatus)}
-- Strategy mapping: ${stableStringify(payload.strategy_mapping)}
 
 ### Market Data
 ${stableStringify(payload.market)}
 
 ${marketOnly ? '' : `### Account State
-${stableStringify(payload.account)}
+${stableStringify(partitionAccount(payload.account).dynamicFields)}
 
 ### Current Positions
 ${stableStringify(payload.positions)}`}
@@ -1575,11 +1697,17 @@ export class ComprehensiveAnalystService {
 
     // Layer 2: Semi-static context (computed structures) → prompt-cache eligible.
     const structureResult = buildStaticContextPrompt(payload, symbol, this.structureCache);
+    const marketOnly = options.marketOnly === true;
+
+    // Layer 2b: Fully-static account/strategy context (never changes per cycle)
+    // is prepended to the cacheable user layer, ahead of the bar-derived
+    // structures, so it stops being re-billed as fresh input every 30-min cycle.
+    const staticAccountStrategyText = buildStaticAccountAndStrategyText(payload, marketOnly);
 
     // Layer 3: Real-time data (price, positions, indicators) → no cache.
     const userLayers = [
-      { text: structureResult.staticContextText, cacheable: true },
-      { text: buildRealtimeDataPrompt(payload, pendingSignal, symbol, profile, structureResult.harmonicVolatile, options.marketOnly === true), cacheable: false },
+      { text: `${staticAccountStrategyText}\n\n${structureResult.staticContextText}`, cacheable: true },
+      { text: buildRealtimeDataPrompt(payload, pendingSignal, symbol, profile, structureResult.harmonicVolatile, marketOnly), cacheable: false },
     ];
 
     let raw: string;
