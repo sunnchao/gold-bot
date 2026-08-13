@@ -662,7 +662,11 @@ function buildSymbolSystemPrompt(profile: SymbolProfile): string {
 - 1 pip = ${profile.pipValue}
 - Suggested SL: ${profile.slAtrMultiplier}x ATR from current price (MUST output as absolute price level)
 - Suggested TP: ${profile.tpAtrMultiplier}x ATR from current price (MUST output as absolute price level)
-- All prices must fit this instrument's range (~${profile.priceRangeHint}).`;
+- All prices must fit this instrument's range (~${profile.priceRangeHint}).
+
+## ANALYSIS TASK
+Analyze ${profile.name} (${profile.symbol}) and return structured MARKDOWN
+with ALL 5 sections: TECHNICAL, WAVE, CHANLUN, RISK, ARBITRATION.`;
 }
 
 /**
@@ -723,15 +727,15 @@ function buildRealtimeDataPrompt(
   const h1 = selectIndicator(payload.indicators, 'H1', 'h1');
   const h4 = selectIndicator(payload.indicators, 'H4', 'h4');
 
+  // mt4_server_time changes every tick — strip it so the volatile layer
+  // only differs on meaningful state changes, not wall-clock noise.
+  const { mt4_server_time: _t, ...stableMarketStatus } = payload.market_status;
+
   return `## REAL-TIME MARKET DATA (Dynamic — no caching)
 
-**Task:** Analyze ${profile.name} (${symbol}) and return structured MARKDOWN with ALL 6 sections: TECHNICAL, WAVE, CHANLUN, HARMONIC, RISK, ARBITRATION.
-
-### Symbol Context
-- Symbol: ${symbol}
-- Instrument: ${profile.name}
-- **Current price: ${currentPrice.toFixed(profile.pricePrecision)}**
-- Market status: ${stableStringify(payload.market_status)}
+### Current Price & Market Context
+- **${symbol}: ${currentPrice.toFixed(profile.pricePrecision)}**
+- Market status: ${stableStringify(stableMarketStatus)}
 - Strategy mapping: ${stableStringify(payload.strategy_mapping)}
 
 ### Market Data
@@ -1280,6 +1284,16 @@ export class ComprehensiveAnalystService {
           'comprehensiveAnalysis: second-phase tool_use input',
         );
       }
+
+      logger.info(
+        {
+          symbol: profile.symbol,
+          strategy: this.tradeClient.getCacheStrategy().type,
+          model: this.tradeClient.getModel(),
+          ...result.cacheStats,
+        },
+        'Phase 2 prompt cache stats',
+      );
 
       return toolUseToTradeAction(result.toolUse, currentPrice, profile);
     } catch (err) {
