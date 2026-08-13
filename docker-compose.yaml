@@ -47,6 +47,7 @@ services:
       - GOLDBOT_API_URL=http://app:8880
       - REDIS_URL=redis://redis:6379
       - PORT=3100
+      - LLM_ENABLE_PROMPT_CACHING=true
     ports:
       - "127.0.0.1:3100:3100"
     depends_on:
