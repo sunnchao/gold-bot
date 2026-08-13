@@ -232,13 +232,14 @@ function buildFeishuCard(
     const dt = result.dow_theory;
     const trendMap: Record<string, string> = { bullish: '🟢 看涨', bearish: '🔴 看跌', neutral: '⚪ 中性' };
     const phaseMap: Record<string, string> = { accumulation: '吸筹', markup: '拉升', distribution: '派发', markdown: '下跌' };
+    const phase = /unavailable|不可用/i.test(dt.rationale) ? '不适用' : phaseMap[dt.primary_phase] ?? dt.primary_phase;
     analysisSections.push({
       tag: 'div',
       text: {
         tag: 'lark_md',
         content: [
           '**📘 道氏理论分析:**',
-          `主趋势: ${trendMap[dt.primary_trend] ?? dt.primary_trend} | 阶段: ${phaseMap[dt.primary_phase] ?? dt.primary_phase}`,
+          `主趋势: ${trendMap[dt.primary_trend] ?? dt.primary_trend} | 阶段: ${phase}`,
           `次级趋势: ${trendMap[dt.secondary_trend] ?? dt.secondary_trend} | 短期: ${trendMap[dt.short_term_trend] ?? dt.short_term_trend}`,
           `多周期确认: ${dt.multi_tf_confirm ? '✅ 是' : '❌ 否'}`,
           `${dt.rationale}`,
@@ -331,16 +332,30 @@ function buildFeishuCard(
       });
     } else {
       // hold with reference SL/TP levels (pending/alert)
-      const lines = [
-        '**🎯 交易建议:** ⏸️ 观望',
-        `参考入场: ${tr.entry_price.toFixed(2)}`,
-        `参考止损: ${tr.stop_loss.toFixed(2)}`,
-        `参考止盈1: ${tr.take_profit_1.toFixed(2)}`,
-      ];
-      if (tr.take_profit_2) {
+      const hasUnavailableReference = tr.entry_price === 0
+        && tr.stop_loss === 0
+        && tr.take_profit_1 === 0
+        && tr.risk_reward_ratio === 0;
+      const lines = hasUnavailableReference
+        ? [
+          '**🎯 交易建议:** ⏸️ 观望',
+          '参考入场: 暂无可靠入场价',
+          '参考止损: 暂无可靠止损',
+          '参考止盈1: 暂无可靠止盈',
+          '盈亏比: 盈亏比不可用',
+        ]
+        : [
+          '**🎯 交易建议:** ⏸️ 观望',
+          `参考入场: ${tr.entry_price.toFixed(2)}`,
+          `参考止损: ${tr.stop_loss.toFixed(2)}`,
+          `参考止盈1: ${tr.take_profit_1.toFixed(2)}`,
+        ];
+      if (tr.take_profit_2 && !hasUnavailableReference) {
         lines.push(`参考止盈2: ${tr.take_profit_2.toFixed(2)}`);
       }
-      lines.push(`盈亏比: 1:${tr.risk_reward_ratio.toFixed(1)}`);
+      if (!hasUnavailableReference) {
+        lines.push(`盈亏比: 1:${tr.risk_reward_ratio.toFixed(1)}`);
+      }
       lines.push(`参考仓位: ${tr.position_size_lots}`);
       if (tr.rationale) lines.push(tr.rationale);
       analysisSections.push({

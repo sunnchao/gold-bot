@@ -86,6 +86,83 @@ describe('PublisherService', () => {
     expect(serializedCard).toContain('缠论分析');
     expect(serializedCard).toContain('谐波理论分析');
     expect(serializedCard).toContain('交易建议');
+    expect(serializedCard).not.toContain('参考入场: 0.00');
+    expect(serializedCard).not.toContain('参考止损: 0.00');
+    expect(serializedCard).not.toContain('参考止盈1: 0.00');
+    expect(serializedCard).not.toContain('盈亏比: 1:0.0');
+    expect(serializedCard).not.toContain('阶段: 吸筹');
+    expect(serializedCard).toContain('暂无可靠入场价');
+    expect(serializedCard).toContain('暂无可靠止损');
+    expect(serializedCard).toContain('暂无可靠止盈');
+    expect(serializedCard).toContain('盈亏比不可用');
+  });
+
+  it('keeps populated hold and open trade recommendations unchanged', async () => {
+    process.env.FEISHU_WEBHOOK_URL = 'https://feishu.example/webhook';
+    delete process.env.FEISHU_WEBHOOK_SECRET;
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(() => jsonResponse({ code: 0, msg: 'ok' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = new PublisherService(createGoldbotApi());
+
+    await service.sendFeishuCard('acc-001', 'XAUUSD', createSignalWithTradeRecommendation({
+      direction: 'hold',
+      entry_price: 3200,
+      stop_loss: 3180,
+      take_profit_1: 3240,
+      risk_reward_ratio: 2,
+      position_size_lots: '0.1',
+      rationale: '等待确认',
+    }));
+    await service.sendFeishuCard('acc-001', 'XAUUSD', createSignalWithTradeRecommendation({
+      direction: 'buy',
+      entry_price: 3200,
+      stop_loss: 3180,
+      take_profit_1: 3240,
+      risk_reward_ratio: 2,
+      position_size_lots: '0.1',
+      rationale: '趋势延续',
+    }));
+
+    const holdBody = JSON.stringify(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string));
+    const openBody = JSON.stringify(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string));
+
+    expect(holdBody).toContain('交易建议');
+    expect(holdBody).toContain('参考入场: 3200.00');
+    expect(holdBody).toContain('参考止损: 3180.00');
+    expect(holdBody).toContain('参考止盈1: 3240.00');
+    expect(holdBody).toContain('盈亏比: 1:2.0');
+    expect(openBody).toContain('交易操作建议');
+    expect(openBody).toContain('入场: 3200.00');
+    expect(openBody).toContain('止损: 3180.00');
+    expect(openBody).toContain('止盈1: 3240.00');
+    expect(openBody).toContain('盈亏比: 1:2.0');
+  });
+
+  it('maps available Dow theory accumulation to 吸筹', async () => {
+    process.env.FEISHU_WEBHOOK_URL = 'https://feishu.example/webhook';
+    delete process.env.FEISHU_WEBHOOK_SECRET;
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(() => jsonResponse({ code: 0, msg: 'ok' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = new PublisherService(createGoldbotApi());
+
+    await service.sendFeishuCard('acc-001', 'XAUUSD', {
+      ...createSignal(),
+      dow_theory: {
+        primary_trend: 'neutral',
+        primary_phase: 'accumulation',
+        secondary_trend: 'neutral',
+        short_term_trend: 'neutral',
+        multi_tf_confirm: false,
+        rationale: 'available',
+      },
+    });
+
+    const body = JSON.stringify(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string));
+    expect(body).toContain('阶段: 吸筹');
   });
 });
 
@@ -152,6 +229,15 @@ function createSignalWithSections(): AISignalResult {
       position_size_lots: '0',
       rationale: '观望',
     },
+  };
+}
+
+function createSignalWithTradeRecommendation(
+  tradeRecommendation: NonNullable<AISignalResult['trade_recommendation']>,
+): AISignalResult {
+  return {
+    ...createSignal(),
+    trade_recommendation: tradeRecommendation,
   };
 }
 
