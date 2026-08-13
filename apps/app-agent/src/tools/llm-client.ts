@@ -38,6 +38,18 @@ export interface CacheStats {
   inputTokens: number;
 }
 
+/**
+ * Cache hit rate = cache_read_input_tokens / input_tokens. Both are on the
+ * same "full input" scale on this gateway (input_tokens stays full on a hit),
+ * so the ratio is directly the fraction of input served from cache.
+ */
+export function computeCacheHitRate(stats: Pick<CacheStats, 'readTokens' | 'inputTokens'>): number {
+  if (!stats.inputTokens || stats.inputTokens <= 0) {
+    return 0;
+  }
+  return stats.readTokens / stats.inputTokens;
+}
+
 interface ModelPattern {
   keywords: string[];
   strategy: CacheStrategy;

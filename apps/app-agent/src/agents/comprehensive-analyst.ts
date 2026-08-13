@@ -23,7 +23,7 @@ import {
 } from '../config/symbol-profile.js';
 import { analyzeChanlun } from '../tools/chanlun-core.js';
 import { analyzeElliottWave } from '../tools/elliott-wave.js';
-import { LLMClient, LlmClientService, type SystemBlock, type UserLayer } from '../tools/llm-client.js';
+import { computeCacheHitRate, LLMClient, LlmClientService, type SystemBlock, type UserLayer } from '../tools/llm-client.js';
 import { toolUseToTradeAction, toolUseToTradeActionLegacy } from './trade-action-converter.js';
 import { isSymbolLoaded, validateTradeActionForAccount } from './account-action-guard.js';
 import {
@@ -447,7 +447,15 @@ class StructureCache {
     const candlestickPatterns = summarizeCandlestickPatterns(payload);
     const harmonicCtxStable = sanitizeHarmonicContextStable(payload);
     const harmonicCtxVolatile = sanitizeHarmonicContextVolatile(payload);
-    const hash = stableHash([waveStructure, chanlunStructure, candlestickPatterns, harmonicCtxStable ?? 'none']);
+    // Hash on the SUMMARIZED structures, not the full ones: the render output
+    // only depends on the trimmed windows, so an old-bar change that falls
+    // outside the window should NOT invalidate this cacheable layer.
+    const hash = stableHash([
+      summarizeWaveStructure(waveStructure),
+      summarizeChanlunStructure(chanlunStructure),
+      candlestickPatterns,
+      harmonicCtxStable ?? 'none',
+    ]);
     const cached = this.cache.get(symbol);
 
     if (cached?.hash === hash) {
@@ -686,20 +694,59 @@ with ALL 5 sections: TECHNICAL, WAVE, CHANLUN, RISK, ARBITRATION.`;
  * this layer emits stable unavailable placeholders and leaves live price to
  * buildRealtimeDataPrompt().
  */
+// Historical structure beyond these windows is redundant for the LLM: the
+// labeled wave segments and chanlun hubs already encode the derived structure,
+// and the raw input bars / old swing points only bloat the cacheable layer.
+const MAX_RECENT_SWING_POINTS = 12;
+const MAX_RECENT_FRACTALS = 12;
+const MAX_RECENT_STROKES = 12;
+const MAX_RECENT_HUBS = 6;
+
+/**
+ * Reduce an ElliottWaveAnalysis to the fields the LLM actually reads. The
+ * labeled impulse/corrective segments + validation already capture the wave
+ * count and rules; historical swing points beyond the most recent are dropped.
+ */
+function summarizeWaveStructure(wave: ElliottWaveAnalysis): Record<string, unknown> {
+  return {
+    direction: wave.direction,
+    validation: wave.validation,
+    confidence: wave.confidence,
+    impulseWaves: wave.impulseWaves,
+    correctiveWaves: wave.correctiveWaves,
+    swingPoints: wave.swingPoints.slice(-MAX_RECENT_SWING_POINTS),
+  };
+}
+
+/**
+ * Reduce a ChanlunAnalysis to its semantic structure. `processedBars` is a raw
+ * OHLC intermediate (one entry per input bar) that the LLM never reads directly
+ * — fractals/strokes/hubs already encode bi/duan/zhongshu — and it is the single
+ * largest token consumer in the static layer, so it is dropped entirely.
+ */
+function summarizeChanlunStructure(chanlun: ChanlunAnalysis): Record<string, unknown> {
+  return {
+    fractals: chanlun.fractals.slice(-MAX_RECENT_FRACTALS),
+    strokes: chanlun.strokes.slice(-MAX_RECENT_STROKES),
+    hubs: chanlun.hubs.slice(-MAX_RECENT_HUBS),
+  };
+}
+
 function renderStaticContextPrompt(
-  waveStructure: unknown,
-  chanlunStructure: unknown,
+  waveStructure: ElliottWaveAnalysis,
+  chanlunStructure: ChanlunAnalysis,
   candlestickPatterns: Record<string, string[]>,
   harmonicCtx: Record<string, unknown> | null,
 ): string {
-  // Anchor-based: send minimal mapping data instead of full structure
+  // Anchor-based: forward minimal structural summaries instead of full computed
+  // structures — the raw bar sequences would balloon this cacheable layer.
   return `## COMPUTED ANALYSIS STRUCTURES (Anchor mapping — caching eligible)
 
 ### WAVE_STRUCT
-${stableStringify(waveStructure)}
+${stableStringify(summarizeWaveStructure(waveStructure))}
 
 ### CHANLUN_STRUCT
-${stableStringify(chanlunStructure)}
+${stableStringify(summarizeChanlunStructure(chanlunStructure))}
 
 ### CANDLESTICK_PATTERNS
 ${Object.keys(candlestickPatterns).length > 0 ? stableStringify(candlestickPatterns) : 'none'}
@@ -1494,6 +1541,7 @@ export class ComprehensiveAnalystService {
           strategy: this.tradeClient.getCacheStrategy().type,
           model: this.tradeClient.getModel(),
           ...result.cacheStats,
+          cacheHitRate: computeCacheHitRate(result.cacheStats),
         },
         'Phase 2 prompt cache stats',
       );
@@ -1544,6 +1592,7 @@ export class ComprehensiveAnalystService {
           strategy: this.client.getCacheStrategy().type,
           model: this.client.getModel(),
           ...result.cacheStats,
+          cacheHitRate: computeCacheHitRate(result.cacheStats),
         },
         'Prompt cache stats',
       );

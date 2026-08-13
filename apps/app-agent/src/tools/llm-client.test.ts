@@ -154,6 +154,7 @@ describe('LLMClient', () => {
         creationTokens: 100,
         hitTokens: 0,
         missTokens: 0,
+        inputTokens: 0,
       },
     });
 
@@ -249,6 +250,7 @@ describe('LLMClient', () => {
       creationTokens: 0,
       hitTokens: 300,
       missTokens: 50,
+      inputTokens: 0,
     });
   });
 
