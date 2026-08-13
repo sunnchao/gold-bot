@@ -742,4 +742,46 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(result.technical.confidence).toBe(0);
     expect(result.arbitration.final_direction).toBe('hold');
   });
+
+  it('preserves explicit neutral theory sections and a hold recommendation when output and retry are unavailable', async () => {
+    const streamLayered = vi.fn()
+      .mockResolvedValueOnce({ content: '## TECHNICAL\n- Bias: neutral', cacheStats })
+      .mockResolvedValueOnce({ content: '', cacheStats });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = createService(client);
+
+    const result = await service.run(payloadWithLastBarClose(2335), 'XAUUSD');
+
+    expect(streamLayered).toHaveBeenCalledTimes(2);
+    expect(result.arbitration.dow_theory).toMatchObject({
+      primary_trend: 'neutral',
+      secondary_trend: 'neutral',
+      short_term_trend: 'neutral',
+      multi_tf_confirm: false,
+    });
+    expect(result.arbitration.wave_theory).toMatchObject({
+      wave_direction: 'unclear',
+      confidence: 0,
+    });
+    expect(result.arbitration.chanlun_theory).toMatchObject({
+      trend: 'range',
+      bi_direction: 'none',
+      duan_direction: 'none',
+      confidence: 0,
+    });
+    expect(result.arbitration.harmonic_theory).toMatchObject({
+      pattern: 'none',
+      direction: 'neutral',
+      confidence: 0,
+    });
+    expect(result.arbitration.trade_recommendation).toMatchObject({
+      direction: 'hold',
+      rationale: expect.stringContaining('观望'),
+    });
+  });
 });

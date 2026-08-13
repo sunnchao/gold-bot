@@ -26,6 +26,17 @@ describe('composeFinalSignal AI order intent', () => {
     });
   });
 
+  it('maps arbitration harmonic theory to the top-level AI signal result', () => {
+    const state = stateWithTradeAction({
+      type: 'do_nothing',
+      reason: 'hold',
+    });
+
+    const signal = composeFinalSignal(state);
+
+    expect(signal?.harmonic_theory).toEqual(state.arbitration?.harmonic_theory);
+  });
+
   it('maps buy limit trade actions to BUY_LIMIT intent', () => {
     const signal = composeFinalSignal(stateWithTradeAction({
       type: 'place_pending_order',
