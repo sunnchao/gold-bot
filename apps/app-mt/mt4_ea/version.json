@@ -1,5 +1,5 @@
 {
-  "version": "2.9.2",
-  "build": 12,
-  "changelog": "上报 EA 端 MaxSpread 配置：/heartbeat 与 /tick 增加 max_spread 字段，服务端 market_filters 与 riskgate 优先参考 EA 点差阈值"
+  "version": "2.9.4",
+  "build": 14,
+  "changelog": "server-authoritative AI lots; reject missing/below broker minimum lots; safe TP split fallback to single TP2"
 }

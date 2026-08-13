@@ -5,15 +5,15 @@
 //| v2.5: 服务器重启自动恢复连接                                        |
 //+------------------------------------------------------------------+
 #property copyright "Gold Bolt"
-#property version   "2.8"
+#property version   "2.9.4"
 #property strict
 
 // 引入标准库
 #include <StdLib.mqh>
 
 // ============ 版本信息 ============
-#define EA_VERSION  "2.9.3"
-#define EA_BUILD    13
+#define EA_VERSION  "2.9.4"
+#define EA_BUILD    14
 
 //+------------------------------------------------------------------+
 //| 服务器连接配置                                                      |
@@ -1234,13 +1234,27 @@ void ExecuteSignal(string cmd, string cmd_id)
     
    double sl_distance = MathAbs(price - sl);
    double lots = CalcLotsForStrategy(strategy, baseSymbol, sl_distance);
+   double cmdLots = 0.0;
    // AI 信号使用服务端计算的手数（含减半逻辑）
    if(strategy == "ai_signal")
    {
-      double cmdLots = GetJsonDouble(cmd, "lots");
-      if(cmdLots > 0) lots = cmdLots;
+      cmdLots = GetJsonDouble(cmd, "lots");
+      if(cmdLots <= 0)
+      {
+         Print("❌ AI 信号缺少有效服务端手数 lots=", DoubleToString(cmdLots, 2));
+         ReportResult(cmd_id, "ERROR", 0, "invalid_server_lots");
+         return;
+      }
+      lots = cmdLots;
    }
    lots = NormalizeVolume(brokerSymbol, lots);
+   if(strategy == "ai_signal" && lots > cmdLots + 0.0001)
+   {
+      Print("❌ AI 信号服务端手数低于经纪商最小手数: serverLots=", DoubleToString(cmdLots, 4),
+            " normalizedLots=", DoubleToString(lots, 4));
+      ReportResult(cmd_id, "ERROR", 0, "server_lots_below_broker_min");
+      return;
+   }
 
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);
 
@@ -1517,9 +1531,26 @@ void ExecutePending(string cmd, string cmd_id)
    double sl_distance = MathAbs(currentPrice - sl);
    double lots = CalcLotsForStrategy(strategy, baseSymbol, sl_distance);
    double cmdLots = GetJsonDouble(cmd, "lots");
-   if(cmdLots > 0.0009)
+   if(strategy == "ai_signal")
+   {
+      if(cmdLots <= 0)
+      {
+         Print("❌ AI 挂单缺少有效服务端手数 lots=", DoubleToString(cmdLots, 2));
+         ReportResult(cmd_id, "ERROR", 0, "invalid_server_lots");
+         return;
+      }
+      lots = cmdLots;
+   }
+   else if(cmdLots > 0.0009)
       lots = cmdLots;   // 服务端指定手数优先（含0.01固定值）
    lots = NormalizeVolume(brokerSymbol, lots);
+   if(strategy == "ai_signal" && lots > cmdLots + 0.0001)
+   {
+      Print("❌ AI 挂单服务端手数低于经纪商最小手数: serverLots=", DoubleToString(cmdLots, 4),
+            " normalizedLots=", DoubleToString(lots, 4));
+      ReportResult(cmd_id, "ERROR", 0, "server_lots_below_broker_min");
+      return;
+   }
 
    // 挂单同样需要通过本地风控检查（此前 ExecutePending 跳过了 CheckRisk）
    if(!CheckRisk(type_str))
@@ -1535,70 +1566,78 @@ void ExecutePending(string cmd, string cmd_id)
    if(expiration <= 0)
       expiration = TimeCurrent() + 24 * 60 * 60;
 
+   double effectiveTP = tp1;
+
    // Multi-TP 拆单: 挂单模式同样支持
    if(tpSplit && tp2 > 0 && MathAbs(tp1 - tp2) > _Point)
    {
       // 拆单挂单: 开两个挂单,每个不同 TP
       double lotsTP1 = 0, lotsTP2 = 0;
-      SplitLotsForMultiTP(brokerSymbol, lots, lotsTP1, lotsTP2);
-
-      string commentBase = comment;
-      int ticketA = OrderSend(brokerSymbol, pendingType, lotsTP1, entry, Slippage,
-                               0, 0, commentBase + "_A", magicForOrder, expiration,
-                               type_str == "BUY" ? clrGreen : clrRed);
-      int ticketB = OrderSend(brokerSymbol, pendingType, lotsTP2, entry, Slippage,
-                               0, 0, commentBase + "_B", magicForOrder, expiration,
-                               type_str == "BUY" ? clrGreen : clrRed);
-
-      // 设置 TP/SL
-      if(ticketA > 0 && OrderSelect(ticketA, SELECT_BY_TICKET))
+      if(SplitLotsForMultiTP(brokerSymbol, lots, lotsTP1, lotsTP2))
       {
-         double min_stop = MarketInfo(brokerSymbol, MODE_STOPLEVEL) * GetSymbolPoint(brokerSymbol);
-         double final_sl = sl, final_tp = tp1;
-         if(min_stop > 0 && MathAbs(entry - sl) < min_stop)
-         {
-            if(type_str == "BUY") final_sl = entry - min_stop;
-            else final_sl = entry + min_stop;
-         }
-         if(min_stop > 0 && MathAbs(tp1 - entry) < min_stop)
-         {
-            if(type_str == "BUY") final_tp = entry + min_stop;
-            else final_tp = entry - min_stop;
-         }
-         OrderModify(ticketA, entry, final_sl, final_tp, expiration, clrYellow);
-      }
-      if(ticketB > 0 && OrderSelect(ticketB, SELECT_BY_TICKET))
-      {
-         double min_stop = MarketInfo(brokerSymbol, MODE_STOPLEVEL) * GetSymbolPoint(brokerSymbol);
-         double final_sl = sl, final_tp = tp2;
-         if(min_stop > 0 && MathAbs(entry - sl) < min_stop)
-         {
-            if(type_str == "BUY") final_sl = entry - min_stop;
-            else final_sl = entry + min_stop;
-         }
-         if(min_stop > 0 && MathAbs(tp2 - entry) < min_stop)
-         {
-            if(type_str == "BUY") final_tp = entry + min_stop;
-            else final_tp = entry - min_stop;
-         }
-         OrderModify(ticketB, entry, final_sl, final_tp, expiration, clrYellow);
-      }
+         string commentBase = comment;
+         int ticketA = OrderSend(brokerSymbol, pendingType, lotsTP1, entry, Slippage,
+                                  0, 0, commentBase + "_A", magicForOrder, expiration,
+                                  type_str == "BUY" ? clrGreen : clrRed);
+         int ticketB = OrderSend(brokerSymbol, pendingType, lotsTP2, entry, Slippage,
+                                  0, 0, commentBase + "_B", magicForOrder, expiration,
+                                  type_str == "BUY" ? clrGreen : clrRed);
 
-      if(ticketA > 0 && ticketB > 0)
-      {
-         Print("✅ 拆单挂单成功: TP1=#", ticketA, " (", DoubleToString(lotsTP1, 2), "手) | ",
-               "TP2=#", ticketB, " (", DoubleToString(lotsTP2, 2), "手)");
-         ReportResult(cmd_id, "OK", ticketA,
-                      "split_pending;A=" + IntegerToString(ticketA) + "_" + DoubleToString(lotsTP1, 2) +
-                      ";B=" + IntegerToString(ticketB) + "_" + DoubleToString(lotsTP2, 2));
+         // 设置 TP/SL
+         if(ticketA > 0 && OrderSelect(ticketA, SELECT_BY_TICKET))
+         {
+            double min_stop = MarketInfo(brokerSymbol, MODE_STOPLEVEL) * GetSymbolPoint(brokerSymbol);
+            double final_sl = sl, final_tp = tp1;
+            if(min_stop > 0 && MathAbs(entry - sl) < min_stop)
+            {
+               if(type_str == "BUY") final_sl = entry - min_stop;
+               else final_sl = entry + min_stop;
+            }
+            if(min_stop > 0 && MathAbs(tp1 - entry) < min_stop)
+            {
+               if(type_str == "BUY") final_tp = entry + min_stop;
+               else final_tp = entry - min_stop;
+            }
+            OrderModify(ticketA, entry, final_sl, final_tp, expiration, clrYellow);
+         }
+         if(ticketB > 0 && OrderSelect(ticketB, SELECT_BY_TICKET))
+         {
+            double min_stop = MarketInfo(brokerSymbol, MODE_STOPLEVEL) * GetSymbolPoint(brokerSymbol);
+            double final_sl = sl, final_tp = tp2;
+            if(min_stop > 0 && MathAbs(entry - sl) < min_stop)
+            {
+               if(type_str == "BUY") final_sl = entry - min_stop;
+               else final_sl = entry + min_stop;
+            }
+            if(min_stop > 0 && MathAbs(tp2 - entry) < min_stop)
+            {
+               if(type_str == "BUY") final_tp = entry + min_stop;
+               else final_tp = entry - min_stop;
+            }
+            OrderModify(ticketB, entry, final_sl, final_tp, expiration, clrYellow);
+         }
+
+         if(ticketA > 0 && ticketB > 0)
+         {
+            Print("✅ 拆单挂单成功: TP1=#", ticketA, " (", DoubleToString(lotsTP1, 2), "手) | ",
+                  "TP2=#", ticketB, " (", DoubleToString(lotsTP2, 2), "手)");
+            ReportResult(cmd_id, "OK", ticketA,
+                         "split_pending;A=" + IntegerToString(ticketA) + "_" + DoubleToString(lotsTP1, 2) +
+                         ";B=" + IntegerToString(ticketB) + "_" + DoubleToString(lotsTP2, 2));
+         }
+         else
+         {
+            Print("⚠️ 拆单挂单部分失败: A=", ticketA, " B=", ticketB);
+            ReportResult(cmd_id, "PARTIAL", (ticketA > 0 ? ticketA : ticketB),
+                         "split_pending;A=" + IntegerToString(ticketA) + ";B=" + IntegerToString(ticketB));
+         }
+         return;
       }
       else
       {
-         Print("⚠️ 拆单挂单部分失败: A=", ticketA, " B=", ticketB);
-         ReportResult(cmd_id, "PARTIAL", (ticketA > 0 ? ticketA : ticketB),
-                      "split_pending;A=" + IntegerToString(ticketA) + ";B=" + IntegerToString(ticketB));
+         Print("⚠️ 拆单挂单手数无效，退回单挂单 TP2，totalLots=", DoubleToString(lots, 2));
+         effectiveTP = tp2;
       }
-      return;
    }
 
    int ticket = OrderSend(brokerSymbol, pendingType, lots, entry, Slippage,
@@ -1611,12 +1650,12 @@ void ExecutePending(string cmd, string cmd_id)
             " | Magic=", magicForOrder, " (", strategy, ")");
 
       // 尝试设置 SL/TP（部分经纪商可能拒绝，不影响挂单成功）
-      if(sl > 0 || tp1 > 0)
+      if(sl > 0 || effectiveTP > 0)
       {
          if(OrderSelect(ticket, SELECT_BY_TICKET))
          {
             double final_sl = (sl > 0) ? sl : OrderStopLoss();
-            double final_tp = (tp1 > 0) ? tp1 : OrderTakeProfit();
+            double final_tp = (effectiveTP > 0) ? effectiveTP : OrderTakeProfit();
             if(OrderModify(ticket, entry, final_sl, final_tp, expiration, clrYellow))
             {
                Print("📝 挂单设置SL/TP: SL=", final_sl, " TP=", final_tp);
@@ -2136,7 +2175,7 @@ bool GetJsonBool(string json, string key)
 // 拆分手数：60% 给 TP1（近目标，先落袋），40% 给 TP2（远目标，剩余）
 // 输入：totalLots - 服务端下发的总手数
 // 输出：通过引用返回 lotsTP1 和 lotsTP2
-// 约束：lotsTP1 + lotsTP2 == totalLots（绝不超过）
+// 约束：子手数必须有效，且 lotsTP1 + lotsTP2 不能超过 totalLots 容忍范围
 bool SplitLotsForMultiTP(string brokerSymbol, double totalLots, double &lotsTP1, double &lotsTP2)
 {
    if(totalLots <= 0)
@@ -2146,37 +2185,53 @@ bool SplitLotsForMultiTP(string brokerSymbol, double totalLots, double &lotsTP1,
       return false;
    }
    lotsTP1 = NormalizeVolume(brokerSymbol, totalLots * 0.6);  // TP1 = 60% (近目标，更大概率触发)
-   if(lotsTP1 <= 0) lotsTP1 = NormalizeVolume(brokerSymbol, 0.01); // 最小手数兜底
    lotsTP2 = NormalizeVolume(brokerSymbol, totalLots - lotsTP1);   // TP2 = 剩余 = 40%（减法避免累积误差）
-   // 安全检查：确保总和不超过
+
+   if(lotsTP1 <= 0 || lotsTP2 <= 0)
+   {
+      lotsTP1 = 0;
+      lotsTP2 = 0;
+      return false;
+   }
+
+   // 安全检查：确保总和不超过 totalLots 的容忍范围
    if(lotsTP1 + lotsTP2 > totalLots + 0.0001)
    {
-      lotsTP1 = NormalizeVolume(brokerSymbol, totalLots * 0.6);
-      lotsTP2 = totalLots - lotsTP1;
+      lotsTP1 = 0;
+      lotsTP2 = 0;
+      return false;
    }
    return true;
+}
+
+bool IsBuyOrderType(int op_type)
+{
+   return (op_type == OP_BUY || op_type == OP_BUYLIMIT || op_type == OP_BUYSTOP);
 }
 
 // 单一订单开仓 + 设置 TP/SL（拆单模式使用）
 // 返回：true=成功, ticket 写入 outTicket
 bool OpenSingleOrderWithTP(string brokerSymbol, int op_type, double lots, double price,
                            double sl, double tp, string comment, int magic,
-                           string strategy, int score, int &outTicket)
+                           string strategy, int score, datetime expiration, int &outTicket)
 {
    outTicket = 0;
+   double inputLots = lots;
    lots = NormalizeVolume(brokerSymbol, lots);
+   if(lots > inputLots + 0.0001) return false;
    if(lots <= 0) return false;
 
+   bool isBuy = IsBuyOrderType(op_type);
    int ticket = OrderSend(brokerSymbol, op_type, lots, price, Slippage,
-                          0, 0, comment, magic, 0,
-                          op_type == OP_BUY ? clrGreen : clrRed);
+                          0, 0, comment, magic, expiration,
+                          isBuy ? clrGreen : clrRed);
    if(ticket <= 0)
    {
       Print("❌ 拆单开仓失败 (", strategy, "): Error#", GetLastError());
       return false;
    }
 
-   Print("✅ 拆单开仓: #", ticket, " ", (op_type==OP_BUY ? "BUY" : "SELL"),
+   Print("✅ 下单: #", ticket, " ", (isBuy ? "BUY" : "SELL"),
          " ", DoubleToString(lots, 2), "手 @ ", DoubleToString(price, Digits),
          " | SL=", DoubleToString(sl, Digits), " TP=", DoubleToString(tp, Digits),
          " | Magic=", magic, " (", strategy, ")");
@@ -2206,7 +2261,7 @@ bool OpenSingleOrderWithTP(string brokerSymbol, int op_type, double lots, double
 
    if(OrderStopLoss() != final_sl || OrderTakeProfit() != final_tp)
    {
-      if(!OrderModify(ticket, openPrice, final_sl, final_tp, 0, clrYellow))
+      if(!OrderModify(ticket, openPrice, final_sl, final_tp, expiration, clrYellow))
       {
          Print("⚠️ 拆单 TP/SL 设置失败: #", ticket, " Error#", GetLastError());
       }
@@ -2229,8 +2284,15 @@ void ExecuteOpenWithTPSplit(string cmd, string cmd_id, string brokerSymbol, int 
    double lotsTP1 = 0, lotsTP2 = 0;
    if(!SplitLotsForMultiTP(brokerSymbol, lots, lotsTP1, lotsTP2))
    {
-      Print("❌ 拆单失败: 手数无效 totalLots=", DoubleToString(lots, 2));
-      ReportResult(cmd_id, "ERROR", 0, "split_lots_invalid");
+      Print("⚠️ 拆单手数无效，退回单订单 TP2，totalLots=", DoubleToString(lots, 2));
+      int fallbackTicket = 0;
+      bool fallbackOK = OpenSingleOrderWithTP(brokerSymbol, op_type, lots, price,
+                                              sl, tp2, commentBase, magicForOrder,
+                                              strategy, score, 0, fallbackTicket);
+      if(fallbackOK)
+         ReportResult(cmd_id, "OK", fallbackTicket, "single_tp2_after_split_invalid");
+      else
+         ReportResult(cmd_id, "ERROR", fallbackTicket, "single_tp2_after_split_failed");
       return;
    }
 
@@ -2238,13 +2300,13 @@ void ExecuteOpenWithTPSplit(string cmd, string cmd_id, string brokerSymbol, int 
    int ticketA = 0;
    bool okA = OpenSingleOrderWithTP(brokerSymbol, op_type, lotsTP1, price,
                                      sl, tp1, commentBase + "_A", magicForOrder,
-                                     strategy, score, ticketA);
+                                     strategy, score, 0, ticketA);
 
    // 订单 B: TP2（远目标）
    int ticketB = 0;
    bool okB = OpenSingleOrderWithTP(brokerSymbol, op_type, lotsTP2, price,
                                      sl, tp2, commentBase + "_B", magicForOrder,
-                                     strategy, score, ticketB);
+                                     strategy, score, 0, ticketB);
 
    // 报告结果
    if(okA && okB)

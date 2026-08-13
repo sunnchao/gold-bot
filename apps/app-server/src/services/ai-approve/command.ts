@@ -1,11 +1,12 @@
 import type { CommandCandidate, EaRecord } from '@gold-bot/persistence';
 import {
-  calcAIApproveLots,
   pickAIApproveEntryPrice,
   resolveAIApproveExecutableTakeProfits,
   round2,
   type AIApproveOrderType
 } from './rules.js';
+
+const AI_APPROVE_TP_SPLIT_ENABLED = false;
 
 export type AIApproveCommandInput = {
   accountId: string;
@@ -36,6 +37,13 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
   if (!takeProfits.accepted) {
     throw new Error(`AI approve command received invalid ${takeProfits.label}: ${takeProfits.reason}`);
   }
+  const allowedLots = numberField(input.riskGate, 'allowed_lots');
+  if (allowedLots <= 0) {
+    throw new Error('AI approve command requires positive riskGate.allowed_lots');
+  }
+  const commandTp1 = AI_APPROVE_TP_SPLIT_ENABLED ? takeProfits.tp1 : takeProfits.legacyTakeProfit;
+  const commandTp2 = AI_APPROVE_TP_SPLIT_ENABLED ? takeProfits.tp2 : 0;
+  const commandTpSplit = AI_APPROVE_TP_SPLIT_ENABLED && takeProfits.tpSplit;
   const candidate: CommandCandidate = {
     command_id: `ai_pending_${input.accountId}_${input.symbol}_${unixNanos(input.nowIso)}`,
     action: 'SIGNAL',
@@ -46,10 +54,9 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
     entry_max: entryMax,
     sl: stopLoss,
     tp: takeProfits.legacyTakeProfit,
-    tp1: takeProfits.tp1,
-    tp2: takeProfits.tp2,
-    // lots<=0：不写入有效手数，EA 走 CalcLotsForStrategy（FixedLots / SymbolLotsMap）
-    lots: calcAIApproveLots(numberField(input.tradePlan, 'max_lots')),
+    tp1: commandTp1,
+    tp2: commandTp2,
+    lots: allowedLots,
     order_type: input.orderType,
     expiration,
     score: confidence,
@@ -60,7 +67,7 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
     reason: stringField(input.tradePlan, 'narrative'),
     trade_plan_mode: stringField(input.tradePlan, 'mode'),
     risk_gate: input.riskGate,
-    tp_split: takeProfits.tpSplit
+    tp_split: commandTpSplit
   };
 
   const addOnType = stringField(input.tradePlan, 'add_on_type');
