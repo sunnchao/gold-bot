@@ -78,7 +78,8 @@ describe('PublisherService', () => {
 
     const request = fetchMock.mock.calls[0]?.[1];
     expect(request?.body).toBeTypeOf('string');
-    const body = JSON.parse(request!.body as string) as unknown;
+    const body = JSON.parse(request!.body as string) as { card: { config: { wide_screen_mode: boolean } } };
+    expect(body.card.config.wide_screen_mode).toBe(true);
     const serializedCard = JSON.stringify(body);
 
     expect(serializedCard).toContain('道氏理论分析');

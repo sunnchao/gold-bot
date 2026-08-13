@@ -375,6 +375,9 @@ function buildFeishuCard(
   return {
     msg_type: 'interactive',
     card: {
+      config: {
+        wide_screen_mode: true,
+      },
       header: {
         title: { tag: 'plain_text', content: `${headerTitle} — ${symbol}` },
         template: headerColor,
