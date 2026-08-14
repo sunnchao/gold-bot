@@ -728,6 +728,58 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     },
   };
 
+  it('should reject truncated ARBITRATION missing trade fields', async () => {
+    const truncatedMarkdownResponse = markdownResponse
+      .replace('- Harmonic Confidence: 0', '- Harmonic Confidence: 85')
+      .split('\n- Harmonic Rationale: none')[0];
+    const streamLayered = vi.fn()
+      .mockResolvedValueOnce({ content: truncatedMarkdownResponse, cacheStats })
+      .mockResolvedValueOnce({
+        content: '',
+        cacheStats,
+        toolUse: { id: 't1', name: 'submit_comprehensive_analysis', input: structuredAnalysisInput },
+      });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = createService(client);
+
+    const result = await service.run(
+      payloadWithLastBarClose(2335),
+      'XAUUSD',
+      undefined,
+      undefined,
+      { skipTradeAction: true },
+    );
+
+    expect(streamLayered).toHaveBeenCalledTimes(2);
+    expect(streamLayered.mock.calls[1][2]).toMatchObject({
+      toolChoice: { type: 'tool', name: 'submit_comprehensive_analysis' },
+    });
+    expect(loggerMock.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: 'XAUUSD',
+        rawLength: truncatedMarkdownResponse.length,
+        sectionCount: 6,
+        missingTradeFields: [
+          'trade_direction',
+          'trade_entry_price',
+          'trade_stop_loss',
+          'trade_take_profit_1',
+          'trade_risk_reward_ratio',
+          'trade_position_size_lots',
+        ],
+        availableFields: [],
+      }),
+      'Incomplete ARBITRATION section detected, rejecting to trigger retry',
+    );
+    expect(result.arbitration.confidence).toBe(45);
+    expect(result.arbitration.reasoning).toContain('市场整理');
+  });
+
   it('recovers via forced tool_use structured retry when both parse formats fail', async () => {
     const streamLayered = vi.fn()
       // First-phase analysis returns unparseable garbage (no markdown headers, no JSON)

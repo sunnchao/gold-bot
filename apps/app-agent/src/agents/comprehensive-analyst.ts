@@ -1238,6 +1238,31 @@ function parseMarkdownResponse(raw: string, currentPrice: number, profile: Symbo
   const arbSection = sections.get('arbitration') || '';
   const arbFields = extractFields(arbSection);
 
+  const requiredTradeFields = [
+    'trade_direction',
+    'trade_entry_price',
+    'trade_stop_loss',
+    'trade_take_profit_1',
+    'trade_risk_reward_ratio',
+    'trade_position_size_lots',
+  ];
+  const missingTradeFields = requiredTradeFields.filter((field) => !arbFields.has(field));
+
+  if (missingTradeFields.length > 0) {
+    getLogger().warn(
+      {
+        symbol: profile.symbol,
+        rawLength: raw.length,
+        sectionCount: sections.size,
+        arbitrationLength: arbSection.length,
+        missingTradeFields,
+        availableFields: Array.from(arbFields.keys()).filter((key) => key.startsWith('trade_')),
+      },
+      'Incomplete ARBITRATION section detected, rejecting to trigger retry',
+    );
+    return null;
+  }
+
   const dowTheory: DowTheoryAnalysis = {
     primary_trend: getEnumField(arbFields, 'dow_primary_trend', ['bullish', 'bearish', 'neutral'] as const, 'neutral'),
     primary_phase: getEnumField(arbFields, 'dow_primary_phase', ['accumulation', 'markup', 'distribution', 'markdown'] as const, 'accumulation'),
