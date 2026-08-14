@@ -46,7 +46,7 @@ describe('AI approve command builder', () => {
       tp1: 3344.876,
       tp2: 0,
       tp_split: false,
-      lots: 0.03,
+      lots: 0,
       order_type: 'market',
       expiration: 1776081600,
       score: 80,
@@ -89,7 +89,7 @@ describe('AI approve command builder', () => {
     expect(buyLimit).toMatchObject({
       type: 'BUY',
       entry: 3332.5,
-      lots: 0.02,
+      lots: 0,
       order_type: 'BUY_LIMIT',
       expiration: 1776081600,
       strategy: 'ai_signal'
@@ -117,7 +117,7 @@ describe('AI approve command builder', () => {
     expect(sellLimit).toMatchObject({
       type: 'SELL',
       entry: 3338.5,
-      lots: 0.03,
+      lots: 0,
       order_type: 'SELL_LIMIT',
       expiration: 1776081600,
       strategy: 'ai_signal'
@@ -127,7 +127,7 @@ describe('AI approve command builder', () => {
     expect([buyLimit.order_type, sellLimit.order_type]).not.toContain('SELL_STOP');
   });
 
-  it('builds staged take profit payloads using the legacy single tp target', () => {
+  it('builds staged take profit payloads from validated executable targets', () => {
     const command = buildAIApproveCommandCandidate({
       accountId: '90011087',
       symbol: 'XAUUSD',
@@ -149,9 +149,9 @@ describe('AI approve command builder', () => {
 
     expect(command).toMatchObject({
       tp: 3345,
-      tp1: 3345,
-      tp2: 0,
-      tp_split: false
+      tp1: 3340,
+      tp2: 3345,
+      tp_split: true
     });
   });
 
@@ -177,9 +177,9 @@ describe('AI approve command builder', () => {
 
     expect(command).toMatchObject({
       tp: 3345,
-      tp1: 3345,
-      tp2: 0,
-      tp_split: false
+      tp1: 3340,
+      tp2: 3345,
+      tp_split: true
     });
   });
 
@@ -293,7 +293,7 @@ describe('AI approve command builder', () => {
     });
   });
 
-  it('uses riskGate.allowed_lots as the authoritative command lots', () => {
+  it('leaves command lots at zero while preserving riskGate.allowed_lots as audit metadata', () => {
     const command = buildAIApproveCommandCandidate({
       accountId: '90011087',
       symbol: 'XAUUSD',
@@ -313,10 +313,11 @@ describe('AI approve command builder', () => {
       }
     });
 
-    expect(command.lots).toBe(0.07);
+    expect(command.lots).toBe(0);
+    expect(command.risk_gate).toMatchObject({ allowed_lots: 0.07 });
   });
 
-  it('rejects commands when riskGate.allowed_lots is zero or missing', () => {
+  it('builds commands when riskGate.allowed_lots is zero or missing', () => {
     const baseInput = {
       accountId: '90011087',
       symbol: 'XAUUSD',
@@ -335,14 +336,14 @@ describe('AI approve command builder', () => {
       }
     };
 
-    expect(() => buildAIApproveCommandCandidate({
+    expect(buildAIApproveCommandCandidate({
       ...baseInput,
       riskGate: { decision_id: 'tpv1_zero_lots', mode: 'approve', symbol: 'XAUUSD', allowed_lots: 0 }
-    })).toThrow('riskGate.allowed_lots');
+    })).toMatchObject({ lots: 0, risk_gate: { allowed_lots: 0 } });
 
-    expect(() => buildAIApproveCommandCandidate({
+    expect(buildAIApproveCommandCandidate({
       ...baseInput,
       riskGate: { decision_id: 'tpv1_missing_lots', mode: 'approve', symbol: 'XAUUSD' }
-    })).toThrow('riskGate.allowed_lots');
+    })).toMatchObject({ lots: 0, risk_gate: { decision_id: 'tpv1_missing_lots' } });
   });
 });

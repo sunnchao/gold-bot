@@ -355,9 +355,9 @@ describe('app-server scaffold', () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({
       status: 'OK',
-      version: '2.9.4',
-      build: 14,
-      changelog: 'server-authoritative AI lots; reject missing/below broker minimum lots; safe TP split fallback to single TP2'
+      version: '2.9.5',
+      build: 15,
+      changelog: 'EA接管策略手数；修复多止盈拆单，手数按步进下取整且不放大总手数。'
     });
   });
 
@@ -384,8 +384,8 @@ describe('app-server scaffold', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({
-      latest_version: '2.9.4',
-      latest_build: 14,
+      latest_version: '2.9.5',
+      latest_build: 15,
       force_update: false
     });
   });

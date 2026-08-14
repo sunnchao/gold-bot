@@ -5,15 +5,15 @@
 //| v2.5: 服务器重启自动恢复连接                                        |
 //+------------------------------------------------------------------+
 #property copyright "Gold Bolt"
-#property version   "2.9"
+#property version   "2.9.5"
 #property strict
 
 // 引入交易库
 #include <Trade/Trade.mqh>
 
 // ============ 版本信息 ============
-#define EA_VERSION  "2.9.3"
-#define EA_BUILD    13
+#define EA_VERSION  "2.9.5"
+#define EA_BUILD    15
 
 CTrade trade;
 
@@ -36,6 +36,7 @@ input double   MaxFloatLoss    = 3.0;      // 最大浮亏 %
 input bool     UseFixedLots    = true;     // 优先固定手数
 input double   FixedLots       = 0.10;     // 固定手数（UseFixedLots=true 时生效；SymbolLotsMap 未命中时回退）
 input string   SymbolLotsMap   = "";       // 按品种手数：XAUUSD:0.10,US100:0.05（空=全部用 FixedLots）
+input string   StrategyLotsMap = "";       // 按策略手数：ai_signal:0.01,pullback:0.10（空=不覆盖）
 
 //+------------------------------------------------------------------+
 //| 策略启用配置（EA 端控制）                                           |
@@ -110,6 +111,9 @@ bool     spreadSymbolsReady = false;  // 原油品种是否可用
 string   g_lotMapSymbols[];           // SymbolLotsMap 解析后的品种 key
 double   g_lotMapValues[];            // SymbolLotsMap 解析后的手数
 int      g_lotMapCount = 0;
+string   g_strategyLotMapNames[];     // StrategyLotsMap 解析后的策略 key
+double   g_strategyLotMapValues[];    // StrategyLotsMap 解析后的手数
+int      g_strategyLotMapCount = 0;
 string   g_symbols[];                 // 解析后的品种列表（基础名，不含后缀）
 int      g_symbolCount = 0;
 string   g_ai_symbols[];              // AI 分析品种列表
@@ -446,6 +450,122 @@ string FormatSymbolLotsMap()
    {
       if(i > 0) out = out + ", ";
       out = out + g_lotMapSymbols[i] + ":" + DoubleToString(g_lotMapValues[i], 2);
+   }
+   return out;
+}
+
+string NormalizeStrategyName(string strategy)
+{
+   StringTrimLeft(strategy);
+   StringTrimRight(strategy);
+   StringToLower(strategy);
+   return strategy;
+}
+
+bool IsKnownStrategyName(string strategy)
+{
+   strategy = NormalizeStrategyName(strategy);
+   if(strategy == "pullback") return true;
+   if(strategy == "breakout_retest") return true;
+   if(strategy == "divergence") return true;
+   if(strategy == "breakout_pyramid") return true;
+   if(strategy == "counter_pullback") return true;
+   if(strategy == "range") return true;
+   if(strategy == "momentum_scalp") return true;
+   if(strategy == "ai_signal") return true;
+   if(strategy == "scale_in") return true;
+   return false;
+}
+
+// 解析 StrategyLotsMap: "ai_signal:0.01,pullback:0.10"
+void ParseStrategyLotsMap(string map)
+{
+   g_strategyLotMapCount = 0;
+   ArrayResize(g_strategyLotMapNames, 0);
+   ArrayResize(g_strategyLotMapValues, 0);
+
+   string remaining = map;
+   StringTrimLeft(remaining);
+   StringTrimRight(remaining);
+   if(StringLen(remaining) == 0)
+      return;
+
+   while(StringLen(remaining) > 0)
+   {
+      int pos = StringFind(remaining, ",");
+      string token;
+      if(pos < 0)
+      {
+         token = remaining;
+         remaining = "";
+      }
+      else
+      {
+         token = StringSubstr(remaining, 0, pos);
+         remaining = StringSubstr(remaining, pos + 1);
+      }
+
+      StringTrimLeft(token);
+      StringTrimRight(token);
+      if(StringLen(token) == 0)
+         continue;
+
+      int colon = StringFind(token, ":");
+      if(colon <= 0)
+      {
+         Print("⚠️ StrategyLotsMap 无效项（需 STRATEGY:LOTS）: ", token);
+         continue;
+      }
+
+      string strategy = StringSubstr(token, 0, colon);
+      string lotsStr = StringSubstr(token, colon + 1);
+      strategy = NormalizeStrategyName(strategy);
+      StringTrimLeft(lotsStr);
+      StringTrimRight(lotsStr);
+
+      double lots = StringToDouble(lotsStr);
+      if(StringLen(strategy) == 0 || lots <= 0.0 || !IsKnownStrategyName(strategy))
+      {
+         Print("⚠️ StrategyLotsMap 无效项: ", token);
+         continue;
+      }
+
+      ArrayResize(g_strategyLotMapNames, g_strategyLotMapCount + 1);
+      ArrayResize(g_strategyLotMapValues, g_strategyLotMapCount + 1);
+      g_strategyLotMapNames[g_strategyLotMapCount] = strategy;
+      g_strategyLotMapValues[g_strategyLotMapCount] = lots;
+      g_strategyLotMapCount++;
+   }
+}
+
+double GetFixedLotsForStrategy(string strategy)
+{
+   if(g_strategyLotMapCount <= 0)
+      return 0.0;
+
+   string key = NormalizeStrategyName(strategy);
+   if(StringLen(key) == 0)
+      return 0.0;
+
+   for(int i = 0; i < g_strategyLotMapCount; i++)
+   {
+      if(g_strategyLotMapNames[i] == key)
+         return g_strategyLotMapValues[i];
+   }
+
+   return 0.0;
+}
+
+string FormatStrategyLotsMap()
+{
+   if(g_strategyLotMapCount <= 0)
+      return "(空，不覆盖策略手数)";
+
+   string out = "";
+   for(int i = 0; i < g_strategyLotMapCount; i++)
+   {
+      if(i > 0) out = out + ", ";
+      out = out + g_strategyLotMapNames[i] + ":" + DoubleToString(g_strategyLotMapValues[i], 2);
    }
    return out;
 }
@@ -799,6 +919,7 @@ int OnInit()
    ParseSymbols(Symbols);
    ParseAISymbols();
    ParseSymbolLotsMap(SymbolLotsMap);
+   ParseStrategyLotsMap(StrategyLotsMap);
 
    if(g_symbolCount == 0)
    {
@@ -831,6 +952,7 @@ int OnInit()
          " | 日亏损", MaxDailyLoss, "% | 浮亏", MaxFloatLoss, "%");
    Print("品种手数映射：", FormatSymbolLotsMap(),
          " | 主品种 lots=", DoubleToString(GetFixedLotsForSymbol(g_symbols[0], FixedLots), 2));
+   Print("策略手数映射：", FormatStrategyLotsMap());
    Print("动量剥头皮：",
          (EnableMomentumScalp ? "启用" : "禁用"),
          " | ",
@@ -1931,20 +2053,50 @@ void ExecuteCloseAll(string cmd, string cmd_id)
 // 拆分手数：60% 给 TP1（近目标，先落袋），40% 给 TP2（远目标，剩余）
 bool SplitLotsForMultiTP_MT5(double totalLots, double &lotsTP1, double &lotsTP2, string brokerSymbol)
 {
+   lotsTP1 = 0;
+   lotsTP2 = 0;
+
    if(totalLots <= 0)
+      return false;
+
+   double minLots  = SymbolInfoDouble(brokerSymbol, SYMBOL_VOLUME_MIN);
+   double stepLots = SymbolInfoDouble(brokerSymbol, SYMBOL_VOLUME_STEP);
+   if(stepLots <= 0) stepLots = 0.01;
+   if(minLots <= 0) minLots = stepLots;
+
+   int digits = GetVolumeDigits(brokerSymbol);
+   double tolerance = MathMax(0.0000001, stepLots * 0.0001);
+   double normalizedTotal = NormalizeDouble(MathFloor(totalLots / stepLots) * stepLots, digits);
+   if(normalizedTotal > totalLots + tolerance)
+      return false;
+   if(normalizedTotal + tolerance < 2.0 * minLots)
+      return false;
+
+   lotsTP1 = NormalizeDouble(MathFloor((normalizedTotal * 0.6 + tolerance) / stepLots) * stepLots, digits);
+   lotsTP2 = NormalizeDouble(MathFloor((normalizedTotal * 0.4 + tolerance) / stepLots) * stepLots, digits);
+
+   double remaining = normalizedTotal - lotsTP1 - lotsTP2;
+   int remainingSteps = (int)MathFloor((remaining + tolerance) / stepLots);
+   if(remainingSteps > 0)
+   {
+      lotsTP1 = NormalizeDouble(lotsTP1 + remainingSteps * stepLots, digits);
+      remaining = normalizedTotal - lotsTP1 - lotsTP2;
+   }
+
+   if(lotsTP1 + tolerance < minLots || lotsTP2 + tolerance < minLots)
    {
       lotsTP1 = 0;
       lotsTP2 = 0;
       return false;
    }
-   lotsTP1 = NormalizeVolume(brokerSymbol, totalLots * 0.6);  // TP1 = 60% (近目标，更大概率触发)
-   if(lotsTP1 <= 0) lotsTP1 = NormalizeVolume(brokerSymbol, 0.01);
-   lotsTP2 = NormalizeVolume(brokerSymbol, totalLots - lotsTP1);  // TP2 = 剩余 = 40%
-   if(lotsTP1 + lotsTP2 > totalLots + 0.0001)
+
+   if(lotsTP1 + lotsTP2 > normalizedTotal + tolerance || lotsTP1 + lotsTP2 > totalLots + tolerance)
    {
-      lotsTP1 = NormalizeVolume(brokerSymbol, totalLots * 0.6);
-      lotsTP2 = totalLots - lotsTP1;
+      lotsTP1 = 0;
+      lotsTP2 = 0;
+      return false;
    }
+
    return true;
 }
 
@@ -1954,7 +2106,12 @@ bool OpenSingleOrderWithTP_MT5(double lots, double price, double sl, double tp,
                                 ulong &outTicket, string brokerSymbol)
 {
    outTicket = 0;
+   double inputLots = lots;
    lots = NormalizeVolume(brokerSymbol, lots);
+   double stepLots = SymbolInfoDouble(brokerSymbol, SYMBOL_VOLUME_STEP);
+   if(stepLots <= 0) stepLots = 0.01;
+   double tolerance = MathMax(0.0000001, stepLots * 0.0001);
+   if(lots > inputLots + tolerance) return false;
    if(lots <= 0) return false;
 
    PrepareTrade(brokerSymbol, magic);
@@ -1988,7 +2145,7 @@ bool OpenSingleOrderWithTP_MT5(double lots, double price, double sl, double tp,
    return true;
 }
 
-// MT5 拆单开仓 (40% lots @ TP1, 60% lots @ TP2)
+// MT5 拆单开仓 (60% lots @ TP1, 40% lots @ TP2)
 void ExecuteOpenWithTPSplit_MT5(string cmd, string cmd_id, string type_str, double lots,
                                 double price, double sl, double tp1, double tp2,
                                 string strategy, int score, int magicForOrder,
@@ -1997,8 +2154,15 @@ void ExecuteOpenWithTPSplit_MT5(string cmd, string cmd_id, string type_str, doub
    double lotsTP1 = 0, lotsTP2 = 0;
    if(!SplitLotsForMultiTP_MT5(lots, lotsTP1, lotsTP2, brokerSymbol))
    {
-      Print("❌ 拆单失败: 手数无效 totalLots=", DoubleToString(lots, 2));
-      ReportResult(cmd_id, "ERROR", 0, "split_lots_invalid");
+      Print("⚠️ 拆单手数无效，退回单订单 TP2，totalLots=", DoubleToString(lots, 2));
+      ulong fallbackTicket = 0;
+      bool fallbackOK = OpenSingleOrderWithTP_MT5(lots, price, sl, tp2,
+                                                   commentBase, magicForOrder, posType,
+                                                   fallbackTicket, brokerSymbol);
+      if(fallbackOK)
+         ReportResult(cmd_id, "OK", (long)fallbackTicket, "single_tp2_after_split_invalid");
+      else
+         ReportResult(cmd_id, "ERROR", (long)fallbackTicket, "single_tp2_after_split_failed");
       return;
    }
 
@@ -2123,12 +2287,6 @@ void ExecuteSignal(string cmd, string cmd_id)
 
    double sl_distance = MathAbs(price - sl);
    double lots = CalcLotsForStrategy(strategy, baseSymbol, sl_distance);
-   // AI 信号使用服务端计算的手数（含减半逻辑）
-   if(strategy == "ai_signal")
-   {
-      double cmdLots = GetJsonDouble(cmd, "lots");
-      if(cmdLots > 0) lots = cmdLots;
-   }
    lots = NormalizeVolume(brokerSymbol, lots);
    string comment = "GB_" + strategy + "_S" + IntegerToString(score);
 
@@ -2381,16 +2539,11 @@ void ExecutePending(string cmd, string cmd_id)
       }
    }
 
-   // 计算手数：优先使用服务端下发的 cmd.lots（AI signal 固定0.01），
-   // 其次使用策略默认手数。挂单路径历史上忽略了 cmd.lots，导致 ai_signal 以
-   // FixedLots(0.10) 而非 0.01 成交（10倍超配）。
+   // 计算手数：挂单始终使用 EA 策略配置，不使用服务端 cmd.lots 覆盖。
    double currentPrice = (type_str == "BUY") ? SymbolInfoDouble(brokerSymbol, SYMBOL_ASK)
                                              : SymbolInfoDouble(brokerSymbol, SYMBOL_BID);
    double sl_distance = MathAbs(currentPrice - sl);
    double lots = CalcLotsForStrategy(strategy, baseSymbol, sl_distance);
-   double cmdLots = GetJsonDouble(cmd, "lots");
-   if(cmdLots > 0.0009)
-      lots = cmdLots;   // 服务端指定手数优先（含0.01固定值）
    lots = NormalizeVolume(brokerSymbol, lots);
 
    // 挂单同样需要通过本地风控检查
@@ -2428,49 +2581,51 @@ void ExecutePending(string cmd, string cmd_id)
    }
 
    PrepareTrade(brokerSymbol, magicForOrder);
+   bool pendingSplitFallback = false;
 
    // Multi-TP 拆单: 挂单模式同样支持（两个挂单，同入场价不同 TP）
    if(tpSplit && tp2 > 0 && MathAbs(tp1 - tp2) > _Point)
    {
       double lotsTP1 = 0, lotsTP2 = 0;
-      if(!SplitLotsForMultiTP_MT5(lots, lotsTP1, lotsTP2, brokerSymbol))
+      bool splitLotsOK = SplitLotsForMultiTP_MT5(lots, lotsTP1, lotsTP2, brokerSymbol);
+      if(splitLotsOK)
       {
-         Print("❌ 拆单挂单失败: 手数无效 totalLots=", DoubleToString(lots, 2));
-         ReportResult(cmd_id, "ERROR", 0, "split_lots_invalid");
+         ulong ticketA = 0, ticketB = 0;
+         if(TradeOperationSucceeded(trade.OrderOpen(brokerSymbol, pendingType, lotsTP1, 0.0, entry,
+                                                    final_sl, final_tp1, timeType, expiration,
+                                                    comment + "_A")))
+            ticketA = (ulong)trade.ResultOrder();
+
+         if(TradeOperationSucceeded(trade.OrderOpen(brokerSymbol, pendingType, lotsTP2, 0.0, entry,
+                                                    final_sl, final_tp2, timeType, expiration,
+                                                    comment + "_B")))
+            ticketB = (ulong)trade.ResultOrder();
+
+         if(ticketA > 0 && ticketB > 0)
+         {
+            Print("✅ 拆单挂单成功: TP1=#", FormatULongValue(ticketA), " (", DoubleToString(lotsTP1, 2), "手) | ",
+                  "TP2=#", FormatULongValue(ticketB), " (", DoubleToString(lotsTP2, 2), "手)");
+            ReportResult(cmd_id, "OK", (long)ticketA,
+                         "split_pending;A=" + FormatULongValue(ticketA) + "_" + DoubleToString(lotsTP1, 2) +
+                         ";B=" + FormatULongValue(ticketB) + "_" + DoubleToString(lotsTP2, 2));
+         }
+         else if(ticketA > 0 || ticketB > 0)
+         {
+            Print("⚠️ 拆单挂单部分失败: A=", FormatULongValue(ticketA), " B=", FormatULongValue(ticketB));
+            ReportResult(cmd_id, "PARTIAL", (long)(ticketA > 0 ? ticketA : ticketB),
+                         "split_pending;A=" + FormatULongValue(ticketA) + ";B=" + FormatULongValue(ticketB));
+         }
+         else
+         {
+            Print("❌ 拆单挂单全部失败: Error#", GetTradeErrorCode());
+            ReportResult(cmd_id, "ERROR", 0, "split_all_failed");
+         }
          return;
       }
 
-      ulong ticketA = 0, ticketB = 0;
-      if(TradeOperationSucceeded(trade.OrderOpen(brokerSymbol, pendingType, lotsTP1, 0.0, entry,
-                                                 final_sl, final_tp1, timeType, expiration,
-                                                 comment + "_A")))
-         ticketA = (ulong)trade.ResultOrder();
-
-      if(TradeOperationSucceeded(trade.OrderOpen(brokerSymbol, pendingType, lotsTP2, 0.0, entry,
-                                                 final_sl, final_tp2, timeType, expiration,
-                                                 comment + "_B")))
-         ticketB = (ulong)trade.ResultOrder();
-
-      if(ticketA > 0 && ticketB > 0)
-      {
-         Print("✅ 拆单挂单成功: TP1=#", FormatULongValue(ticketA), " (", DoubleToString(lotsTP1, 2), "手) | ",
-               "TP2=#", FormatULongValue(ticketB), " (", DoubleToString(lotsTP2, 2), "手)");
-         ReportResult(cmd_id, "OK", (long)ticketA,
-                      "split_pending;A=" + FormatULongValue(ticketA) + "_" + DoubleToString(lotsTP1, 2) +
-                      ";B=" + FormatULongValue(ticketB) + "_" + DoubleToString(lotsTP2, 2));
-      }
-      else if(ticketA > 0 || ticketB > 0)
-      {
-         Print("⚠️ 拆单挂单部分失败: A=", FormatULongValue(ticketA), " B=", FormatULongValue(ticketB));
-         ReportResult(cmd_id, "PARTIAL", (long)(ticketA > 0 ? ticketA : ticketB),
-                      "split_pending;A=" + FormatULongValue(ticketA) + ";B=" + FormatULongValue(ticketB));
-      }
-      else
-      {
-         Print("❌ 拆单挂单全部失败: Error#", GetTradeErrorCode());
-         ReportResult(cmd_id, "ERROR", 0, "split_all_failed");
-      }
-      return;
+      Print("⚠️ 拆单挂单手数无效，退回单挂单 TP2，totalLots=", DoubleToString(lots, 2));
+      final_tp1 = final_tp2;
+      pendingSplitFallback = true;
    }
 
    bool sent = trade.OrderOpen(brokerSymbol, pendingType, lots, 0.0, entry,
@@ -2480,7 +2635,7 @@ void ExecutePending(string cmd, string cmd_id)
       ulong ticket = (ulong)trade.ResultOrder();
       Print("✅ 挂单成功：#", FormatULongValue(ticket), " ", type_str, " ", lots, "手 @ ", entry,
             " | Magic=", magicForOrder, " (", strategy, ")");
-      ReportResult(cmd_id, "OK", (long)ticket, "");
+      ReportResult(cmd_id, "OK", (long)ticket, pendingSplitFallback ? "single_tp2_after_split_invalid" : "");
    }
    else
    {
@@ -2858,6 +3013,10 @@ double CalcLotsForStrategy(string strategy, string symbol, double sl_distance)
    if(strategy == "momentum_scalp")
       return CalcLotsWithConfig(MomentumScalpUseFixedLots, MomentumScalpFixedLots,
                                 MomentumScalpRiskPercent, sl_distance, tradeSymbol, brokerSymbol, false);
+
+   double strategyLots = GetFixedLotsForStrategy(strategy);
+   if(strategyLots > 0.0)
+      return NormalizeVolume(brokerSymbol, strategyLots);
 
    return CalcLots(sl_distance, tradeSymbol, brokerSymbol);
 }
