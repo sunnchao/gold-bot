@@ -312,6 +312,46 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(userLayers[0].text).not.toContain('2335');
   });
 
+  it.each([
+    ['empty', ''],
+    ['whitespace-only', '   \n'],
+  ])('falls back to non-streaming when streaming returns %s content', async (_caseName, streamContent) => {
+    const invokeLayered = vi.fn().mockResolvedValue(
+      buySetupMarkdownResponse.replace('- Phase: consolidation', '- Phase: trending'),
+    );
+    const streamLayered = vi.fn().mockResolvedValueOnce({
+      content: streamContent,
+      cacheStats,
+    });
+    const client = {
+      streamLayered,
+      invokeLayered,
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = createService(client);
+
+    const result = await service.run(
+      payloadWithLastBarClose(4174),
+      'US100Cash',
+      undefined,
+      undefined,
+      { skipTradeAction: true },
+    );
+
+    expect(streamLayered).toHaveBeenCalledTimes(1);
+    expect(invokeLayered).toHaveBeenCalledTimes(1);
+    expect(invokeLayered).toHaveBeenCalledWith(
+      streamLayered.mock.calls[0][0],
+      streamLayered.mock.calls[0][1],
+    );
+    expect(result.technical.bias).toBe('bullish');
+    expect(result.technical.phase).toBe('trending');
+    expect(result.technical.confidence).toBeGreaterThan(0);
+    expect(result.arbitration.primary_contradiction).not.toBe('analysis_unavailable');
+    expect(result.arbitration.final_direction).toBe('buy');
+  });
+
   it('populates tradeAction from tool_use second-phase call', async () => {
     const streamLayered = vi.fn().mockResolvedValueOnce({
       content: buySetupMarkdownResponse,

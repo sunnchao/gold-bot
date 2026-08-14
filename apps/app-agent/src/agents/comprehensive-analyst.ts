@@ -1744,10 +1744,28 @@ export class ComprehensiveAnalystService {
       { text: buildRealtimeDataPrompt(payload, pendingSignal, symbol, profile, structureResult.harmonicVolatile, marketOnly), cacheable: false },
     ];
 
+    const invokeNonStreamingFallback = async (): Promise<string | null> => {
+      try {
+        const fallbackRaw = await this.client.invokeLayered(systemBlocks, userLayers);
+        if (fallbackRaw.trim().length === 0) {
+          logger.warn(
+            { symbol, model: this.client.getModel() },
+            'comprehensiveAnalysis: non-streaming fallback also returned empty content',
+          );
+        }
+        return fallbackRaw;
+      } catch (invokeErr) {
+        logger.error(
+          { symbol, err: invokeErr instanceof Error ? invokeErr.message : String(invokeErr) },
+          'comprehensiveAnalysis: invokeLayered failed',
+        );
+        return null;
+      }
+    };
+
     let raw: string;
     try {
       const result = await this.client.streamLayered(systemBlocks, userLayers);
-      raw = result.content;
       logger.info(
         {
           symbol,
@@ -1758,20 +1776,35 @@ export class ComprehensiveAnalystService {
         },
         'Prompt cache stats',
       );
+      if (result.content.trim().length > 0) {
+        raw = result.content;
+      } else {
+        logger.warn(
+          {
+            symbol,
+            strategy: this.client.getCacheStrategy().type,
+            model: this.client.getModel(),
+            ...result.cacheStats,
+            cacheHitRate: computeCacheHitRate(result.cacheStats),
+          },
+          'comprehensiveAnalysis: streaming returned empty content, retrying non-streaming',
+        );
+        const fallbackRaw = await invokeNonStreamingFallback();
+        if (fallbackRaw == null) {
+          return buildFallback(currentPrice);
+        }
+        raw = fallbackRaw;
+      }
     } catch (err) {
       logger.warn(
         { symbol, err: err instanceof Error ? err.message : String(err) },
         'comprehensiveAnalysis: streamInvoke failed, falling back to non-streaming',
       );
-      try {
-        raw = await this.client.invokeLayered(systemBlocks, userLayers);
-      } catch (invokeErr) {
-        logger.error(
-          { symbol, err: invokeErr instanceof Error ? invokeErr.message : String(invokeErr) },
-          'comprehensiveAnalysis: invokeLayered failed',
-        );
+      const fallbackRaw = await invokeNonStreamingFallback();
+      if (fallbackRaw == null) {
         return buildFallback(currentPrice);
       }
+      raw = fallbackRaw;
     }
 
     // Dual-format parsing: try Markdown first, fallback to JSON
