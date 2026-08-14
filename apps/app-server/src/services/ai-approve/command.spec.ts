@@ -12,7 +12,8 @@ describe('AI approve command builder', () => {
         decision_id: 'tpv1_market',
         mode: 'approve',
         symbol: 'XAUUSD',
-        status: 'accepted'
+        status: 'accepted',
+        allowed_lots: 0.03
       },
       tradePlan: {
         schema_version: 'trade_plan.v1',
@@ -59,7 +60,8 @@ describe('AI approve command builder', () => {
         decision_id: 'tpv1_market',
         mode: 'approve',
         symbol: 'XAUUSD',
-        status: 'accepted'
+        status: 'accepted',
+        allowed_lots: 0.03
       }
     });
   });
@@ -70,7 +72,7 @@ describe('AI approve command builder', () => {
       symbol: 'XAUUSD',
       nowIso: '2026-04-13T08:00:00Z',
       orderType: 'BUY_LIMIT',
-      riskGate: { decision_id: 'tpv1_buy_limit', mode: 'approve', symbol: 'XAUUSD' },
+      riskGate: { decision_id: 'tpv1_buy_limit', mode: 'approve', symbol: 'XAUUSD', allowed_lots: 0.02 },
       tradePlan: {
         decision_id: 'tpv1_buy_limit',
         mode: 'approve',
@@ -98,7 +100,7 @@ describe('AI approve command builder', () => {
       symbol: 'XAUUSD',
       nowIso: '2026-04-13T08:00:00Z',
       orderType: 'SELL_LIMIT',
-      riskGate: { decision_id: 'tpv1_sell_limit', mode: 'approve', symbol: 'XAUUSD' },
+      riskGate: { decision_id: 'tpv1_sell_limit', mode: 'approve', symbol: 'XAUUSD', allowed_lots: 0.03 },
       tradePlan: {
         decision_id: 'tpv1_sell_limit',
         mode: 'approve',
@@ -125,13 +127,13 @@ describe('AI approve command builder', () => {
     expect([buyLimit.order_type, sellLimit.order_type]).not.toContain('SELL_STOP');
   });
 
-  it('builds staged take profit payloads using TP2 as the primary legacy tp target', () => {
+  it('builds staged take profit payloads from validated executable targets', () => {
     const command = buildAIApproveCommandCandidate({
       accountId: '90011087',
       symbol: 'XAUUSD',
       nowIso: '2026-04-13T08:00:00Z',
       orderType: 'market',
-      riskGate: { decision_id: 'tpv1_tp2', mode: 'approve', symbol: 'XAUUSD' },
+      riskGate: { decision_id: 'tpv1_tp2', mode: 'approve', symbol: 'XAUUSD', allowed_lots: 0.01 },
       tradePlan: {
         decision_id: 'tpv1_tp2',
         mode: 'approve',
@@ -159,7 +161,7 @@ describe('AI approve command builder', () => {
       symbol: 'XAUUSD',
       nowIso: '2026-04-13T08:00:00Z',
       orderType: 'market',
-      riskGate: { decision_id: 'tpv1_tp_order', mode: 'approve', symbol: 'XAUUSD' },
+      riskGate: { decision_id: 'tpv1_tp_order', mode: 'approve', symbol: 'XAUUSD', allowed_lots: 0.01 },
       tradePlan: {
         decision_id: 'tpv1_tp_order',
         mode: 'approve',
@@ -187,7 +189,7 @@ describe('AI approve command builder', () => {
       symbol: 'EURUSD',
       nowIso: '2026-04-13T08:00:00Z',
       orderType: 'market',
-      riskGate: { decision_id: 'tpv1_eurusd_precision', mode: 'approve', symbol: 'EURUSD' },
+      riskGate: { decision_id: 'tpv1_eurusd_precision', mode: 'approve', symbol: 'EURUSD', allowed_lots: 0.01 },
       tradePlan: {
         decision_id: 'tpv1_eurusd_precision',
         mode: 'approve',
@@ -221,7 +223,7 @@ describe('AI approve command builder', () => {
       symbol: 'XAUUSD',
       nowIso: '2026-04-13T08:00:00Z',
       orderType: 'BUY_LIMIT',
-      riskGate: { decision_id: 'tpv1_adverse', mode: 'approve', symbol: 'XAUUSD' },
+      riskGate: { decision_id: 'tpv1_adverse', mode: 'approve', symbol: 'XAUUSD', allowed_lots: 0.04 },
       tradePlan: {
         decision_id: 'tpv1_adverse',
         mode: 'approve',
@@ -260,7 +262,7 @@ describe('AI approve command builder', () => {
       symbol: 'XAUUSD',
       nowIso: '2026-04-13T08:00:00Z',
       orderType: 'BUY_LIMIT',
-      riskGate: { decision_id: 'tpv1_adverse', mode: 'approve', symbol: 'XAUUSD' },
+      riskGate: { decision_id: 'tpv1_adverse', mode: 'approve', symbol: 'XAUUSD', allowed_lots: 0.04 },
       tradePlan: {
         decision_id: 'tpv1_adverse',
         mode: 'approve',
@@ -289,5 +291,59 @@ describe('AI approve command builder', () => {
       scale_in_add_on_type: 'adverse',
       scale_in_add_on_level: 2
     });
+  });
+
+  it('leaves command lots at zero while preserving riskGate.allowed_lots as audit metadata', () => {
+    const command = buildAIApproveCommandCandidate({
+      accountId: '90011087',
+      symbol: 'XAUUSD',
+      nowIso: '2026-04-13T08:00:00Z',
+      orderType: 'market',
+      riskGate: { decision_id: 'tpv1_lots', mode: 'approve', symbol: 'XAUUSD', allowed_lots: 0.07 },
+      tradePlan: {
+        decision_id: 'tpv1_lots',
+        mode: 'approve',
+        side: 'buy',
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        stop_loss: 3330,
+        take_profit: [3345],
+        max_lots: 0.01,
+        confidence: 76,
+        narrative: 'gate sized trade'
+      }
+    });
+
+    expect(command.lots).toBe(0);
+    expect(command.risk_gate).toMatchObject({ allowed_lots: 0.07 });
+  });
+
+  it('builds commands when riskGate.allowed_lots is zero or missing', () => {
+    const baseInput = {
+      accountId: '90011087',
+      symbol: 'XAUUSD',
+      nowIso: '2026-04-13T08:00:00Z',
+      orderType: 'market' as const,
+      tradePlan: {
+        decision_id: 'tpv1_invalid_lots',
+        mode: 'approve',
+        side: 'buy',
+        entry_zone: { min: 3335.5, max: 3335.7 },
+        stop_loss: 3330,
+        take_profit: [3345],
+        max_lots: 0.05,
+        confidence: 76,
+        narrative: 'invalid gate size'
+      }
+    };
+
+    expect(buildAIApproveCommandCandidate({
+      ...baseInput,
+      riskGate: { decision_id: 'tpv1_zero_lots', mode: 'approve', symbol: 'XAUUSD', allowed_lots: 0 }
+    })).toMatchObject({ lots: 0, risk_gate: { allowed_lots: 0 } });
+
+    expect(buildAIApproveCommandCandidate({
+      ...baseInput,
+      riskGate: { decision_id: 'tpv1_missing_lots', mode: 'approve', symbol: 'XAUUSD' }
+    })).toMatchObject({ lots: 0, risk_gate: { decision_id: 'tpv1_missing_lots' } });
   });
 });

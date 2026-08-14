@@ -1011,11 +1011,45 @@ function buildFallback(currentPrice: number): ComprehensiveAnalysisResult {
       reasoning: '综合分析失败，维持观望 (Comprehensive analysis failed, hold)',
       action: 'hold',
       united_front_analysis: '无一致性信号 (No aligned signal)',
+      dow_theory: {
+        primary_trend: 'neutral',
+        primary_phase: 'accumulation',
+        secondary_trend: 'neutral',
+        short_term_trend: 'neutral',
+        multi_tf_confirm: false,
+        rationale: '道氏理论不可用，无法确认趋势或阶段，建议观望 (Dow theory unavailable; observe)',
+      },
+      wave_theory: {
+        current_wave: 'unknown',
+        wave_direction: 'unclear',
+        wave_count: 'unavailable',
+        next_target: 'N/A',
+        confidence: 0,
+        rationale: '波浪理论不可用，无法确认浪型或目标，建议观望 (Wave theory unavailable; observe)',
+      },
+      chanlun_theory: {
+        trend: 'range',
+        bi_direction: 'none',
+        duan_direction: 'none',
+        zhongshu_state: 'none',
+        buy_sell_point: 'none',
+        confidence: 0,
+        rationale: '缠论结构不可用，无法确认买卖点，建议观望 (Chanlun theory unavailable; observe)',
+      },
       harmonic_theory: {
         pattern: 'none',
         direction: 'neutral',
         confidence: 0,
-        rationale: '谐波理论不可用 (Harmonic theory unavailable)',
+        rationale: '谐波理论不可用，无法确认形态与方向，建议观望 (Harmonic theory unavailable; observe)',
+      },
+      trade_recommendation: {
+        direction: 'hold',
+        entry_price: 0,
+        stop_loss: 0,
+        take_profit_1: 0,
+        risk_reward_ratio: 0,
+        position_size_lots: '0',
+        rationale: '分析结果不可用，暂无可靠交易结论，建议观望 (Analysis unavailable; hold)',
       },
     },
   };
@@ -1203,6 +1237,31 @@ function parseMarkdownResponse(raw: string, currentPrice: number, profile: Symbo
   // ── ARBITRATION ──
   const arbSection = sections.get('arbitration') || '';
   const arbFields = extractFields(arbSection);
+
+  const requiredTradeFields = [
+    'trade_direction',
+    'trade_entry_price',
+    'trade_stop_loss',
+    'trade_take_profit_1',
+    'trade_risk_reward_ratio',
+    'trade_position_size_lots',
+  ];
+  const missingTradeFields = requiredTradeFields.filter((field) => !arbFields.has(field));
+
+  if (missingTradeFields.length > 0) {
+    getLogger().warn(
+      {
+        symbol: profile.symbol,
+        rawLength: raw.length,
+        sectionCount: sections.size,
+        arbitrationLength: arbSection.length,
+        missingTradeFields,
+        availableFields: Array.from(arbFields.keys()).filter((key) => key.startsWith('trade_')),
+      },
+      'Incomplete ARBITRATION section detected, rejecting to trigger retry',
+    );
+    return null;
+  }
 
   const dowTheory: DowTheoryAnalysis = {
     primary_trend: getEnumField(arbFields, 'dow_primary_trend', ['bullish', 'bearish', 'neutral'] as const, 'neutral'),
@@ -1710,10 +1769,28 @@ export class ComprehensiveAnalystService {
       { text: buildRealtimeDataPrompt(payload, pendingSignal, symbol, profile, structureResult.harmonicVolatile, marketOnly), cacheable: false },
     ];
 
+    const invokeNonStreamingFallback = async (): Promise<string | null> => {
+      try {
+        const fallbackRaw = await this.client.invokeLayered(systemBlocks, userLayers);
+        if (fallbackRaw.trim().length === 0) {
+          logger.warn(
+            { symbol, model: this.client.getModel() },
+            'comprehensiveAnalysis: non-streaming fallback also returned empty content',
+          );
+        }
+        return fallbackRaw;
+      } catch (invokeErr) {
+        logger.error(
+          { symbol, err: invokeErr instanceof Error ? invokeErr.message : String(invokeErr) },
+          'comprehensiveAnalysis: invokeLayered failed',
+        );
+        return null;
+      }
+    };
+
     let raw: string;
     try {
       const result = await this.client.streamLayered(systemBlocks, userLayers);
-      raw = result.content;
       logger.info(
         {
           symbol,
@@ -1724,20 +1801,35 @@ export class ComprehensiveAnalystService {
         },
         'Prompt cache stats',
       );
+      if (result.content.trim().length > 0) {
+        raw = result.content;
+      } else {
+        logger.warn(
+          {
+            symbol,
+            strategy: this.client.getCacheStrategy().type,
+            model: this.client.getModel(),
+            ...result.cacheStats,
+            cacheHitRate: computeCacheHitRate(result.cacheStats),
+          },
+          'comprehensiveAnalysis: streaming returned empty content, retrying non-streaming',
+        );
+        const fallbackRaw = await invokeNonStreamingFallback();
+        if (fallbackRaw == null) {
+          return buildFallback(currentPrice);
+        }
+        raw = fallbackRaw;
+      }
     } catch (err) {
       logger.warn(
         { symbol, err: err instanceof Error ? err.message : String(err) },
         'comprehensiveAnalysis: streamInvoke failed, falling back to non-streaming',
       );
-      try {
-        raw = await this.client.invokeLayered(systemBlocks, userLayers);
-      } catch (invokeErr) {
-        logger.error(
-          { symbol, err: invokeErr instanceof Error ? invokeErr.message : String(invokeErr) },
-          'comprehensiveAnalysis: invokeLayered failed',
-        );
+      const fallbackRaw = await invokeNonStreamingFallback();
+      if (fallbackRaw == null) {
         return buildFallback(currentPrice);
       }
+      raw = fallbackRaw;
     }
 
     // Dual-format parsing: try Markdown first, fallback to JSON

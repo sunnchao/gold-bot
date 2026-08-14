@@ -1,5 +1,5 @@
 {
-  "version": "2.9.2",
-  "build": 12,
-  "changelog": "上报 EA 端 MaxSpread 配置：/heartbeat 与 /tick 增加 max_spread 字段，服务端 market_filters 与 riskgate 优先参考 EA 点差阈值"
+  "version": "2.9.5",
+  "build": 15,
+  "changelog": "EA接管策略手数；修复多止盈拆单，手数按步进下取整且不放大总手数。"
 }

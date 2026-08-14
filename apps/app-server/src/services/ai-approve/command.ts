@@ -1,6 +1,5 @@
 import type { CommandCandidate, EaRecord } from '@gold-bot/persistence';
 import {
-  calcAIApproveLots,
   pickAIApproveEntryPrice,
   resolveAIApproveExecutableTakeProfits,
   round2,
@@ -48,8 +47,7 @@ export function buildAIApproveCommandCandidate(input: AIApproveCommandInput): Co
     tp: takeProfits.legacyTakeProfit,
     tp1: takeProfits.tp1,
     tp2: takeProfits.tp2,
-    // lots<=0：不写入有效手数，EA 走 CalcLotsForStrategy（FixedLots / SymbolLotsMap）
-    lots: calcAIApproveLots(numberField(input.tradePlan, 'max_lots')),
+    lots: 0,
     order_type: input.orderType,
     expiration,
     score: confidence,

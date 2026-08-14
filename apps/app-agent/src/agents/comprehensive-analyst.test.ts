@@ -312,6 +312,46 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(userLayers[0].text).not.toContain('2335');
   });
 
+  it.each([
+    ['empty', ''],
+    ['whitespace-only', '   \n'],
+  ])('falls back to non-streaming when streaming returns %s content', async (_caseName, streamContent) => {
+    const invokeLayered = vi.fn().mockResolvedValue(
+      buySetupMarkdownResponse.replace('- Phase: consolidation', '- Phase: trending'),
+    );
+    const streamLayered = vi.fn().mockResolvedValueOnce({
+      content: streamContent,
+      cacheStats,
+    });
+    const client = {
+      streamLayered,
+      invokeLayered,
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = createService(client);
+
+    const result = await service.run(
+      payloadWithLastBarClose(4174),
+      'US100Cash',
+      undefined,
+      undefined,
+      { skipTradeAction: true },
+    );
+
+    expect(streamLayered).toHaveBeenCalledTimes(1);
+    expect(invokeLayered).toHaveBeenCalledTimes(1);
+    expect(invokeLayered).toHaveBeenCalledWith(
+      streamLayered.mock.calls[0][0],
+      streamLayered.mock.calls[0][1],
+    );
+    expect(result.technical.bias).toBe('bullish');
+    expect(result.technical.phase).toBe('trending');
+    expect(result.technical.confidence).toBeGreaterThan(0);
+    expect(result.arbitration.primary_contradiction).not.toBe('analysis_unavailable');
+    expect(result.arbitration.final_direction).toBe('buy');
+  });
+
   it('populates tradeAction from tool_use second-phase call', async () => {
     const streamLayered = vi.fn().mockResolvedValueOnce({
       content: buySetupMarkdownResponse,
@@ -688,6 +728,58 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     },
   };
 
+  it('should reject truncated ARBITRATION missing trade fields', async () => {
+    const truncatedMarkdownResponse = markdownResponse
+      .replace('- Harmonic Confidence: 0', '- Harmonic Confidence: 85')
+      .split('\n- Harmonic Rationale: none')[0];
+    const streamLayered = vi.fn()
+      .mockResolvedValueOnce({ content: truncatedMarkdownResponse, cacheStats })
+      .mockResolvedValueOnce({
+        content: '',
+        cacheStats,
+        toolUse: { id: 't1', name: 'submit_comprehensive_analysis', input: structuredAnalysisInput },
+      });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = createService(client);
+
+    const result = await service.run(
+      payloadWithLastBarClose(2335),
+      'XAUUSD',
+      undefined,
+      undefined,
+      { skipTradeAction: true },
+    );
+
+    expect(streamLayered).toHaveBeenCalledTimes(2);
+    expect(streamLayered.mock.calls[1][2]).toMatchObject({
+      toolChoice: { type: 'tool', name: 'submit_comprehensive_analysis' },
+    });
+    expect(loggerMock.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: 'XAUUSD',
+        rawLength: truncatedMarkdownResponse.length,
+        sectionCount: 6,
+        missingTradeFields: [
+          'trade_direction',
+          'trade_entry_price',
+          'trade_stop_loss',
+          'trade_take_profit_1',
+          'trade_risk_reward_ratio',
+          'trade_position_size_lots',
+        ],
+        availableFields: [],
+      }),
+      'Incomplete ARBITRATION section detected, rejecting to trigger retry',
+    );
+    expect(result.arbitration.confidence).toBe(45);
+    expect(result.arbitration.reasoning).toContain('市场整理');
+  });
+
   it('recovers via forced tool_use structured retry when both parse formats fail', async () => {
     const streamLayered = vi.fn()
       // First-phase analysis returns unparseable garbage (no markdown headers, no JSON)
@@ -741,5 +833,47 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(streamLayered).toHaveBeenCalledTimes(2);
     expect(result.technical.confidence).toBe(0);
     expect(result.arbitration.final_direction).toBe('hold');
+  });
+
+  it('preserves explicit neutral theory sections and a hold recommendation when output and retry are unavailable', async () => {
+    const streamLayered = vi.fn()
+      .mockResolvedValueOnce({ content: '## TECHNICAL\n- Bias: neutral', cacheStats })
+      .mockResolvedValueOnce({ content: '', cacheStats });
+    const client = {
+      streamLayered,
+      invokeLayered: vi.fn(),
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
+    } as unknown as LlmClientService;
+    const service = createService(client);
+
+    const result = await service.run(payloadWithLastBarClose(2335), 'XAUUSD');
+
+    expect(streamLayered).toHaveBeenCalledTimes(2);
+    expect(result.arbitration.dow_theory).toMatchObject({
+      primary_trend: 'neutral',
+      secondary_trend: 'neutral',
+      short_term_trend: 'neutral',
+      multi_tf_confirm: false,
+    });
+    expect(result.arbitration.wave_theory).toMatchObject({
+      wave_direction: 'unclear',
+      confidence: 0,
+    });
+    expect(result.arbitration.chanlun_theory).toMatchObject({
+      trend: 'range',
+      bi_direction: 'none',
+      duan_direction: 'none',
+      confidence: 0,
+    });
+    expect(result.arbitration.harmonic_theory).toMatchObject({
+      pattern: 'none',
+      direction: 'neutral',
+      confidence: 0,
+    });
+    expect(result.arbitration.trade_recommendation).toMatchObject({
+      direction: 'hold',
+      rationale: expect.stringContaining('观望'),
+    });
   });
 });

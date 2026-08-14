@@ -530,6 +530,7 @@ export function composeFinalSignal(state: AnalysisGraphStateType): AISignalResul
     dow_theory: arbitration?.dow_theory,
     wave_theory: arbitration?.wave_theory,
     chanlun_theory: arbitration?.chanlun_theory,
+    harmonic_theory: arbitration?.harmonic_theory,
     trade_recommendation: arbitration?.trade_recommendation,
     trade_plan: tradePlan,
     dual_trade_plan: dualTradePlan,

@@ -355,10 +355,9 @@ describe('app-server scaffold', () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({
       status: 'OK',
-      version: '2.9.2',
-      build: 12,
-      changelog:
-        '上报 EA 端 MaxSpread 配置：/heartbeat 与 /tick 增加 max_spread 字段，服务端 market_filters 与 riskgate 优先参考 EA 点差阈值'
+      version: '2.9.5',
+      build: 15,
+      changelog: 'EA接管策略手数；修复多止盈拆单，手数按步进下取整且不放大总手数。'
     });
   });
 
@@ -385,8 +384,8 @@ describe('app-server scaffold', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({
-      latest_version: '2.9.2',
-      latest_build: 12,
+      latest_version: '2.9.5',
+      latest_build: 15,
       force_update: false
     });
   });
@@ -3419,6 +3418,14 @@ describe('app-server scaffold', () => {
     const server = await createApiServer({ store, nowIso: () => nowIso });
 
     await store.saveRegistration({ account_id: '90011087', leverage: 500, ai_symbols: ['XAUUSD'] });
+    await store.saveHeartbeat({
+      account_id: '90011087',
+      balance: 10000,
+      equity: 10000,
+      free_margin: 9000,
+      market_open: true,
+      is_trade_allowed: true
+    });
     await store.saveTick({
       account_id: '90011087',
       symbol: 'XAUUSD',
@@ -3429,21 +3436,33 @@ describe('app-server scaffold', () => {
     });
     await seedAIApproveTrendBars(store);
 
+    const buyTradePlan = dualTradePlanSide('tpv1_dual_buy', 'buy', 3335.5, 3335.7);
+    const sellTradePlan = dualTradePlanSide('tpv1_dual_sell', 'sell', 3335.5, 3335.7);
     const response = await server.inject({
       method: 'POST',
       url: '/api/v2/ai_result/90011087/XAUUSD',
       headers: apiUserHeaders,
       body: {
+        trade_plan: buyTradePlan,
         dual_trade_plan: {
           is_dual_direction: true,
-          buy: dualTradePlanSide('tpv1_dual_buy', 'buy', 3335.5, 3335.7),
-          sell: dualTradePlanSide('tpv1_dual_sell', 'sell', 3335.5, 3335.7)
+          buy: buyTradePlan,
+          sell: sellTradePlan
         }
       }
     });
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body)).toEqual({ status: 'OK', received: true });
+    expect(JSON.parse(response.body)).toMatchObject({
+      status: 'OK',
+      received: true,
+      command_status: 'queued',
+      risk_gate: {
+        status: 'accepted',
+        allowed_lots: expect.any(Number)
+      }
+    });
+    expect(JSON.parse(response.body).risk_gate.allowed_lots).toBeGreaterThan(0);
     expect(await store.listCommands('90011087')).toEqual([
       expect.objectContaining({
         action: 'SIGNAL',
