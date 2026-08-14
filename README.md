@@ -213,9 +213,12 @@ GB_FEISHU_SECRET=your-feishu-secret
 GOLDBOT_API_URL=http://app:8880
 GOLDBOT_API_TOKEN=your-api-token
 REDIS_URL=redis://redis:6379
+# OpenAI Chat Completions 标准协议；实际部署端点 wochirou（Chirou）OpenAI 兼容网关
 LLM_PROVIDER=openai
+LLM_BASE_URL=https://api-eo.wochirou.com/v1
 LLM_API_KEY=sk-...
-LLM_MODEL=gpt-4o
+LLM_MODEL=deepseek-v4-pro
+LLM_FALLBACK_MODEL=kimi-k2.6
 ```
 
 ## Development Workflow

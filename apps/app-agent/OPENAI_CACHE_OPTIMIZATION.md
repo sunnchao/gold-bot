@@ -1,5 +1,9 @@
 # OpenAI Chat Completions API - Prompt Caching 深度优化
 
+> ## ⚠️ 协议状态（2026-08 更新）
+>
+> 本文档描述的 **OpenAI Chat Completions 自动前缀缓存**即当前 `llm-client.ts` 的唯一协议（`POST {LLM_BASE_URL}/chat/completions`，实际部署端点 `https://api-eo.wochirou.com/v1`，模型 `deepseek-v4-pro`）。Anthropic `cache_control` 显式标记已移除；流式请求通过 `stream_options: {include_usage: true}` 获取 usage 缓存统计。
+
 ## 核心机制
 
 OpenAI 从 **2024年10月** 开始在 Chat Completions API 中引入**自动 Prompt Caching**：

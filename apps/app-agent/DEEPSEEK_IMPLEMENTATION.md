@@ -1,5 +1,19 @@
 # LLM Token 缓存优化 - 最终实施方案
 
+> ## ⚠️ 协议状态（2026-08 更新）
+>
+> `llm-client.ts` 已统一切换为 **OpenAI Chat Completions 标准**：
+> - 端点：`POST {LLM_BASE_URL}/chat/completions`（不再使用 Anthropic `/messages`）
+> - 不再发送 `anthropic-version` 头，不再发送 `cache_control` 字段
+> - system 提示作为 `messages` 首条 `{role:'system'}` 消息；user 层按序排列
+> - 流式请求带 `stream_options: {include_usage: true}`；SSE 按 OpenAI 标准解析（`delta.content` / `data: [DONE]`）
+> - 缓存策略探测（`detectCacheStrategy`）保留用于日志/指标，但 `anthropic_explicit` 策略的请求体已退化为与 `auto_prefix` 相同的 OpenAI messages 形态
+> - Kimi/Moonshot 保留其官方 OpenAI 兼容 API 的 `prompt_cache_key` 扩展字段
+>
+> 实际部署端点（`.env`）：`LLM_BASE_URL=https://api-eo.wochirou.com/v1`（wochirou / Chirou OpenAI 兼容网关）、`LLM_MODEL=deepseek-v4-pro`、`LLM_FALLBACK_MODEL=kimi-k2.6`。
+>
+> 本文档以下 Anthropic 专属内容仅作历史记录，不再反映当前代码行为。
+
 ## ✅ 优化完成
 
 ### 核心改进
@@ -40,10 +54,12 @@ LLM_ENABLE_PROMPT_CACHING=false  # DeepSeek 不支持原生缓存
 
 ---
 
-### 2. Anthropic Claude（最佳缓存效果）
+### 2. Anthropic Claude（历史方案，已退化为 OpenAI 格式）
+
+> ⚠️ **当前实现**：Claude 模型也走 OpenAI Chat Completions 标准。`anthropic_explicit` 策略仍会被探测到（用于日志/指标），但请求体不再携带 `cache_control` 块，与 `auto_prefix` 相同（system 合并为单条 system 消息 + user 层消息）。
 
 ```bash
-# .env
+# .env（历史示例）
 LLM_PROVIDER=anthropic
 LLM_BASE_URL=https://api.anthropic.com/v1
 LLM_API_KEY=sk-ant-api03-xxx
@@ -51,31 +67,36 @@ LLM_MODEL=claude-sonnet-4-6
 LLM_ENABLE_PROMPT_CACHING=true  # 启用显式缓存控制
 ```
 
-**行为：**
+**历史行为（2026-08 前）：**
 - 使用 Anthropic Messages API (`/messages`)
 - 自动在 system 和半静态层添加 `cache_control` 标记
 - 记录详细的缓存统计（cacheRead, cacheCreation, hitRate）
 
-**成本节省：**
+**当前行为：**
+- 同一 OpenAI `/chat/completions` 端点，Claude 经 OpenAI 兼容网关（如 wochirou）访问
+- 依赖网关/提供方的自动前缀缓存；usage 字段（`prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens` 等）仍被提取用于命中率统计
+
+**成本节省（历史参考）：**
 - 首次请求：写入缓存（25% markup）
 - 后续请求（5分钟内）：90% 折扣
 - 平均节省：**75-80%**
 
 ---
 
-### 3. OpenAI（自动缓存）
+### 3. OpenAI（自动缓存，当前统一协议）
 
 ```bash
-# .env
+# .env（实际部署形态）
 LLM_PROVIDER=openai
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_API_KEY=sk-proj-xxx
-LLM_MODEL=gpt-4o
-LLM_ENABLE_PROMPT_CACHING=false  # OpenAI 自动缓存，不需要显式标记
+LLM_BASE_URL=https://api-eo.wochirou.com/v1
+LLM_API_KEY=sk-xxx
+LLM_MODEL=deepseek-v4-pro
+LLM_FALLBACK_MODEL=kimi-k2.6
+LLM_ENABLE_PROMPT_CACHING=false  # 自动缓存，不需要显式标记
 ```
 
 **行为：**
-- 使用标准 `/chat/completions` API
+- 使用标准 `/chat/completions` API（当前所有模型的唯一协议）
 - OpenAI 自动检测消息前缀并缓存
 - 无需显式 `cache_control` 标记
 
@@ -89,24 +110,26 @@ LLM_ENABLE_PROMPT_CACHING=false  # OpenAI 自动缓存，不需要显式标记
 
 ### `LLM_ENABLE_PROMPT_CACHING`
 
-这是**新增的配置项**，完全控制缓存行为：
+这是**缓存策略开关**，控制是否按模型名探测缓存策略：
 
 | 值 | 含义 | API 格式 | 适用提供商 |
 |----|------|---------|-----------|
-| `true` | 启用显式缓存控制 | Anthropic Messages API + cache_control | Anthropic Claude |
+| `true` | 启用按模型名的策略探测 | OpenAI Chat Completions API（统一） | claude→auto_prefix 退化、deepseek/gpt→auto_prefix、kimi→prompt_cache_key |
 | `false` | 标准 API 调用 | OpenAI Chat Completions API | DeepSeek, OpenAI, 智谱, 其他 |
 
-### 何时设置为 `true`
+> **注意（2026-08 起）**：无论何种策略，请求体一律为 OpenAI Chat Completions 标准（`messages` 数组，system 为首条 role 消息），不再发送 Anthropic `cache_control`。`anthropic_explicit` 探测结果仅用于日志/指标与向后兼容方法。
 
-✅ 使用 Anthropic 官方 API (`api.anthropic.com`)  
-✅ 想要最大化成本节省（75-80%）  
-✅ 接受 Anthropic 特有的 API 格式  
+### 何时设置为 `true`（历史参考）
 
-### 何时设置为 `false`
+✅ 使用 Anthropic 官方 API (`api.anthropic.com`) —— **已不再适用**  
+✅ 想要最大化成本节省（75-80%）—— **已不再适用**  
+✅ 接受 Anthropic 特有的 API 格式 —— **已不再适用**  
+
+### 何时设置为 `false`（当前默认）
 
 ✅ 使用 DeepSeek / 智谱 GLM / 其他国内模型  
 ✅ 使用 OpenAI（自动缓存更好）  
-✅ 使用 API 代理/网关（可能不支持 cache_control）  
+✅ 使用 API 代理/网关（wochirou 等 OpenAI 兼容网关）  
 ✅ 测试或调试阶段  
 
 ---
@@ -143,10 +166,12 @@ raw = await this.client.streamInvokeLayered(
 
 ---
 
-### 当 `LLM_ENABLE_PROMPT_CACHING=true` 时
+### 当 `LLM_ENABLE_PROMPT_CACHING=true` 时（历史参考）
+
+> ⚠️ 2026-08 起 `streamInvokeLayeredAnthropic()` 仅作向后兼容保留，内部已走同一 OpenAI Chat Completions 协议（`streamLayered`），不再发送 `cache_control`。
 
 ```typescript
-// 使用 Anthropic Messages API with cache_control
+// 历史：Anthropic Messages API with cache_control（2026-08 前）
 const result = await this.client.streamInvokeLayeredAnthropic(
   systemPrompt,
   [staticContextPrompt, realtimeDataPrompt]
@@ -161,7 +186,7 @@ logger.info({
 }, 'Prompt cache stats');
 ```
 
-**发送的 API 请求：**
+**历史请求格式（Anthropic，2026-08 前）：**
 ```json
 {
   "model": "claude-sonnet-4-6",
@@ -194,6 +219,22 @@ logger.info({
 }
 ```
 
+**当前请求格式（OpenAI Chat Completions 标准，2026-08 起）：**
+```json
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    { "role": "system", "content": "system blocks merged with \\n\\n" },
+    { "role": "user", "content": "wave/chanlun structures..." },
+    { "role": "user", "content": "realtime prices..." }
+  ],
+  "max_tokens": 8192,
+  "temperature": 0.1,
+  "stream": true,
+  "stream_options": { "include_usage": true }
+}
+```
+
 ---
 
 ## 🚀 实施步骤（DeepSeek 用户）
@@ -201,14 +242,15 @@ logger.info({
 ### Step 1: 更新配置
 
 ```bash
-# 编辑 .env 文件
+# 编辑 .env 文件（实际部署形态）
 vim .env
 
 # 确保以下配置正确
-LLM_PROVIDER=deepseek
-LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api-eo.wochirou.com/v1
 LLM_API_KEY=sk-your-actual-key
-LLM_MODEL=deepseek-chat
+LLM_MODEL=deepseek-v4-pro
+LLM_FALLBACK_MODEL=kimi-k2.6
 LLM_ENABLE_PROMPT_CACHING=false
 ```
 
@@ -261,10 +303,12 @@ pm2 restart gold-analysis-nj
 docker logs gold-analysis-nj | grep "cache stats"
 ```
 
-### 迁移到 Anthropic（如果需要最优成本）
+### 迁移到 Anthropic（历史选项，2026-08 起不再需要）
+
+> ⚠️ Claude 模型现在也经 OpenAI 兼容网关走 `/chat/completions`，无需单独配置 Anthropic 端点。
 
 ```bash
-# .env
+# .env（历史示例）
 LLM_PROVIDER=anthropic
 LLM_BASE_URL=https://api.anthropic.com/v1
 LLM_API_KEY=sk-ant-api03-xxx

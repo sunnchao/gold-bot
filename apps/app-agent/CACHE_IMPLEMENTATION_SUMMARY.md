@@ -1,22 +1,30 @@
 # Token 缓存优化实施总结
 
+> ## ⚠️ 协议状态（2026-08 更新）
+>
+> `llm-client.ts` 已统一切换为 **OpenAI Chat Completions 标准**（`POST {LLM_BASE_URL}/chat/completions`）：
+> - 移除 Anthropic Messages API（`/messages` 端点、`anthropic-version` 头、`cache_control` 块、`x-api-key`）
+> - system 提示作为 `messages` 首条 `{role:'system'}` 消息；流式请求带 `stream_options: {include_usage: true}`；SSE 按 OpenAI 标准解析
+> - 缓存策略按模型名探测（claude→auto_prefix 退化、deepseek/gpt→auto_prefix、kimi→prompt_cache_key），探测结果用于日志/指标
+> - 实际部署端点：`LLM_BASE_URL=https://api-eo.wochirou.com/v1`（wochirou OpenAI 兼容网关）、`LLM_MODEL=deepseek-v4-pro`、`LLM_FALLBACK_MODEL=kimi-k2.6`
+>
+> 本文档中 Anthropic 专属内容仅作历史记录。
+
 ## ✅ 已完成的优化
 
 ### 1. 核心代码实现
 
 #### `src/tools/llm-client.ts`
-- ✅ 保留原有 `streamInvokeLayered()` - 兼容 OpenAI 自动缓存
-- ✅ 新增 `streamInvokeLayeredAnthropic()` - Anthropic 显式缓存控制
-- ✅ 自动提取缓存统计（cacheRead, cacheCreation, hitRate）
+- ✅ `streamLayered()` / `invokeLayered()` - 统一 OpenAI Chat Completions 协议（含 tools / tool_choice / SSE / usage 解析）
+- ✅ `streamInvokeLayeredAnthropic()` - 历史兼容包装（内部走 OpenAI 协议，不再发 cache_control）
+- ✅ 自动提取缓存统计（readTokens, creationTokens, hitTokens, hitRate）
 
 #### `src/config/app-config.service.ts`
-- ✅ 新增 `isAnthropic` 和 `isOpenAI` 检测标志
-- ✅ 支持基于 URL 的自动提供商识别
+- ✅ `LLM_ENABLE_PROMPT_CACHING` 开关 + 模型名驱动的策略探测（`detectCacheStrategy`）
 
 #### `src/agents/comprehensive-analyst.ts`
-- ✅ 运行时提供商检测
-- ✅ 自动路由到对应缓存策略
-- ✅ 缓存性能日志输出
+- ✅ 运行时缓存策略日志输出
+- ✅ 自动路由到对应缓存策略（auto_prefix / prompt_cache_key / none）
 
 ### 2. 文档和工具
 
@@ -26,29 +34,30 @@
 
 ## 🎯 使用方法
 
-### 配置 Anthropic（推荐）
+### 配置 OpenAI 兼容网关（当前部署，推荐）
 
 ```bash
 # .env
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api-eo.wochirou.com/v1
+LLM_API_KEY=sk-xxx
+LLM_MODEL=deepseek-v4-pro
+LLM_FALLBACK_MODEL=kimi-k2.6
+```
+
+**预期效果：40-50% 成本节省（自动前缀缓存）**
+
+### 配置 Anthropic（历史方案，2026-08 前）
+
+```bash
+# .env（历史示例）
 LLM_PROVIDER=anthropic
 LLM_BASE_URL=https://api.anthropic.com/v1
 LLM_API_KEY=sk-ant-api03-xxx
 LLM_MODEL=claude-sonnet-4-6
 ```
 
-**预期效果：75-80% 成本节省**
-
-### 配置 OpenAI（备选）
-
-```bash
-# .env
-LLM_PROVIDER=openai
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_API_KEY=sk-proj-xxx
-LLM_MODEL=gpt-4o
-```
-
-**预期效果：40-50% 成本节省**
+**预期效果：75-80% 成本节省（历史）**
 
 ## 📊 缓存策略详解
 
@@ -71,7 +80,24 @@ const realtimeDataPrompt = buildRealtimeDataPrompt(payload, ...);
 // 缓存策略: 不缓存，每次请求都是新数据
 ```
 
-### Anthropic 缓存标记
+### 当前请求格式（OpenAI Chat Completions 标准，2026-08 起）
+
+```json
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    { "role": "system", "content": "merged system blocks" },
+    { "role": "user", "content": "static context" },
+    { "role": "user", "content": "realtime data" }
+  ],
+  "max_tokens": 8192,
+  "temperature": 0.1,
+  "stream": true,
+  "stream_options": { "include_usage": true }
+}
+```
+
+### 历史：Anthropic 缓存标记（2026-08 前）
 
 ```json
 {
@@ -112,21 +138,21 @@ cd /Users/sunchaowang/Downloads/Development/gold-analysis-nj
 docker logs gold-analysis-nj 2>&1 | grep "cache"
 ```
 
-**预期输出（Anthropic）：**
+**预期输出（当前 OpenAI 格式）：**
 ```
-[INFO] streamInvokeLayeredAnthropic: complete with cache stats
+[INFO] Phase 2 prompt cache stats
   elapsed: 3245
   length: 2847
-  cacheReadTokens: 4523        # 从缓存读取
-  cacheCreationTokens: 0       # 未写入新缓存
-  cacheHitRate: "100.0%"       # 完全命中
+  readTokens: 4523        # 从缓存读取
+  creationTokens: 0       # 未写入新缓存
+  cacheHitRate: "100.0%"  # 完全命中
 ```
 
-## 💰 成本对比
+## 💰 成本对比（历史参考）
 
 假设每天 **288 次分析**（每 5 分钟一次）
 
-| 场景 | 无缓存 | Anthropic 优化 | OpenAI 优化 |
+| 场景 | 无缓存 | Anthropic 优化（历史） | OpenAI 优化（当前形态） |
 |------|--------|---------------|------------|
 | 单次输入 token | 6000 | 6000 | 6000 |
 | 有效计费 token | 6000 | ~1500 (75%↓) | ~3600 (40%↓) |
@@ -137,16 +163,20 @@ docker logs gold-analysis-nj 2>&1 | grep "cache"
 
 ## 🔍 监控指标
 
-### 关键日志字段
+### 关键日志字段（当前实现）
 
 ```json
 {
   "level": "info",
-  "msg": "Prompt cache stats",
+  "msg": "Phase 2 prompt cache stats",
   "symbol": "XAUUSD",
-  "cacheRead": 4523,         // 👈 从缓存读取的 tokens
-  "cacheCreation": 1477,     // 👈 写入缓存的 tokens
-  "hitRate": "75.4%"         // 👈 命中率
+  "strategy": "auto_prefix",
+  "model": "deepseek-v4-pro",
+  "readTokens": 4523,         // 👈 从缓存读取的 tokens
+  "creationTokens": 1477,     // 👈 写入缓存的 tokens
+  "hitTokens": 3412,          // 👈 命中的缓存 tokens
+  "inputTokens": 6000,        // 👈 总输入 tokens（命中率分母）
+  "cacheHitRate": "75.4%"     // 👈 命中率 = readTokens / inputTokens
 }
 ```
 
@@ -159,11 +189,12 @@ docker logs gold-analysis-nj 2>&1 | grep "cache"
 ### 常见问题
 
 **Q: hitRate 始终为 0%？**
-- 检查 `LLM_BASE_URL` 是否正确（必须是官方 API）
-- 确认模型支持缓存（Claude 3+, GPT-4o）
+- 检查 `LLM_BASE_URL` 是否正确（实际部署：`https://api-eo.wochirou.com/v1`）
+- 流式请求必须带 `stream_options: {include_usage: true}`，否则流末 chunk 无 usage 可读
+- 确认网关返回缓存字段（DeepSeek 直连：`prompt_cache_hit_tokens`；OpenAI 格式网关：`prompt_tokens_details.cached_tokens`）
 - 查看请求间隔（超过 5 分钟缓存过期）
 
-**Q: cacheCreation 每次都很高？**
+**Q: creationTokens 每次都很高？**
 - 可能是 Layer 2 内容频繁变化
 - 检查 K线数据更新频率
 - 考虑调整 `PREFERRED_BAR_TIMEFRAMES` 使用更长周期
@@ -204,8 +235,8 @@ if (cached) return cached;
 
 ## 📚 参考资料
 
-- [Anthropic Prompt Caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching)
 - [OpenAI Prompt Caching](https://platform.openai.com/docs/guides/prompt-caching)
+- [DeepSeek API 文档（自动上下文缓存）](https://api-docs.deepseek.com/guides/kv_cache)
 - [项目完整方案](./PROMPT_CACHING_OPTIMIZATION.md)
 - [使用指南](./CACHE_USAGE_GUIDE.md)
 

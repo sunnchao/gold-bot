@@ -17,7 +17,7 @@ vi.mock('../utils/logger.js', () => ({
 describe('LLMClient', () => {
   const defaultConfig = {
     provider: 'custom',
-    baseUrl: 'https://gateway.example/v1',
+    baseUrl: 'https://gateway.example/v1/',
     apiKey: 'sk-test-key',
     model: 'gpt-4o',
     fallbackModel: 'gpt-4o-mini',
@@ -34,22 +34,30 @@ describe('LLMClient', () => {
     vi.clearAllMocks();
   });
 
-  function mockAnthropicJson(content = 'Hello world') {
+  function mockOpenAiJson(content: string | null = 'Hello world') {
     fetchMock.mockResolvedValue({
       ok: true,
-      json: () =>
-        Promise.resolve({
-          content: [{ type: 'text', text: content }],
-        }),
+      json: () => Promise.resolve({ choices: [{ message: { content } }] }),
     });
   }
 
-  function mockAnthropicStream(events: string[]) {
+  function mockOpenAiResponse(body: Record<string, unknown>) {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(body),
+    });
+  }
+
+  function sse(data: unknown): string {
+    return `data: ${JSON.stringify(data)}\n\n`;
+  }
+
+  function mockOpenAiStream(parts: string[]) {
     const encoder = new TextEncoder();
     const mockStream = new ReadableStream({
       start(controller) {
-        for (const event of events) {
-          controller.enqueue(encoder.encode(event));
+        for (const part of parts) {
+          controller.enqueue(encoder.encode(part));
         }
         controller.close();
       },
@@ -65,31 +73,42 @@ describe('LLMClient', () => {
     return JSON.parse(fetchMock.mock.calls[index][1].body);
   }
 
-  it('sends non-streaming requests to the Anthropic Messages endpoint', async () => {
-    mockAnthropicJson('Hello world');
+  it('uses the OpenAI Chat Completions endpoint, headers, and messages', async () => {
+    mockOpenAiJson();
 
     const client = new LLMClient(defaultConfig);
     const result = await client.invoke('Say hello', 'You are terse');
 
     expect(result).toBe('Hello world');
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe('https://gateway.example/v1/messages');
-    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({
+    expect(fetchMock.mock.calls[0][0]).toBe('https://gateway.example/v1/chat/completions');
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
       'Content-Type': 'application/json',
       Authorization: 'Bearer sk-test-key',
-      'anthropic-version': '2023-06-01',
     });
-    expect(bodyFromFetchCall()).toMatchObject({
+    expect(bodyFromFetchCall()).toEqual({
       model: 'gpt-4o',
       max_tokens: 8192,
+      messages: [
+        { role: 'system', content: 'You are terse' },
+        { role: 'user', content: 'Say hello' },
+      ],
       temperature: 0.1,
-      system: 'You are terse',
-      messages: [{ role: 'user', content: 'Say hello' }],
     });
-    expect(bodyFromFetchCall().stream).toBeUndefined();
   });
 
-  it('detects cache strategy from model name rather than provider name', () => {
+  it('omits an empty system prompt and returns empty text for null or missing content', async () => {
+    mockOpenAiJson(null);
+    const client = new LLMClient(defaultConfig);
+
+    await expect(client.invoke('first', '')).resolves.toBe('');
+    expect(bodyFromFetchCall().messages).toEqual([{ role: 'user', content: 'first' }]);
+
+    mockOpenAiResponse({ choices: [{ message: {} }] });
+    await expect(client.invoke('second')).resolves.toBe('');
+  });
+
+  it('detects cache strategy from model name and preserves compatibility methods', () => {
     const claudeViaGateway = new LLMClient({
       ...defaultConfig,
       provider: 'wochirou',
@@ -100,18 +119,9 @@ describe('LLMClient', () => {
       provider: 'anthropic',
       model: 'deepseek-v4-pro',
     });
-    const kimi = new LLMClient({
-      ...defaultConfig,
-      model: 'moonshot-v1-128k',
-    });
-    const glm = new LLMClient({
-      ...defaultConfig,
-      model: 'glm-4.5',
-    });
-    const minimax = new LLMClient({
-      ...defaultConfig,
-      model: 'abab6.5s-chat',
-    });
+    const kimi = new LLMClient({ ...defaultConfig, model: 'moonshot-v1-128k' });
+    const glm = new LLMClient({ ...defaultConfig, model: 'glm-4.5' });
+    const minimax = new LLMClient({ ...defaultConfig, model: 'abab6.5s-chat' });
     const disabled = new LLMClient({
       ...defaultConfig,
       model: 'claude-sonnet-4',
@@ -119,6 +129,9 @@ describe('LLMClient', () => {
     });
 
     expect(claudeViaGateway.getCacheStrategy()).toEqual({ type: 'anthropic_explicit', ttl: '1h' });
+    expect(claudeViaGateway.isPromptCachingSupported()).toBe(true);
+    expect(claudeViaGateway.isAnthropicPromptCachingEnabled()).toBe(true);
+    expect(claudeViaGateway.isOpenAIPromptCachingEnabled()).toBe(false);
     expect(deepseekViaAnthropicProvider.getCacheStrategy()).toEqual({ type: 'auto_prefix' });
     expect(kimi.getCacheStrategy()).toEqual({ type: 'prompt_cache_key' });
     expect(glm.getCacheStrategy()).toEqual({ type: 'auto_prefix_unstable' });
@@ -126,16 +139,21 @@ describe('LLMClient', () => {
     expect(disabled.getCacheStrategy()).toEqual({ type: 'none' });
   });
 
-  it('builds Claude layered requests with 1h cache_control on cacheable layers only', async () => {
-    mockAnthropicStream([
-      'event: content_block_delta\ndata: {"delta":{"text":"ok"}}\n\n',
-      'event: message_delta\ndata: {"usage":{"cache_read_input_tokens":200,"cache_creation_input_tokens":100}}\n\n',
+  it('builds layered messages without cache_control and includes streaming usage', async () => {
+    mockOpenAiStream([
+      sse({ choices: [{ delta: { content: 'ok' }, finish_reason: null }] }),
+      sse({
+        choices: [],
+        usage: {
+          input_tokens: 300,
+          cache_read_input_tokens: 200,
+          cache_creation_input_tokens: 100,
+        },
+      }),
+      'data: [DONE]\n\n',
     ]);
 
-    const client = new LLMClient({
-      ...defaultConfig,
-      model: 'claude-opus-4-8',
-    });
+    const client = new LLMClient({ ...defaultConfig, model: 'claude-opus-4-8' });
     const result = await client.streamLayered(
       [
         { text: 'common rules', cacheable: true },
@@ -154,179 +172,274 @@ describe('LLMClient', () => {
         creationTokens: 100,
         hitTokens: 0,
         missTokens: 0,
-        inputTokens: 0,
+        inputTokens: 300,
       },
     });
-
-    const body = bodyFromFetchCall();
-    expect(body.system).toEqual([
-      {
-        type: 'text',
-        text: 'common rules',
-        cache_control: { type: 'ephemeral', ttl: '1h' },
-      },
-      {
-        type: 'text',
-        text: 'symbol rules',
-        cache_control: { type: 'ephemeral', ttl: '1h' },
-      },
-    ]);
-    expect(body.messages).toEqual([
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: 'computed structures',
-            cache_control: { type: 'ephemeral', ttl: '1h' },
-          },
-        ],
-      },
-      {
-        role: 'user',
-        content: 'live market data',
-      },
-    ]);
-    expect(body.stream).toBe(true);
+    expect(bodyFromFetchCall()).toMatchObject({
+      messages: [
+        { role: 'system', content: 'common rules\n\nsymbol rules' },
+        { role: 'user', content: 'computed structures' },
+        { role: 'user', content: 'live market data' },
+      ],
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+    expect(JSON.stringify(bodyFromFetchCall())).not.toContain('cache_control');
+    expect(bodyFromFetchCall().prompt_cache_key).toBeUndefined();
   });
 
-  it('keeps automatic-prefix providers free of explicit cache fields while preserving layer order', async () => {
-    mockAnthropicJson('ok');
+  it('keeps automatic-prefix providers free of explicit cache fields', async () => {
+    mockOpenAiJson('ok');
 
-    const client = new LLMClient({
-      ...defaultConfig,
-      model: 'deepseek-v4-pro',
-    });
+    const client = new LLMClient({ ...defaultConfig, model: 'deepseek-v4-pro' });
     await client.invokeLayered(
-      [
-        { text: 'common rules', cacheable: true },
-        { text: 'symbol rules', cacheable: true },
-      ],
-      [
-        { text: 'computed structures', cacheable: true },
-        { text: 'live market data', cacheable: false },
-      ],
+      [{ text: 'system', cacheable: true }],
+      [{ text: 'user', cacheable: true }],
     );
 
-    const body = bodyFromFetchCall();
-    expect(body.system).toBe('common rules\n\nsymbol rules');
-    expect(body.messages).toEqual([
-      { role: 'user', content: 'computed structures' },
-      { role: 'user', content: 'live market data' },
-    ]);
-    expect(JSON.stringify(body)).not.toContain('cache_control');
-    expect(body.prompt_cache_key).toBeUndefined();
+    expect(JSON.stringify(bodyFromFetchCall())).not.toContain('cache_control');
+    expect(bodyFromFetchCall().prompt_cache_key).toBeUndefined();
   });
 
   it('adds prompt_cache_key only for Kimi/Moonshot strategy', async () => {
-    mockAnthropicJson('ok');
+    mockOpenAiJson('ok');
 
-    const client = new LLMClient({
-      ...defaultConfig,
-      model: 'kimi-k2',
-    });
-    await client.invokeLayered([{ text: 'system', cacheable: true }], [{ text: 'user', cacheable: true }]);
+    const client = new LLMClient({ ...defaultConfig, model: 'kimi-k2' });
+    await client.invokeLayered(
+      [{ text: 'system', cacheable: true }],
+      [{ text: 'user', cacheable: true }],
+    );
 
-    const body = bodyFromFetchCall();
-    expect(body.prompt_cache_key).toBe('gold-analysis');
-    expect(JSON.stringify(body)).not.toContain('cache_control');
+    expect(bodyFromFetchCall().prompt_cache_key).toBe('gold-analysis');
+    expect(JSON.stringify(bodyFromFetchCall())).not.toContain('cache_control');
   });
 
-  it('extracts DeepSeek, OpenAI, and Kimi cache stats from streaming usage chunks', async () => {
-    mockAnthropicStream([
-      'event: content_block_delta\ndata: {"delta":{"text":"cached"}}\n\n',
-      'event: message_delta\ndata: {"usage":{"prompt_cache_hit_tokens":300,"prompt_cache_miss_tokens":50,"prompt_tokens_details":{"cached_tokens":120},"cached_tokens":90}}\n\n',
-    ]);
+  it.each([
+    ['missing choice', undefined, 'auto'],
+    ['auto choice', { type: 'auto' as const }, 'auto'],
+    ['any choice', { type: 'any' as const }, 'required'],
+    [
+      'named choice',
+      { type: 'tool' as const, name: 'place_pending_order' },
+      { type: 'function', function: { name: 'place_pending_order' } },
+    ],
+  ])('maps tools and %s to OpenAI function calling', async (_label, toolChoice, expectedChoice) => {
+    mockOpenAiJson('ok');
+    const client = new LLMClient(defaultConfig);
 
-    const client = new LLMClient({
-      ...defaultConfig,
-      model: 'deepseek-v4-pro',
-    });
-    const result = await client.streamLayered([{ text: 'system', cacheable: true }], [{ text: 'user', cacheable: true }]);
+    await client.invokeLayered(
+      [{ text: 'system', cacheable: true }],
+      [{ text: 'user', cacheable: false }],
+      { tools: TRADE_ACTION_TOOLS, toolChoice },
+    );
 
-    expect(result.content).toBe('cached');
-    expect(result.cacheStats).toEqual({
-      readTokens: 0,
-      creationTokens: 0,
-      hitTokens: 300,
-      missTokens: 50,
-      inputTokens: 0,
-    });
+    expect(bodyFromFetchCall().tools).toEqual(
+      TRADE_ACTION_TOOLS.map((tool) => ({
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.input_schema,
+        },
+      })),
+    );
+    expect(bodyFromFetchCall().tool_choice).toEqual(expectedChoice);
   });
 
-  it('parses tool_use from Anthropic stream', async () => {
-    mockAnthropicStream([
-      'event: message_start\ndata: {"message":{"usage":{"input_tokens":100,"cache_read_input_tokens":0}}}\n\n',
-      'event: content_block_start\ndata: {"index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"place_pending_order"}}\n\n',
-      'event: content_block_delta\ndata: {"index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"side\\":\\"buy\\",\\"entry_price\\":4145"}}\n\n',
-      'event: content_block_delta\ndata: {"index":0,"delta":{"type":"input_json_delta","partial_json":",\\"stop_loss\\":4125}"}}\n\n',
-      'event: content_block_stop\ndata: {"index":0}\n\n',
-      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+  it('accumulates indexed streaming tool call arguments and returns the public toolUse shape', async () => {
+    mockOpenAiStream([
+      sse({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: 'call_01',
+              type: 'function',
+              function: { name: 'place_pending_order', arguments: '{"side":"buy",' },
+            }],
+          },
+          finish_reason: null,
+        }],
+      }),
+      sse({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              function: { arguments: '"entry_price":4145,"stop_loss":4125}' },
+            }],
+          },
+          finish_reason: null,
+        }],
+      }),
+      sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+      'data: [DONE]\n\n',
     ]);
 
-    const client = new LLMClient({
-      ...defaultConfig,
-      model: 'claude-opus-4-8',
-    });
+    const client = new LLMClient(defaultConfig);
     const result = await client.streamLayered(
       [{ text: 'sys', cacheable: true }],
       [{ text: 'user', cacheable: true }],
       { tools: TRADE_ACTION_TOOLS, toolChoice: { type: 'any' } },
     );
 
-    expect(bodyFromFetchCall().tools).toEqual(TRADE_ACTION_TOOLS);
-    expect(bodyFromFetchCall().tool_choice).toEqual({ type: 'any' });
     expect(result.toolUse).toEqual({
-      id: 'toolu_01',
+      id: 'call_01',
       name: 'place_pending_order',
       input: { side: 'buy', entry_price: 4145, stop_loss: 4125 },
     });
   });
 
-  it('falls back to OpenAI cached_tokens when DeepSeek hit tokens are absent', async () => {
-    mockAnthropicStream([
-      'event: content_block_delta\ndata: {"delta":{"text":"cached"}}\n\n',
-      'event: message_delta\ndata: {"usage":{"prompt_tokens_details":{"cached_tokens":120}}}\n\n',
+  it('preserves the warning behavior for invalid streaming tool JSON', async () => {
+    mockOpenAiStream([
+      sse({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: 'call_bad',
+              function: { name: 'place_pending_order', arguments: '{bad' },
+            }],
+          },
+          finish_reason: null,
+        }],
+      }),
+      sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+      'data: [DONE]\n\n',
     ]);
 
-    const client = new LLMClient({
-      ...defaultConfig,
-      model: 'gpt-4o',
-    });
-    const result = await client.streamLayered([{ text: 'system', cacheable: true }], [{ text: 'user', cacheable: true }]);
+    const result = await new LLMClient(defaultConfig).streamLayered(
+      [{ text: 'sys', cacheable: true }],
+      [{ text: 'user', cacheable: false }],
+    );
 
-    expect(result.cacheStats.hitTokens).toBe(120);
+    expect(result.toolUse).toBeUndefined();
+    expect(loggerMock.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ rawJson: '{bad' }),
+      'tool_use input parse failed',
+    );
   });
 
-  it('falls back to Kimi cached_tokens when other cached token fields are absent', async () => {
-    mockAnthropicStream([
-      'event: content_block_delta\ndata: {"delta":{"text":"cached"}}\n\n',
-      'event: message_delta\ndata: {"usage":{"cached_tokens":90}}\n\n',
+  it('preserves usage field precedence and input_tokens over prompt_tokens', async () => {
+    mockOpenAiStream([
+      sse({ choices: [{ delta: { content: 'cached' }, finish_reason: null }] }),
+      sse({
+        choices: [],
+        usage: {
+          cache_read_input_tokens: 200,
+          cache_creation_input_tokens: 100,
+          input_tokens: 400,
+          prompt_tokens: 999,
+          prompt_cache_hit_tokens: 300,
+          prompt_cache_miss_tokens: 50,
+          prompt_tokens_details: { cached_tokens: 120 },
+          billing_usage: { openai_usage: { prompt_tokens_details: { cached_tokens: 110 } } },
+          cached_tokens: 90,
+        },
+      }),
+      'data: [DONE]\n\n',
     ]);
 
-    const client = new LLMClient({
-      ...defaultConfig,
-      model: 'kimi-k2',
-    });
-    const result = await client.streamLayered([{ text: 'system', cacheable: true }], [{ text: 'user', cacheable: true }]);
+    const result = await new LLMClient(defaultConfig).streamLayered(
+      [{ text: 'system', cacheable: true }],
+      [{ text: 'user', cacheable: true }],
+    );
 
-    expect(result.cacheStats.hitTokens).toBe(90);
+    expect(result).toEqual({
+      content: 'cached',
+      cacheStats: {
+        readTokens: 200,
+        creationTokens: 100,
+        hitTokens: 300,
+        missTokens: 50,
+        inputTokens: 400,
+      },
+    });
   });
 
-  it('keeps deprecated string layered methods compatible', async () => {
-    mockAnthropicStream([
-      'event: content_block_delta\ndata: {"delta":{"text":"ok"}}\n\n',
+  it('falls back from input_tokens to OpenAI prompt_tokens', async () => {
+    mockOpenAiStream([
+      sse({ choices: [], usage: { prompt_tokens: 321 } }),
+      'data: [DONE]\n\n',
     ]);
 
-    const client = new LLMClient({
-      ...defaultConfig,
-      model: 'gpt-4o',
-    });
-    const result = await client.streamInvokeLayered('system', ['static', 'dynamic']);
+    const result = await new LLMClient(defaultConfig).streamLayered([], []);
 
-    expect(result).toBe('ok');
-    expect(bodyFromFetchCall().system).toBe('system');
+    expect(result.cacheStats.inputTokens).toBe(321);
+  });
+
+  it.each([
+    ['OpenAI cached tokens', { prompt_tokens_details: { cached_tokens: 120 } }, 120],
+    [
+      'nested gateway cached tokens',
+      { billing_usage: { openai_usage: { prompt_tokens_details: { cached_tokens: 110 } } } },
+      110,
+    ],
+    ['Kimi cached tokens', { cached_tokens: 90 }, 90],
+  ])('falls back to %s', async (_label, usage, expected) => {
+    mockOpenAiStream([
+      sse({ choices: [], usage }),
+      'data: [DONE]\n\n',
+    ]);
+
+    const result = await new LLMClient(defaultConfig).streamLayered([], []);
+
+    expect(result.cacheStats.hitTokens).toBe(expected);
+  });
+
+  it('streams text from content deltas and stops at DONE', async () => {
+    mockOpenAiStream([
+      sse({ choices: [{ delta: { content: 'Hello' }, finish_reason: null }] }),
+      sse({ choices: [{ delta: { content: ' world' }, finish_reason: 'stop' }] }),
+      'data: [DONE]\n\n',
+      sse({ choices: [{ delta: { content: ' ignored' }, finish_reason: null }] }),
+    ]);
+
+    const client = new LLMClient(defaultConfig);
+    await expect(client.streamInvoke('prompt', 'system')).resolves.toBe('Hello world');
+    expect(bodyFromFetchCall()).toMatchObject({
+      messages: [
+        { role: 'system', content: 'system' },
+        { role: 'user', content: 'prompt' },
+      ],
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+  });
+
+  it('keeps deprecated layered invocation methods compatible', async () => {
+    mockOpenAiStream([
+      sse({ choices: [{ delta: { content: 'ok' }, finish_reason: null }] }),
+      'data: [DONE]\n\n',
+    ]);
+    const client = new LLMClient(defaultConfig);
+
+    await expect(client.streamInvokeLayered('system', ['static', 'dynamic'])).resolves.toBe('ok');
     expect(bodyFromFetchCall().messages).toEqual([
+      { role: 'system', content: 'system' },
+      {
+        role: 'user',
+        content: 'static\n\n----------------------------------------\n\ndynamic',
+      },
+    ]);
+
+    mockOpenAiStream([
+      sse({ choices: [{ delta: { content: 'cached' }, finish_reason: null }] }),
+      sse({
+        choices: [],
+        usage: { cache_read_input_tokens: 20, cache_creation_input_tokens: 10 },
+      }),
+      'data: [DONE]\n\n',
+    ]);
+    await expect(client.streamInvokeLayeredAnthropic('system', ['user'])).resolves.toEqual({
+      content: 'cached',
+      cacheStats: { readTokens: 20, creationTokens: 10 },
+    });
+
+    mockOpenAiJson('fallback');
+    await expect(client.invokeLayered('system', ['static', 'dynamic'])).resolves.toBe('fallback');
+    expect(bodyFromFetchCall(2).messages).toEqual([
+      { role: 'system', content: 'system' },
       {
         role: 'user',
         content: 'static\n\n----------------------------------------\n\ndynamic',
@@ -351,7 +464,7 @@ describe('LLMClient', () => {
     expect(service).toBeDefined();
   });
 
-  it('throws on non-ok response', async () => {
+  it('reports OpenAI Chat Completions errors', async () => {
     fetchMock.mockResolvedValue({
       ok: false,
       status: 401,
@@ -359,6 +472,8 @@ describe('LLMClient', () => {
     });
 
     const client = new LLMClient(defaultConfig);
-    await expect(client.invoke('test')).rejects.toThrow('401');
+    await expect(client.invoke('test')).rejects.toThrow(
+      'OpenAI Chat Completions API 401: Unauthorized',
+    );
   });
 });

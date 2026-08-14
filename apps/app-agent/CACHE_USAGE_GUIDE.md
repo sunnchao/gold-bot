@@ -1,30 +1,55 @@
 # Prompt Caching Usage Guide
 
+> ## ⚠️ 协议状态（2026-08 更新）
+>
+> `llm-client.ts` 已统一切换为 **OpenAI Chat Completions 标准**（`POST {LLM_BASE_URL}/chat/completions`）：
+> - 不再使用 Anthropic Messages API（`/messages`、`anthropic-version` 头、`cache_control` 块全部移除）
+> - system 提示作为 `messages` 首条 `{role:'system'}` 消息，user 层按序排列；流式请求带 `stream_options: {include_usage: true}`
+> - 缓存策略探测保留用于日志/指标（claude→auto_prefix 退化、deepseek/gpt→auto_prefix、kimi→prompt_cache_key）
+> - 实际部署端点：`LLM_BASE_URL=https://api-eo.wochirou.com/v1`（wochirou OpenAI 兼容网关）、`LLM_MODEL=deepseek-v4-pro`、`LLM_FALLBACK_MODEL=kimi-k2.6`
+>
+> 本文档中 Anthropic 专属示例仅作历史记录。
+
 ## Quick Start
 
 ### 1. Choose Your LLM Provider
 
-The code now supports **provider-aware caching**:
+The code applies **model-name-based cache strategy detection** (provider-agnostic):
 
 ```bash
-# For best caching (75-80% cost reduction)
+# 实际部署（OpenAI Chat Completions 标准，wochirou OpenAI 兼容网关）
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api-eo.wochirou.com/v1
+LLM_MODEL=deepseek-v4-pro
+LLM_FALLBACK_MODEL=kimi-k2.6
+
+# 历史：Anthropic 专属端点（2026-08 前）
 LLM_PROVIDER=anthropic
 LLM_BASE_URL=https://api.anthropic.com/v1
 LLM_MODEL=claude-sonnet-4-6
-
-# For automatic caching (40-50% cost reduction)
-LLM_PROVIDER=openai
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-4o
 ```
 
 ### 2. How It Works
 
-The system automatically detects your provider and applies the optimal caching strategy:
+The system detects the caching strategy from the **model name** and always emits the OpenAI Chat Completions message format:
 
-**Anthropic Claude:**
+**当前（所有模型统一 OpenAI 格式）：**
 ```typescript
-// Automatically adds cache_control breakpoints:
+// OpenAI Chat Completions 标准请求体（无 cache_control）
+{
+  model: "...",
+  messages: [
+    { role: "system", content: "merged system blocks" },  // Cached by prefix
+    { role: "user", content: "wave/chanlun" },             // Cached by prefix
+    { role: "user", content: "realtime" }                  // Changes every request
+  ],
+  stream: true,
+  stream_options: { include_usage: true }
+}
+```
+
+**历史：Anthropic 显式 cache_control（2026-08 前）：**
+```typescript
 {
   system: [{ text: "...", cache_control: { type: "ephemeral" }}],
   messages: [
@@ -34,37 +59,28 @@ The system automatically detects your provider and applies the optimal caching s
 }
 ```
 
-**OpenAI:**
-```typescript
-// Relies on automatic prefix caching:
-{
-  messages: [
-    { role: "system", content: "..." },        // Cached automatically
-    { role: "user", content: "wave/chanlun" }, // Cached automatically
-    { role: "user", content: "realtime" }      // Changes every request
-  ]
-}
-```
-
 ### 3. Monitor Cache Performance
 
 Check logs for cache statistics:
 
 ```bash
-# Anthropic logs show detailed cache stats
+# 当前：缓存统计来自流式响应 usage 字段（readTokens/creationTokens/hitTokens/inputTokens）
+[INFO] Phase 2 prompt cache stats
+  symbol: "XAUUSD"
+  strategy: "auto_prefix"   # 或 prompt_cache_key（kimi）
+  model: "deepseek-v4-pro"
+  cacheReadTokens: 4523     # 从缓存读取的 tokens
+  cacheCreationTokens: 0    # 写入缓存的 tokens
+  cacheHitRate: "100.0%"    # 缓存命中率
+```
+
+```bash
+# 历史：Anthropic 网关日志（2026-08 前）
 [INFO] Prompt cache stats
   symbol: "XAUUSD"
   cacheRead: 4523        # Tokens read from cache (90% discount)
   cacheCreation: 0       # Tokens written to cache (25% markup)
   hitRate: "100.0%"      # Cache hit rate
-```
-
-```bash
-# OpenAI logs show header-based stats (if available)
-[INFO] OpenAI cache hit
-  cachedTokens: "3500"
-  totalTokens: "5000"
-  hitRate: "70.0%"
 ```
 
 ## Testing Cache Effectiveness
@@ -80,10 +96,10 @@ curl -X POST http://localhost:3100/trigger/analyze \
   }'
 ```
 
-Expected log (Anthropic):
+Expected log (当前 OpenAI 格式):
 ```
-cacheRead: 0
-cacheCreation: 5000
+readTokens: 0
+creationTokens: 5000
 hitRate: "0%"
 ```
 
@@ -100,10 +116,10 @@ curl -X POST http://localhost:3100/trigger/analyze \
   }'
 ```
 
-Expected log (Anthropic):
+Expected log (当前 OpenAI 格式):
 ```
-cacheRead: 5000
-cacheCreation: 0
+readTokens: 5000
+creationTokens: 0
 hitRate: "100.0%"
 ```
 
@@ -126,7 +142,7 @@ hitRate: "60.0%"
 
 Assuming **288 requests/day** (every 5 minutes):
 
-### Anthropic Claude Sonnet 4.6
+### Anthropic Claude Sonnet 4.6（历史参考）
 
 **Pricing:**
 - Input: $3/M tokens
@@ -151,7 +167,9 @@ Total: $0.02 + $2.27 = $2.29/day
 Savings: ($5.18 - $2.29) / $5.18 = 55.8%
 ```
 
-### OpenAI GPT-4o
+> 注：当前实现不再直连 Anthropic API；若经 OpenAI 兼容网关访问 Claude，缓存计费以网关为准。
+
+### OpenAI GPT-4o / DeepSeek（当前部署形态）
 
 **Pricing:**
 - Input: $2.50/M tokens
@@ -175,21 +193,22 @@ Savings: ($4.32 - $3.24) / $4.32 = 25%
 **Symptom:** `cacheRead: 0` on every request
 
 **Checklist:**
-1. Verify provider detection:
+1. Verify cache strategy detection:
    ```bash
-   grep "provider:" logs/app.log | tail -1
+   grep "strategy:" logs/app.log | tail -1
    ```
-   Should show `provider: 'anthropic'` or similar
+   Should show `strategy: 'auto_prefix'` / `'prompt_cache_key'` or similar
 
 2. Check API base URL:
    ```bash
    echo $LLM_BASE_URL
    ```
-   Must be `https://api.anthropic.com/v1` for Anthropic caching
+   实际部署应为 `https://api-eo.wochirou.com/v1`（OpenAI Chat Completions 标准端点 `/chat/completions`）
 
 3. Verify model supports caching:
-   - Anthropic: All Claude 3+ models support caching
+   - DeepSeek: 自动前缀缓存（`prompt_cache_hit_tokens`）
    - OpenAI: GPT-4o, GPT-4-turbo support automatic caching
+   - Kimi/Moonshot: 显式 `prompt_cache_key` 字段
 
 4. Check request interval:
    - Cache TTL is 5 minutes
@@ -197,7 +216,7 @@ Savings: ($4.32 - $3.24) / $4.32 = 25%
 
 ### High Cache Miss Rate?
 
-**If `hitRate < 50%` on Anthropic:**
+**If `hitRate < 50%`:**
 
 1. Check if content is truly static:
    ```typescript
@@ -218,6 +237,11 @@ Savings: ($4.32 - $3.24) / $4.32 = 25%
    # If wave structure changes every request, move to Layer 3
    grep "Elliott Wave Structure" logs/app.log | md5sum
    ```
+
+4. 检查网关 usage 字段（OpenAI 格式）：
+   - DeepSeek 直连：`usage.prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+   - OpenAI 格式网关：`usage.prompt_tokens_details.cached_tokens`（或嵌套 `billing_usage.openai_usage.*`）
+   - 流式请求必须带 `stream_options: {include_usage: true}` 才能在流末 chunk 拿到 usage
 
 ## Advanced Optimization
 
@@ -278,6 +302,7 @@ Expected output:
 
 ## References
 
-- [Anthropic Prompt Caching Documentation](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching)
 - [OpenAI Prompt Caching (Automatic)](https://platform.openai.com/docs/guides/prompt-caching)
+- [DeepSeek API 文档（自动上下文缓存）](https://api-docs.deepseek.com/guides/kv_cache)
+- [Moonshot/Kimi API 文档（prompt_cache_key）](https://platform.moonshot.cn/docs/intro)
 - [Project Implementation: PROMPT_CACHING_OPTIMIZATION.md](./PROMPT_CACHING_OPTIMIZATION.md)

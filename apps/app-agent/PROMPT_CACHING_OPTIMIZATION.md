@@ -1,10 +1,20 @@
 # LLM Token 缓存优化方案
 
+> ## ⚠️ 协议状态（2026-08 更新）
+>
+> `llm-client.ts` 已统一切换为 **OpenAI Chat Completions 标准**（`POST {LLM_BASE_URL}/chat/completions`）：
+> - 移除 Anthropic Messages API（`/messages` 端点、`anthropic-version` 头、`cache_control` 块、`x-api-key`）
+> - system 提示作为 `messages` 首条 `{role:'system'}` 消息；流式请求带 `stream_options: {include_usage: true}`；SSE 按 OpenAI 标准解析（`delta.content` / `data: [DONE]`）
+> - 缓存策略按模型名探测（claude→auto_prefix 退化、deepseek/gpt→auto_prefix、kimi→prompt_cache_key）；`anthropic_explicit` 仅保留探测结果用于日志/指标，请求体不再携带 `cache_control`
+> - 实际部署端点：`LLM_BASE_URL=https://api-eo.wochirou.com/v1`（wochirou OpenAI 兼容网关）、`LLM_MODEL=deepseek-v4-pro`、`LLM_FALLBACK_MODEL=kimi-k2.6`
+>
+> 本文档中"方案一：Anthropic Claude"及其代码示例仅作历史记录，不再反映当前代码行为。
+
 ## 当前问题诊断
 
 你的项目已经实现了**逻辑分层**（system + 半静态上下文 + 实时数据），但**没有真正激活 Prompt Caching**。
 
-### 当前代码问题
+### 当前代码问题（历史）
 
 ```typescript
 // llm-client.ts:227 - 没有发送缓存控制标记
@@ -17,24 +27,28 @@ body: JSON.stringify({
 })
 ```
 
+> 该问题描述的是 2026-08 前的旧实现。当前实现统一走 OpenAI Chat Completions 标准（自动前缀缓存 + `stream_options: {include_usage: true}` 统计），不再需要显式缓存标记。
+
 ## 核心优化策略
 
-### 1. **按 LLM 提供商实现缓存控制**
+### 1. **按 LLM 模型实现缓存策略探测**
 
-不同提供商的缓存 API 完全不同：
+不同模型的缓存机制不同（请求体统一为 OpenAI Chat Completions 标准）：
 
-| 提供商 | 缓存机制 | 最小缓存长度 | TTL | 计费规则 |
+| 模型 | 缓存机制 | 最小缓存长度 | TTL | 计费规则 |
 |--------|---------|-------------|-----|---------|
-| **Anthropic Claude** | `cache_control` breakpoints | 1024 tokens | 5 min | 写入 25% 折扣，读取 90% 折扣 |
-| **OpenAI** | 自动缓存（API 透明） | ~1024 tokens | 5-10 min | 50% 折扣，无需显式标记 |
+| **Anthropic Claude**（历史） | `cache_control` breakpoints（已移除） | 1024 tokens | 5 min | 写入 25% 折扣，读取 90% 折扣 |
+| **OpenAI / DeepSeek** | 自动缓存（API 透明） | ~1024 tokens | 5-10 min | 50% 折扣，无需显式标记 |
+| **Kimi/Moonshot** | `prompt_cache_key` 显式字段 | ~1024 tokens | 5-10 min | 命中折扣 |
 | **智谱 GLM** | 不支持 Prompt Caching | N/A | N/A | 无优化 |
-| **DeepSeek** | 不支持 | N/A | N/A | 无优化 |
 
 ---
 
-## 方案一：Anthropic Claude（最佳缓存效果）
+## 方案一：Anthropic Claude（历史方案，2026-08 起不再使用）
 
-### 1.1 API 格式要求
+> ⚠️ **该方案已废弃**：当前代码统一使用 OpenAI Chat Completions 标准。Claude 模型若需使用，经 OpenAI 兼容网关（如 wochirou）访问，请求体与 DeepSeek/OpenAI 完全一致（无 `cache_control`、无 `x-api-key`、无 `anthropic-version`）。以下内容仅作历史记录。
+
+### 1.1 API 格式要求（历史）
 
 ```typescript
 // Anthropic Messages API 格式
@@ -67,10 +81,12 @@ body: JSON.stringify({
 }
 ```
 
-### 1.2 实现代码
+### 1.2 实现代码（历史）
 
 ```typescript
-// llm-client.ts - 新增 Anthropic 专用方法
+// llm-client.ts - 历史 Anthropic 专用方法（2026-08 前）
+// 现已被统一 OpenAI Chat Completions 实现的 streamLayered() 取代；
+// streamInvokeLayeredAnthropic() 仅作向后兼容保留，内部走 OpenAI 协议。
 async streamInvokeLayeredAnthropic(
   systemMessage: string,
   userMessages: string[],
@@ -397,56 +413,34 @@ async streamInvokeLayeredWithPartialCache(
 
 ## 实施步骤
 
-### Step 1: 检测当前 LLM 提供商
+### Step 1: 检测当前 LLM 缓存策略（按模型名，2026-08 起）
 
 ```typescript
-// app-config.service.ts - 新增配置
-get llm() {
-  return {
-    provider: this.config.llmProvider,  // 'anthropic' | 'openai' | 'zhipu' | 'deepseek'
-    baseUrl: this.config.llmBaseUrl,
-    apiKey: this.config.apiKey,
-    model: this.config.llmModel,
-    supportsCaching: ['anthropic', 'openai'].includes(this.config.llmProvider),
-  };
-}
+// llm-client.ts - detectCacheStrategy(model, enablePromptCaching)
+// claude → anthropic_explicit（仅日志/指标，请求体已退化为 auto_prefix）
+// deepseek / gpt-* → auto_prefix
+// moonshot / kimi → prompt_cache_key（请求体带 prompt_cache_key 字段）
+// glm / chatglm → auto_prefix_unstable
+// minimax / abab → none
 ```
 
-### Step 2: 路由到正确的实现
+### Step 2: 统一 OpenAI Chat Completions 请求（当前实现）
 
 ```typescript
-// comprehensive-analyst.ts:614
-async run(payload: GoldbotPayload, symbol: string, pendingSignal?: PendingSignal) {
-  // ... 构建三层 prompt ...
-  
-  const provider = this.configService.llm.provider;
-  
-  let raw: string;
-  try {
-    if (provider === 'anthropic') {
-      // 🔥 Anthropic: 显式缓存控制
-      raw = await this.client.streamInvokeLayeredAnthropic(
-        systemPrompt,
-        [staticContextPrompt, realtimeDataPrompt],
-      );
-    } else if (provider === 'openai') {
-      // 🔥 OpenAI: 自动缓存（现有实现已优化）
-      raw = await this.client.streamInvokeLayered(
-        systemPrompt,
-        [staticContextPrompt, realtimeDataPrompt],
-      );
-    } else {
-      // 🔥 其他提供商: 应用层缓存
-      raw = await this.client.streamInvokeLayeredWithCache(
-        systemPrompt,
-        [staticContextPrompt, realtimeDataPrompt],
-      );
-    }
-  } catch (err) {
-    // fallback logic...
-  }
-  
-  // ... parse and return ...
+// llm-client.ts: buildLayeredRequestBody()
+// 所有策略统一构造 OpenAI messages：
+const messages = [
+  { role: 'system', content: systemBlocks.map(b => b.text).join('\n\n') },
+  ...userLayers.map(layer => ({ role: 'user', content: layer.text })),
+];
+
+// 流式请求附带 usage 统计
+body.stream = true;
+body.stream_options = { include_usage: true };
+
+// Kimi/Moonshot 策略额外携带其官方扩展字段
+if (cacheStrategy.type === 'prompt_cache_key') {
+  body.prompt_cache_key = 'gold-analysis';
 }
 ```
 
@@ -455,11 +449,15 @@ async run(payload: GoldbotPayload, symbol: string, pendingSignal?: PendingSignal
 ```typescript
 // 在日志中追踪缓存指标
 logger.info({
-  provider,
-  cacheHitRate: '85%',        // Anthropic 从响应中提取
+  strategy,
+  model,
+  readTokens: 4523,     // 从缓存读取
+  hitTokens: 3412,      // 命中 tokens
+  inputTokens: 6000,    // 总输入（命中率分母）
+  cacheHitRate: '85%',  // 从流式 usage 字段计算
   savedTokens: 4500,
   estimatedCostSaving: '$0.02',
-}, 'LLM request with caching');
+}, 'Phase 2 prompt cache stats');
 ```
 
 ---
@@ -486,7 +484,9 @@ if (shouldPromoteToSystem(lastWaveUpdate)) {
 }
 ```
 
-### 2. 前缀压缩（Anthropic 专用）
+### 2. 前缀压缩（历史：Anthropic 专用，已废弃）
+
+> ⚠️ 2026-08 起代码不再发送 `cache_control` 断点（OpenAI Chat Completions 标准无此字段）。以下为历史参考。
 
 Anthropic 允许在一个请求中设置多个缓存断点（最多 4 个）：
 
@@ -517,13 +517,13 @@ curl -X POST http://localhost:3100/trigger/warmup \
 
 ---
 
-## 成本对比
+## 成本对比（历史参考）
 
 假设每天交易 **288 次分析**（每 5 分钟一次，24 小时）
 
 | 提供商 | 无缓存成本 | 优化后成本 | 节省比例 |
 |--------|-----------|-----------|---------|
-| **Anthropic Claude Sonnet** | $4.32 | $1.08 | **75%** |
+| **Anthropic Claude Sonnet**（历史） | $4.32 | $1.08 | **75%** |
 | **OpenAI GPT-4o** | $3.60 | $2.16 | **40%** |
 | **智谱 GLM-4** | ¥18.00 | ¥18.00 | 0% (无API缓存) |
 
@@ -533,22 +533,23 @@ curl -X POST http://localhost:3100/trigger/warmup \
 
 ## 推荐配置
 
-### 生产环境（成本敏感）
+### 生产环境（当前部署）
 
 ```bash
 # .env
-LLM_PROVIDER=anthropic
-LLM_BASE_URL=https://api.anthropic.com/v1
-LLM_MODEL=claude-sonnet-4-6
-LLM_API_KEY=sk-ant-xxx
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api-eo.wochirou.com/v1
+LLM_MODEL=deepseek-v4-pro
+LLM_FALLBACK_MODEL=kimi-k2.6
+LLM_API_KEY=sk-xxx
 ```
 
 ### 开发环境（兼容性优先）
 
 ```bash
 LLM_PROVIDER=openai
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-4o
+LLM_BASE_URL=https://api-eo.wochirou.com/v1
+LLM_MODEL=deepseek-v4-pro
 ```
 
 ### 国内环境（无缓存）
@@ -564,11 +565,12 @@ LLM_MODEL=glm-4-plus
 
 ## 总结
 
-| 优化手段 | 适用提供商 | 实现难度 | 效果 |
+| 优化手段 | 适用模型/提供商 | 实现难度 | 效果 |
 |---------|----------|---------|------|
-| **显式 cache_control** | Anthropic | 中 | ⭐⭐⭐⭐⭐ 最佳（75-80%节省） |
-| **结构化消息顺序** | OpenAI | 低 | ⭐⭐⭐⭐ 良好（40-50%节省） |
+| **显式 cache_control**（已废弃） | Anthropic（历史） | 中 | ⭐⭐⭐⭐⭐ 最佳（75-80%节省） |
+| **结构化消息顺序**（当前） | OpenAI/DeepSeek | 低 | ⭐⭐⭐⭐ 良好（40-50%节省） |
+| **prompt_cache_key**（当前） | Kimi/Moonshot | 低 | ⭐⭐⭐⭐ 良好 |
 | **Redis 应用层缓存** | 所有 | 中 | ⭐⭐⭐ 中等（适用于完全相同输入） |
-| **动态缓存层级调整** | Anthropic/OpenAI | 高 | ⭐⭐⭐⭐ 高级优化 |
+| **动态缓存层级调整** | OpenAI/DeepSeek | 高 | ⭐⭐⭐⭐ 高级优化 |
 
-**立即行动**: 如果你用的是兼容 OpenAI API 的第三方服务（如中转API、One API），咨询他们是否支持 Prompt Caching 并提供对应文档。
+**立即行动**: 当前请求统一走 OpenAI Chat Completions 标准（`/chat/completions`），使用 wochirou 等 OpenAI 兼容网关时咨询其 Prompt Caching 支持并确认 usage 缓存字段。

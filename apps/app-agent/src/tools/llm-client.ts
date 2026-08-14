@@ -3,7 +3,6 @@ import { getLogger } from '../utils/logger.js';
 import { AppConfigService } from '../config/app-config.service.js';
 import { recordLlmCacheUsage } from '../metrics/llm-cache-metrics.js';
 
-const ANTHROPIC_VERSION = '2023-06-01';
 const DEFAULT_MAX_TOKENS = 8192;
 const DEFAULT_TEMPERATURE = 0.1;
 const LAYER_SEPARATOR = '\n\n----------------------------------------\n\n';
@@ -107,12 +106,12 @@ export interface LLMClientConfig {
   enablePromptCaching: boolean;
 }
 
-interface AnthropicMessage {
-  role: 'user';
+interface ChatMessage {
+  role: 'system' | 'user';
   content: string;
 }
 
-interface AnthropicStreamResult {
+interface ChatCompletionsStreamResult {
   content: string;
   chunks: number;
   cacheStats: CacheStats;
@@ -136,19 +135,20 @@ interface PendingToolUse {
   inputJson: string;
 }
 
-interface AnthropicSseParseState {
-  pendingToolUse?: PendingToolUse;
+interface ChatCompletionsSseParseState {
+  pendingToolUses: Map<number, PendingToolUse>;
+  done: boolean;
 }
 
 /**
- * LLM client using Anthropic Messages API (/v1/messages).
+ * LLM client using the OpenAI Chat Completions API.
  *
  * Request shape:
- *   - system prompt is sent as the top-level "system" field
- *   - messages[] contains only user role messages
+ *   - a non-empty system prompt is the first messages[] entry
+ *   - user prompts follow as ordered messages[] entries
  * Response shape:
- *   - non-streaming text is read from content[].text
- *   - streaming text is read from content_block_delta events
+ *   - non-streaming text is read from choices[0].message.content
+ *   - streaming text is read from choices[0].delta.content
  */
 export class LLMClient {
   private readonly config: LLMClientConfig;
@@ -166,7 +166,7 @@ export class LLMClient {
     return this.cacheStrategy.type === 'anthropic_explicit';
   }
 
-  /** @deprecated OpenAI prompt caching fields are not supported by this client. */
+  /** @deprecated OpenAI prompt caching fields are not exposed by this client. */
   isOpenAIPromptCachingEnabled(): boolean {
     return false;
   }
@@ -184,27 +184,26 @@ export class LLMClient {
     return this.config.model;
   }
 
-  /**
-   * Build Anthropic Messages API messages. System prompts are intentionally not
-   * included here; callers pass them through the top-level "system" field.
-   */
-  private buildMessages(prompt: string): AnthropicMessage[] {
-    return [{ role: 'user', content: prompt }];
+  private buildMessages(prompt: string, systemMessage?: string): ChatMessage[] {
+    const messages: ChatMessage[] = [];
+    if (systemMessage) {
+      messages.push({ role: 'system', content: systemMessage });
+    }
+    messages.push({ role: 'user', content: prompt });
+    return messages;
   }
 
   private buildRequest(prompt: string, systemMessage?: string, stream = false): RequestInit {
     const body: Record<string, unknown> = {
       model: this.config.model,
       max_tokens: DEFAULT_MAX_TOKENS,
-      messages: this.buildMessages(prompt),
+      messages: this.buildMessages(prompt, systemMessage),
       temperature: DEFAULT_TEMPERATURE,
     };
 
-    if (systemMessage) {
-      body.system = systemMessage;
-    }
     if (stream) {
       body.stream = true;
+      body.stream_options = { include_usage: true };
     }
 
     return {
@@ -212,24 +211,17 @@ export class LLMClient {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.config.apiKey}`,
-        'anthropic-version': ANTHROPIC_VERSION,
       },
       body: JSON.stringify(body),
     };
   }
 
-  private messagesUrl(): string {
-    return `${this.config.baseUrl.replace(/\/+$/, '')}/messages`;
+  private completionsUrl(): string {
+    return `${this.config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
   }
 
   private combineUserMessages(userMessages: string[]): string {
     return userMessages.join(LAYER_SEPARATOR);
-  }
-
-  private cacheControl(): Record<string, string> {
-    return this.cacheStrategy.ttl === '1h'
-      ? { type: 'ephemeral', ttl: '1h' }
-      : { type: 'ephemeral' };
   }
 
   private buildLayeredRequestBody(
@@ -238,76 +230,52 @@ export class LLMClient {
     stream: boolean,
     opts?: InvokeOpts,
   ): Record<string, unknown> {
+    const systemMessage = systemBlocks.map((block) => block.text).join('\n\n');
+    const messages: ChatMessage[] = [];
+    if (systemMessage) {
+      messages.push({ role: 'system', content: systemMessage });
+    }
+    messages.push(...userLayers.map((layer) => ({ role: 'user' as const, content: layer.text })));
+
     const body: Record<string, unknown> = {
       model: this.config.model,
       max_tokens: DEFAULT_MAX_TOKENS,
-      messages: [],
+      messages,
       temperature: DEFAULT_TEMPERATURE,
     };
 
     if (stream) {
       body.stream = true;
+      body.stream_options = { include_usage: true };
     }
 
-    switch (this.cacheStrategy.type) {
-      case 'anthropic_explicit': {
-        let breakpointCount = 0;
-        body.system = systemBlocks.map((block) => {
-          const systemBlock: Record<string, unknown> = {
-            type: 'text',
-            text: block.text,
-          };
-          if (block.cacheable && breakpointCount < 4) {
-            systemBlock.cache_control = this.cacheControl();
-            breakpointCount += 1;
-          }
-          return systemBlock;
-        });
-
-        body.messages = userLayers.map((layer) => {
-          if (layer.cacheable && breakpointCount < 4) {
-            breakpointCount += 1;
-            return {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: layer.text,
-                  cache_control: this.cacheControl(),
-                },
-              ],
-            };
-          }
-          return { role: 'user', content: layer.text };
-        });
-        break;
-      }
-
-      case 'auto_prefix':
-      case 'auto_prefix_unstable':
-      case 'none': {
-        body.system = systemBlocks.map((block) => block.text).join('\n\n');
-        body.messages = userLayers.map((layer) => ({
-          role: 'user',
-          content: layer.text,
-        }));
-        break;
-      }
-
-      case 'prompt_cache_key': {
-        body.system = systemBlocks.map((block) => block.text).join('\n\n');
-        body.messages = userLayers.map((layer) => ({
-          role: 'user',
-          content: layer.text,
-        }));
-        body.prompt_cache_key = 'gold-analysis';
-        break;
-      }
+    if (this.cacheStrategy.type === 'prompt_cache_key') {
+      body.prompt_cache_key = 'gold-analysis';
     }
 
     if (opts?.tools && opts.tools.length > 0) {
-      body.tools = opts.tools;
-      body.tool_choice = opts.toolChoice ?? { type: 'auto' };
+      body.tools = opts.tools.map((tool) => ({
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.input_schema,
+        },
+      }));
+      switch (opts.toolChoice?.type) {
+        case 'any':
+          body.tool_choice = 'required';
+          break;
+        case 'tool':
+          body.tool_choice = {
+            type: 'function',
+            function: { name: opts.toolChoice.name },
+          };
+          break;
+        case 'auto':
+        default:
+          body.tool_choice = 'auto';
+      }
     }
 
     return body;
@@ -324,27 +292,25 @@ export class LLMClient {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.config.apiKey}`,
-        'anthropic-version': ANTHROPIC_VERSION,
       },
       body: JSON.stringify(this.buildLayeredRequestBody(systemBlocks, userLayers, stream, opts)),
     };
   }
 
   private parseResponseText(raw: Record<string, unknown>): string {
-    const content = raw.content;
-    if (!Array.isArray(content)) {
+    if (!Array.isArray(raw.choices)) {
       return '';
     }
-
-    return content
-      .map((block) => {
-        if (!block || typeof block !== 'object') {
-          return '';
-        }
-        const text = (block as Record<string, unknown>).text;
-        return typeof text === 'string' ? text : '';
-      })
-      .join('');
+    const choice = raw.choices[0];
+    if (!choice || typeof choice !== 'object') {
+      return '';
+    }
+    const message = (choice as Record<string, unknown>).message;
+    if (!message || typeof message !== 'object') {
+      return '';
+    }
+    const content = (message as Record<string, unknown>).content;
+    return typeof content === 'string' ? content : '';
   }
 
   private readCacheUsage(usage: unknown, current: CacheStats): CacheStats {
@@ -357,11 +323,11 @@ export class LLMClient {
 
     const usageRecord = usage as Record<string, unknown>;
 
-    // Anthropic-style top-level fields — also emitted by OpenAI-semantic gateways
-    // (this deployment's gateway returns these even for DeepSeek models).
+    // Legacy top-level cache fields are still emitted by some OpenAI-compatible gateways.
     const readTokens = usageRecord.cache_read_input_tokens;
     const creationTokens = usageRecord.cache_creation_input_tokens;
     const inputTokens = usageRecord.input_tokens;
+    const promptTokens = usageRecord.prompt_tokens;
 
     // DeepSeek-native cache fields (present only when talking to DeepSeek directly).
     const deepseekHitTokens = usageRecord.prompt_cache_hit_tokens;
@@ -377,7 +343,11 @@ export class LLMClient {
 
     const read = typeof readTokens === 'number' ? readTokens : current.readTokens;
     const created = typeof creationTokens === 'number' ? creationTokens : current.creationTokens;
-    const fresh = typeof inputTokens === 'number' ? inputTokens : current.inputTokens;
+    const fresh = typeof inputTokens === 'number'
+      ? inputTokens
+      : typeof promptTokens === 'number'
+        ? promptTokens
+        : current.inputTokens;
     const hit = typeof deepseekHitTokens === 'number'
       ? deepseekHitTokens
       : typeof openAiCachedTokens === 'number'
@@ -398,119 +368,126 @@ export class LLMClient {
     };
   }
 
-  private processAnthropicSseEvent(
+  private processChatCompletionsSseEvent(
     rawEvent: string,
-    result: AnthropicStreamResult,
-    parseState: AnthropicSseParseState,
-  ): AnthropicStreamResult {
+    result: ChatCompletionsStreamResult,
+    parseState: ChatCompletionsSseParseState,
+  ): ChatCompletionsStreamResult {
     const lines = rawEvent.split(/\r?\n/);
-    let eventName = '';
     const dataLines: string[] = [];
 
     for (const rawLine of lines) {
       const line = rawLine.trimEnd();
-      if (line.startsWith('event:')) {
-        eventName = line.slice('event:'.length).trim();
-      } else if (line.startsWith('data:')) {
+      if (line.startsWith('data:')) {
         dataLines.push(line.slice('data:'.length).trimStart());
       }
     }
 
-    if (!eventName || dataLines.length === 0) {
+    if (dataLines.length === 0) {
       return result;
     }
 
     const dataStr = dataLines.join('\n').trim();
-    if (!dataStr || dataStr === '[DONE]') {
+    if (!dataStr) {
+      return result;
+    }
+    if (dataStr === '[DONE]') {
+      parseState.done = true;
       return result;
     }
 
     try {
       const data = JSON.parse(dataStr) as Record<string, unknown>;
-
-      if (eventName === 'content_block_start') {
-        const block = data.content_block as Record<string, unknown> | undefined;
-        if (block?.type === 'tool_use') {
-          const id = typeof block.id === 'string' ? block.id : '';
-          const name = typeof block.name === 'string' ? block.name : '';
-          if (id && name) {
-            parseState.pendingToolUse = { id, name, inputJson: '' };
-          }
-        }
+      let nextResult: ChatCompletionsStreamResult = {
+        ...result,
+        cacheStats: this.readCacheUsage(data.usage, result.cacheStats),
+      };
+      const choice = Array.isArray(data.choices) ? data.choices[0] : undefined;
+      if (!choice || typeof choice !== 'object') {
+        return nextResult;
       }
 
-      if (eventName === 'content_block_delta') {
-        const delta = data.delta as Record<string, unknown> | undefined;
-        if (
-          parseState.pendingToolUse &&
-          delta?.type === 'input_json_delta' &&
-          typeof delta.partial_json === 'string'
-        ) {
-          parseState.pendingToolUse.inputJson += delta.partial_json;
-          return result;
-        }
-        if (delta && typeof delta.text === 'string') {
-          return {
-            ...result,
-            content: result.content + delta.text,
-            chunks: result.chunks + 1,
+      const choiceRecord = choice as Record<string, unknown>;
+      const delta = choiceRecord.delta;
+      if (delta && typeof delta === 'object') {
+        const deltaRecord = delta as Record<string, unknown>;
+        if (typeof deltaRecord.content === 'string') {
+          nextResult = {
+            ...nextResult,
+            content: nextResult.content + deltaRecord.content,
+            chunks: nextResult.chunks + 1,
           };
         }
-      }
 
-      if (eventName === 'content_block_stop' && parseState.pendingToolUse) {
-        const pendingToolUse = parseState.pendingToolUse;
-        parseState.pendingToolUse = undefined;
-        try {
-          const input = JSON.parse(pendingToolUse.inputJson) as unknown;
-          if (input && typeof input === 'object' && !Array.isArray(input)) {
-            return {
-              ...result,
-              toolUse: {
-                id: pendingToolUse.id,
-                name: pendingToolUse.name,
-                input: input as Record<string, unknown>,
-              },
+        if (Array.isArray(deltaRecord.tool_calls)) {
+          for (const rawToolCall of deltaRecord.tool_calls) {
+            if (!rawToolCall || typeof rawToolCall !== 'object') continue;
+            const toolCall = rawToolCall as Record<string, unknown>;
+            if (typeof toolCall.index !== 'number') continue;
+
+            const pending = parseState.pendingToolUses.get(toolCall.index) ?? {
+              id: '',
+              name: '',
+              inputJson: '',
             };
+            if (typeof toolCall.id === 'string') {
+              pending.id = toolCall.id;
+            }
+            const fn = toolCall.function;
+            if (fn && typeof fn === 'object') {
+              const functionRecord = fn as Record<string, unknown>;
+              if (typeof functionRecord.name === 'string') {
+                pending.name = functionRecord.name;
+              }
+              if (typeof functionRecord.arguments === 'string') {
+                pending.inputJson += functionRecord.arguments;
+              }
+            }
+            parseState.pendingToolUses.set(toolCall.index, pending);
           }
-        } catch (err) {
-          getLogger().warn(
-            {
-              err: err instanceof Error ? err.message : String(err),
-              rawJson: pendingToolUse.inputJson,
-            },
-            'tool_use input parse failed',
-          );
         }
       }
 
-      if (eventName === 'message_start' && data.message && typeof data.message === 'object') {
-        const message = data.message as Record<string, unknown>;
-        return {
-          ...result,
-          cacheStats: this.readCacheUsage(message.usage, result.cacheStats),
-        };
+      if (choiceRecord.finish_reason === 'tool_calls') {
+        for (const [, pendingToolUse] of [...parseState.pendingToolUses].sort(([a], [b]) => a - b)) {
+          try {
+            const input = JSON.parse(pendingToolUse.inputJson) as unknown;
+            if (input && typeof input === 'object' && !Array.isArray(input)) {
+              nextResult = {
+                ...nextResult,
+                toolUse: {
+                  id: pendingToolUse.id,
+                  name: pendingToolUse.name,
+                  input: input as Record<string, unknown>,
+                },
+              };
+              break;
+            }
+          } catch (err) {
+            getLogger().warn(
+              {
+                err: err instanceof Error ? err.message : String(err),
+                rawJson: pendingToolUse.inputJson,
+              },
+              'tool_use input parse failed',
+            );
+          }
+        }
+        parseState.pendingToolUses.clear();
       }
 
-      if (eventName === 'message_delta') {
-        return {
-          ...result,
-          cacheStats: this.readCacheUsage(data.usage, result.cacheStats),
-        };
-      }
+      return nextResult;
     } catch {
       return result;
     }
-
-    return result;
   }
 
-  private async readAnthropicStream(
+  private async readChatCompletionsStream(
     reader: ReadableStreamDefaultReader<Uint8Array>,
-  ): Promise<AnthropicStreamResult> {
+  ): Promise<ChatCompletionsStreamResult> {
     const decoder = new TextDecoder();
     let buffer = '';
-    let result: AnthropicStreamResult = {
+    let result: ChatCompletionsStreamResult = {
       content: '',
       chunks: 0,
       cacheStats: {
@@ -521,9 +498,12 @@ export class LLMClient {
         inputTokens: 0,
       },
     };
-    const parseState: AnthropicSseParseState = {};
+    const parseState: ChatCompletionsSseParseState = {
+      pendingToolUses: new Map(),
+      done: false,
+    };
 
-    while (true) {
+    while (!parseState.done) {
       const { done, value } = await reader.read();
       if (done) break;
 
@@ -533,38 +513,39 @@ export class LLMClient {
 
       for (const event of events) {
         if (event.trim()) {
-          result = this.processAnthropicSseEvent(event, result, parseState);
+          result = this.processChatCompletionsSseEvent(event, result, parseState);
+          if (parseState.done) break;
         }
       }
     }
 
     buffer += decoder.decode();
-    if (buffer.trim()) {
-      result = this.processAnthropicSseEvent(buffer, result, parseState);
+    if (!parseState.done && buffer.trim()) {
+      result = this.processChatCompletionsSseEvent(buffer, result, parseState);
     }
 
     return result;
   }
 
   /**
-   * Non-streaming invoke - sends a single Messages API request and returns the
+   * Non-streaming invoke - sends one Chat Completions request and returns the
    * full assistant text.
    */
   async invoke(prompt: string, systemMessage?: string): Promise<string> {
     const logger = getLogger();
-    const url = this.messagesUrl();
+    const url = this.completionsUrl();
     const request = this.buildRequest(prompt, systemMessage, false);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeout);
 
     try {
-      logger.debug({ url, model: this.config.model }, 'LLM invoke (Anthropic Messages)');
+      logger.debug({ url, model: this.config.model }, 'LLM invoke (OpenAI Chat Completions)');
       const response = await fetch(url, { ...request, signal: controller.signal });
 
       if (!response.ok) {
         const body = await response.text().catch(() => 'no body');
-        throw new Error(`Anthropic Messages API ${response.status}: ${body}`);
+        throw new Error(`OpenAI Chat Completions API ${response.status}: ${body}`);
       }
 
       const json = await response.json() as Record<string, unknown>;
@@ -575,11 +556,11 @@ export class LLMClient {
   }
 
   /**
-   * Streaming invoke - collects Anthropic SSE content_block_delta text chunks.
+   * Streaming invoke - collects OpenAI Chat Completions SSE text chunks.
    */
   async streamInvoke(prompt: string, systemMessage?: string): Promise<string> {
     const logger = getLogger();
-    const url = this.messagesUrl();
+    const url = this.completionsUrl();
     const request = this.buildRequest(prompt, systemMessage, true);
 
     const controller = new AbortController();
@@ -587,12 +568,12 @@ export class LLMClient {
 
     const startTime = Date.now();
     try {
-      logger.debug({ url, model: this.config.model }, 'LLM streamInvoke (Anthropic Messages)');
+      logger.debug({ url, model: this.config.model }, 'LLM streamInvoke (OpenAI Chat Completions)');
       const response = await fetch(url, { ...request, signal: controller.signal });
 
       if (!response.ok) {
         const body = await response.text().catch(() => 'no body');
-        throw new Error(`Anthropic Messages API ${response.status}: ${body}`);
+        throw new Error(`OpenAI Chat Completions API ${response.status}: ${body}`);
       }
 
       const reader = response.body?.getReader();
@@ -600,11 +581,11 @@ export class LLMClient {
         throw new Error('Response body is not readable');
       }
 
-      const result = await this.readAnthropicStream(reader);
+      const result = await this.readChatCompletionsStream(reader);
       const elapsed = Date.now() - startTime;
       logger.debug(
         { elapsed, chunks: result.chunks, length: result.content.length },
-        'streamInvoke: complete (Anthropic Messages)',
+        'streamInvoke: complete (OpenAI Chat Completions)',
       );
 
       return result.content;
@@ -622,7 +603,7 @@ export class LLMClient {
 
   /**
    * Strategy-aware layered streaming invoke. Preserves cacheable layers as
-   * independent request blocks/messages so providers can match stable prefixes.
+   * independent request messages so providers can match stable prefixes.
    */
   async streamLayered(
     systemBlocks: SystemBlock[],
@@ -630,7 +611,7 @@ export class LLMClient {
     opts?: InvokeOpts,
   ): Promise<{ content: string; cacheStats: CacheStats; toolUse?: AnthropicToolUse }> {
     const logger = getLogger();
-    const url = this.messagesUrl();
+    const url = this.completionsUrl();
     const request = this.buildLayeredRequest(systemBlocks, userLayers, true, opts);
 
     const controller = new AbortController();
@@ -646,13 +627,13 @@ export class LLMClient {
           systemBlocks: systemBlocks.length,
           userLayers: userLayers.length,
         },
-        'LLM streamLayered (Anthropic Messages)',
+        'LLM streamLayered (OpenAI Chat Completions)',
       );
       const response = await fetch(url, { ...request, signal: controller.signal });
 
       if (!response.ok) {
         const body = await response.text().catch(() => 'no body');
-        throw new Error(`Anthropic Messages API ${response.status}: ${body}`);
+        throw new Error(`OpenAI Chat Completions API ${response.status}: ${body}`);
       }
 
       const reader = response.body?.getReader();
@@ -660,7 +641,7 @@ export class LLMClient {
         throw new Error('Response body is not readable');
       }
 
-      const result = await this.readAnthropicStream(reader);
+      const result = await this.readChatCompletionsStream(reader);
       const elapsed = Date.now() - startTime;
       logger.debug(
         {
@@ -670,7 +651,7 @@ export class LLMClient {
           strategy: this.cacheStrategy.type,
           cacheStats: result.cacheStats,
         },
-        'streamLayered: complete (Anthropic Messages)',
+        'streamLayered: complete (OpenAI Chat Completions)',
       );
 
       const responseBody: { content: string; cacheStats: CacheStats; toolUse?: AnthropicToolUse } = {
@@ -706,7 +687,7 @@ export class LLMClient {
   ): Promise<string> {
     const logger = getLogger();
     const prompt = this.combineUserMessages(userMessages);
-    const url = this.messagesUrl();
+    const url = this.completionsUrl();
     const request = this.buildRequest(prompt, systemMessage, true);
 
     const controller = new AbortController();
@@ -716,13 +697,13 @@ export class LLMClient {
     try {
       logger.debug(
         { url, model: this.config.model, layers: userMessages.length },
-        'LLM streamInvokeLayered (Anthropic Messages)',
+        'LLM streamInvokeLayered (OpenAI Chat Completions)',
       );
       const response = await fetch(url, { ...request, signal: controller.signal });
 
       if (!response.ok) {
         const body = await response.text().catch(() => 'no body');
-        throw new Error(`Anthropic Messages API ${response.status}: ${body}`);
+        throw new Error(`OpenAI Chat Completions API ${response.status}: ${body}`);
       }
 
       const reader = response.body?.getReader();
@@ -730,11 +711,11 @@ export class LLMClient {
         throw new Error('Response body is not readable');
       }
 
-      const result = await this.readAnthropicStream(reader);
+      const result = await this.readChatCompletionsStream(reader);
       const elapsed = Date.now() - startTime;
       logger.debug(
         { elapsed, chunks: result.chunks, length: result.content.length, layers: userMessages.length },
-        'streamInvokeLayered: complete (Anthropic Messages)',
+        'streamInvokeLayered: complete (OpenAI Chat Completions)',
       );
 
       return result.content;
@@ -751,10 +732,8 @@ export class LLMClient {
   }
 
   /**
-   * Compatibility wrapper for callers that expect Anthropic cache statistics.
-   * The request still uses the standard Messages format; any cache counters are
-   * read from message_start/message_delta usage fields when the gateway sends
-   * them.
+   * Compatibility wrapper retaining the legacy method name and cache shape.
+   * The request uses Chat Completions and reads cache counters from stream usage.
    */
   async streamInvokeLayeredAnthropic(
     systemMessage: string,
@@ -785,7 +764,7 @@ export class LLMClient {
     opts?: InvokeOpts,
   ): Promise<string> {
     const logger = getLogger();
-    const url = this.messagesUrl();
+    const url = this.completionsUrl();
     const request = typeof systemMessage === 'string'
       ? this.buildRequest(
           this.combineUserMessages(userMessages as string[]),
@@ -800,13 +779,13 @@ export class LLMClient {
     try {
       logger.debug(
         { url, model: this.config.model, layers: userMessages.length },
-        'LLM invokeLayered (Anthropic Messages)',
+        'LLM invokeLayered (OpenAI Chat Completions)',
       );
       const response = await fetch(url, { ...request, signal: controller.signal });
 
       if (!response.ok) {
         const body = await response.text().catch(() => 'no body');
-        throw new Error(`Anthropic Messages API ${response.status}: ${body}`);
+        throw new Error(`OpenAI Chat Completions API ${response.status}: ${body}`);
       }
 
       const json = await response.json() as Record<string, unknown>;
