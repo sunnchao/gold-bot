@@ -88,7 +88,7 @@ describe('LLMClient', () => {
     });
     expect(bodyFromFetchCall()).toEqual({
       model: 'gpt-4o',
-      max_tokens: 8192,
+      max_tokens: 16384,
       messages: [
         { role: 'system', content: 'You are terse' },
         { role: 'user', content: 'Say hello' },

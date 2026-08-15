@@ -6,21 +6,9 @@
 
 ## ⚠️ AI Agent 约束规则
 
-**1. AI Agent（含 Hermes/Claude/Codex/Codex 等）禁止直接修改 Go 源码和 MQL4 EA 代码。**
-- 所有代码修改必须通过 Codex CLI 代理执行。
-- Hermes 自身只能用 patch/write_file 修改非代码文件（.md、.env、.json、.yaml、.planning/ 文档等）。
-- 违反此规则可能导致：测试不同步、Codex 上下文缺失、改动不可追溯。
+**1. 版本发布前必须询问用户意见。** 禁止未授权 push。
 
-**2. 代码修改流程**
-1. GSD 分析 → 写 `.planning/` 文档
-2. 写 CODEX_TASK.md（含 Mission/Architecture/Steps/DANGER ZONES/Success Criteria）
-3. `cat CODEX_TASK.md | codex exec --yolo` 执行
-4. `go build ./... && go test ./... -count=1` 验证
-5. `git diff --stat HEAD` 检查改动范围
-
-**3. 版本发布前必须询问用户意见。** 禁止未授权 push。
-
-**4. 策略名与 Magic 号映射是 EA 端的事。** Go 端 signal.Strategy 必须是 EA 认识的策略名（pullback/breakout_retest/divergence/breakout_pyramid/counter_pullback/range/momentum_scalp/ai_signal），不能随意发明新名字。子类型标识用 paylaod 字段传递，不影响 strategy 字段。
+**2. 策略名与 Magic 号映射是 EA 端的事。** Go 端 signal.Strategy 必须是 EA 认识的策略名（pullback/breakout_retest/divergence/breakout_pyramid/counter_pullback/range/momentum_scalp/ai_signal），不能随意发明新名字。子类型标识用 paylaod 字段传递，不影响 strategy 字段。
 
 ## 快速开始
 
