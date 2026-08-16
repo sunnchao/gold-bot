@@ -249,7 +249,7 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     vi.restoreAllMocks();
   });
 
-  it('sends four prompt layers and keeps computed context stable when only the unclosed bar changes', async () => {
+  it('sends ordered stability tiers and keeps the cacheable prefix stable when only the unclosed bar changes', async () => {
     const streamLayered = vi.fn().mockResolvedValue({
       content: markdownResponse,
       cacheStats: {
@@ -280,11 +280,14 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect(firstSystemBlocks[1]).toMatchObject({ cacheable: true });
     expect(firstSystemBlocks[0].text).not.toContain('XAUUSD');
     expect(firstSystemBlocks[1].text).toContain('XAUUSD');
-    expect(firstUserLayers).toHaveLength(2);
-    expect(firstUserLayers[0]).toMatchObject({ cacheable: true });
-    expect(firstUserLayers[1]).toMatchObject({ cacheable: false });
-    expect(firstUserLayers[0].text).toBe(secondUserLayers[0].text);
-    expect(firstUserLayers[1].text).not.toBe(secondUserLayers[1].text);
+    // config → H4 → H1 → M30 → M15 (all cacheable) → realtime (dynamic).
+    expect(firstUserLayers).toHaveLength(6);
+    for (let i = 0; i < 5; i++) {
+      expect(firstUserLayers[i]).toMatchObject({ cacheable: true });
+      expect(firstUserLayers[i].text).toBe(secondUserLayers[i].text);
+    }
+    expect(firstUserLayers[5]).toMatchObject({ cacheable: false });
+    expect(firstUserLayers[5].text).not.toBe(secondUserLayers[5].text);
     expect(secondSystemBlocks[0].text).toBe(firstSystemBlocks[0].text);
   });
 
@@ -309,7 +312,10 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     await service.run(payloadWithOnlyOneClosedBar(2335), 'XAUUSD');
 
     const [, userLayers] = streamLayered.mock.calls[0];
-    expect(userLayers[0].text).not.toContain('2335');
+    // No cacheable tier (config or computed structures) may leak the unclosed bar's close.
+    for (const layer of userLayers.slice(0, -1)) {
+      expect(layer.text).not.toContain('2335');
+    }
   });
 
   it.each([
@@ -584,8 +590,8 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     const client = {
       streamLayered,
       invokeLayered: vi.fn(),
-      getCacheStrategy: () => ({ type: 'anthropic_explicit' as const, ttl: '1h' as const }),
-      getModel: () => 'claude-sonnet-4-20250514',
+      getCacheStrategy: () => ({ type: 'auto_prefix' as const }),
+      getModel: () => 'deepseek-v4-pro',
     } as unknown as LlmClientService;
     const service = createService(client);
 
@@ -661,25 +667,27 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     const [, firstUserLayers] = streamLayered.mock.calls[0];
     const [, secondUserLayers] = streamLayered.mock.calls[1];
 
-    // Semi-static layer (index 0) should be identical despite score/completion change
-    expect(firstUserLayers[0].text).toBe(secondUserLayers[0].text);
+    // The H1 tier (index 2 of: config, H4, H1, M30, M15, realtime) carries
+    // HARMONIC_CTX. It must stay identical despite score/completion change.
+    const h1Tier = 2;
+    expect(firstUserLayers[h1Tier].text).toBe(secondUserLayers[h1Tier].text);
 
-    // Semi-static layer should not contain the volatile score value
-    expect(firstUserLayers[0].text).not.toContain('"score":75');
-    expect(firstUserLayers[0].text).not.toContain('"completion_pct":90');
-    expect(firstUserLayers[0].text).not.toContain('"reason"');
+    // HARMONIC_CTX must not contain the volatile score/reason fields
+    expect(firstUserLayers[h1Tier].text).not.toContain('"score":75');
+    expect(firstUserLayers[h1Tier].text).not.toContain('"completion_pct":90');
+    expect(firstUserLayers[h1Tier].text).not.toContain('"reason"');
 
-    // Semi-static layer should contain stable fields
-    expect(firstUserLayers[0].text).toContain('"type":"bat"');
-    expect(firstUserLayers[0].text).toContain('"direction":"bullish"');
-    expect(firstUserLayers[0].text).toContain('"x_price":2300');
-    expect(firstUserLayers[0].text).toContain('"prz_low":2313');
-    expect(firstUserLayers[0].text).toContain('"stop_loss":2308');
-    expect(firstUserLayers[0].text).toContain('"target_1":2325');
+    // HARMONIC_CTX must contain stable fields
+    expect(firstUserLayers[h1Tier].text).toContain('"type":"bat"');
+    expect(firstUserLayers[h1Tier].text).toContain('"direction":"bullish"');
+    expect(firstUserLayers[h1Tier].text).toContain('"x_price":2300');
+    expect(firstUserLayers[h1Tier].text).toContain('"prz_low":2313');
+    expect(firstUserLayers[h1Tier].text).toContain('"stop_loss":2308');
+    expect(firstUserLayers[h1Tier].text).toContain('"target_1":2325');
 
-    // Realtime layer should contain the volatile values
-    expect(firstUserLayers[1].text).toContain('75');
-    expect(secondUserLayers[1].text).toContain('82');
+    // Realtime layer (index 5) should contain the volatile values
+    expect(firstUserLayers[5].text).toContain('75');
+    expect(secondUserLayers[5].text).toContain('82');
   });
 
   const structuredAnalysisInput = {

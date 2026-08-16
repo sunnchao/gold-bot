@@ -70,7 +70,7 @@ export type TradeAction =
   | DoNothingAction;
 
 /**
- * Anthropic Messages API tool schema for the second-phase tool_use call.
+ * OpenAI Chat Completions function-calling tool schema for the second-phase tool call.
  * Tools: place_pending_order / place_market_order / modify_order / close_order / do_nothing.
  * LLM is forced to call exactly one by callers with tool_choice: { type: 'any' }.
  */

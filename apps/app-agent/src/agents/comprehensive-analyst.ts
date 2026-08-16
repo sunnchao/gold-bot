@@ -405,10 +405,9 @@ function sanitizeHarmonicContextVolatile(payload: GoldbotPayload): Record<string
   };
 }
 
-interface StructureCacheEntry {
+interface StructureTierEntry {
   hash: string;
-  staticContextText: string;
-  timestamp: number;
+  text: string;
 }
 
 function buildUnavailableWaveStructure(): ElliottWaveAnalysis {
@@ -435,9 +434,13 @@ function buildUnavailableChanlunStructure(): ChanlunAnalysis {
 }
 
 class StructureCache {
-  private readonly cache = new Map<string, StructureCacheEntry>();
+  private readonly cache = new Map<string, StructureTierEntry>();
 
-  getOrBuild(symbol: string, payload: GoldbotPayload): { staticContextText: string; harmonicVolatile: Record<string, unknown> | null } {
+  private tierKey(symbol: string, tier: StaticTimeframe): string {
+    return `${symbol}:${tier}`;
+  }
+
+  getOrBuild(symbol: string, payload: GoldbotPayload): { blockTexts: string[]; harmonicVolatile: Record<string, unknown> | null } {
     const wavePrices = extractWaveClosedBarPrices(payload);
     const chanlunBars = extractClosedChanlunBars(payload);
     const waveStructure =
@@ -448,36 +451,33 @@ class StructureCache {
     const harmonicCtxStable = sanitizeHarmonicContextStable(payload);
     const harmonicCtxVolatile = sanitizeHarmonicContextVolatile(payload);
     const staticPivots = extractStaticPivots(payload);
-    // Hash on the SUMMARIZED structures, not the full ones: the render output
-    // only depends on the trimmed windows, so an old-bar change that falls
-    // outside the window should NOT invalidate this cacheable layer.
-    const hash = stableHash([
-      summarizeWaveStructure(waveStructure),
-      summarizeChanlunStructure(chanlunStructure),
-      candlestickPatterns,
-      harmonicCtxStable ?? 'none',
-      staticPivots,
-    ]);
-    const cached = this.cache.get(symbol);
 
-    if (cached?.hash === hash) {
-      return { staticContextText: cached.staticContextText, harmonicVolatile: harmonicCtxVolatile };
-    }
-
-    const staticContextText = renderStaticContextPrompt(
+    const inputs: StructureTierInputs = {
       waveStructure,
       chanlunStructure,
       candlestickPatterns,
       harmonicCtxStable,
       staticPivots,
-    );
-    this.cache.set(symbol, {
-      hash,
-      staticContextText,
-      timestamp: Date.now(),
+    };
+
+    // One independently-hashed block per timeframe tier, ordered slow → fast.
+    // Hash on the SUMMARIZED structures (not the full ones), so an old-bar
+    // change outside the trimmed window does not invalidate the tier. A fast
+    // (M15/M30) bar close then invalidates only the trailing tiers, leaving
+    // the slow H1/H4 structure prefix byte-identical and cacheable.
+    const blockTexts = STATIC_TIMEFRAME_ORDER.map((tier) => {
+      const hash = stableHash(structureTierHashParts(tier, inputs));
+      const key = this.tierKey(symbol, tier);
+      const cached = this.cache.get(key);
+      if (cached?.hash === hash) {
+        return cached.text;
+      }
+      const text = renderStructureTierBlock(tier, inputs);
+      this.cache.set(key, { hash, text });
+      return text;
     });
 
-    return { staticContextText, harmonicVolatile: harmonicCtxVolatile };
+    return { blockTexts, harmonicVolatile: harmonicCtxVolatile };
   }
 }
 
@@ -749,6 +749,7 @@ const PIVOT_FIELDS = ['pp', 'r1', 's1'] as const;
 // first so a fast (M15/M30) bar close only invalidates the tail of the prefix
 // rather than the whole cached region.
 const STATIC_TIMEFRAME_ORDER = ['H4', 'H1', 'M30', 'M15'] as const;
+type StaticTimeframe = (typeof STATIC_TIMEFRAME_ORDER)[number];
 
 function extractStaticPivots(payload: GoldbotPayload): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -768,67 +769,82 @@ function extractStaticPivots(payload: GoldbotPayload): Record<string, unknown> {
   return out;
 }
 
-/** Per-timeframe ordered render (NOT stableStringify over the whole map, which
- * would re-sort keys alphabetically and destroy the slow→fast ordering). */
-function renderStaticPivots(staticPivots: Record<string, unknown>): string {
-  const sections: string[] = [];
-  for (const timeframe of STATIC_TIMEFRAME_ORDER) {
-    const pivot = staticPivots[timeframe];
-    if (pivot && typeof pivot === 'object' && Object.keys(pivot as Record<string, unknown>).length > 0) {
-      sections.push(`- ${timeframe}: ${stableStringify(pivot)}`);
-    }
-  }
-  return sections.length > 0 ? sections.join('\n') : 'none';
+interface StructureTierInputs {
+  waveStructure: ElliottWaveAnalysis;
+  chanlunStructure: ChanlunAnalysis;
+  candlestickPatterns: Record<string, string[]>;
+  harmonicCtxStable: Record<string, unknown> | null;
+  staticPivots: Record<string, unknown>;
 }
 
-/** Split candlestick patterns by timeframe so a fast bar close only churns the
- * matching timeframe's line, not the whole block. */
-function renderCandlestickPatterns(candlestickPatterns: Record<string, string[]>): string {
-  const sections: string[] = [];
-  for (const timeframe of STATIC_TIMEFRAME_ORDER) {
-    const patterns = candlestickPatterns[timeframe];
-    if (Array.isArray(patterns) && patterns.length > 0) {
-      sections.push(`- ${timeframe}: ${stableStringify(patterns)}`);
-    }
+/** Hash inputs for a single timeframe tier. Only that tier's own data is hashed,
+ * so a bar close on one timeframe invalidates that tier alone, not its neighbors. */
+function structureTierHashParts(tier: StaticTimeframe, inputs: StructureTierInputs): unknown[] {
+  const parts: unknown[] = [];
+  if (tier === 'H1') {
+    // Wave/chanlun/harmonic structures are H1-stable (~1h) and are the largest
+    // token consumers, so they ride the H1 tier ahead of the faster M30/M15 tiers.
+    parts.push(
+      summarizeWaveStructure(inputs.waveStructure),
+      summarizeChanlunStructure(inputs.chanlunStructure),
+      inputs.harmonicCtxStable ?? 'none',
+    );
   }
-  return sections.length > 0 ? sections.join('\n') : 'none';
+  parts.push(
+    inputs.staticPivots[tier] ?? 'none',
+    inputs.candlestickPatterns[tier] ?? 'none',
+  );
+  return parts;
 }
 
-function renderStaticContextPrompt(
-  waveStructure: ElliottWaveAnalysis,
-  chanlunStructure: ChanlunAnalysis,
-  candlestickPatterns: Record<string, string[]>,
-  harmonicCtx: Record<string, unknown> | null,
-  staticPivots: Record<string, unknown>,
-): string {
-  // Anchor-based: forward minimal structural summaries instead of full computed
-  // structures — the raw bar sequences would balloon this cacheable layer.
-  // Ordering is slow→fast so the cacheable prefix stays stable longest.
-  return `## COMPUTED ANALYSIS STRUCTURES (Anchor mapping — caching eligible)
+/** Per-timeframe pivot line. NOT stableStringify over the whole map, which would
+ * re-sort keys alphabetically and destroy the slow→fast ordering. */
+function renderStaticPivotFor(staticPivots: Record<string, unknown>, timeframe: StaticTimeframe): string {
+  const pivot = staticPivots[timeframe];
+  if (pivot && typeof pivot === 'object' && Object.keys(pivot as Record<string, unknown>).length > 0) {
+    return `- ${timeframe}: ${stableStringify(pivot)}`;
+  }
+  return '';
+}
 
-### WAVE_STRUCT
-${stableStringify(summarizeWaveStructure(waveStructure))}
+function renderCandlestickPatternsFor(candlestickPatterns: Record<string, string[]>, timeframe: StaticTimeframe): string {
+  const patterns = candlestickPatterns[timeframe];
+  if (Array.isArray(patterns) && patterns.length > 0) {
+    return `- ${timeframe}: ${stableStringify(patterns)}`;
+  }
+  return '';
+}
 
-### CHANLUN_STRUCT
-${stableStringify(summarizeChanlunStructure(chanlunStructure))}
+/**
+ * Render one timeframe tier as a self-contained cacheable block. The H1 tier
+ * also carries the H1-stable wave/chanlun/harmonic structures, so an M15/M30
+ * bar close only invalidates the trailing tiers and leaves this prefix cached.
+ */
+function renderStructureTierBlock(tier: StaticTimeframe, inputs: StructureTierInputs): string {
+  const sections: string[] = [];
 
-### HARMONIC_CTX
-${harmonicCtx ? stableStringify(harmonicCtx) : 'none'}
+  if (tier === 'H1') {
+    sections.push(
+      `### WAVE_STRUCT\n${stableStringify(summarizeWaveStructure(inputs.waveStructure))}`,
+      `### CHANLUN_STRUCT\n${stableStringify(summarizeChanlunStructure(inputs.chanlunStructure))}`,
+      `### HARMONIC_CTX\n${inputs.harmonicCtxStable ? stableStringify(inputs.harmonicCtxStable) : 'none'}`,
+    );
+  }
 
-### PIVOT_LEVELS
-${renderStaticPivots(staticPivots)}
+  const pivotLine = renderStaticPivotFor(inputs.staticPivots, tier);
+  sections.push(`### PIVOT_LEVELS (${tier})\n${pivotLine || 'none'}`);
 
-### CANDLESTICK_PATTERNS
-${renderCandlestickPatterns(candlestickPatterns)}
+  const patternLine = renderCandlestickPatternsFor(inputs.candlestickPatterns, tier);
+  sections.push(`### CANDLESTICK_PATTERNS (${tier})\n${patternLine || 'none'}`);
 
-Refer to the anchors defined in system prompt for interpretation rules.`;
+  return `## COMPUTED STRUCTURES — ${tier} (caching eligible)\n\n${sections.join('\n\n')}`;
 }
 
 function buildStaticContextPrompt(
   payload: GoldbotPayload,
   symbol: string,
   structureCache: StructureCache,
-): { staticContextText: string; harmonicVolatile: Record<string, unknown> | null } {
+): { blockTexts: string[]; harmonicVolatile: Record<string, unknown> | null } {
   return structureCache.getOrBuild(symbol, payload);
 }
 
@@ -1341,7 +1357,7 @@ function parseMarkdownResponse(raw: string, currentPrice: number, profile: Symbo
 /**
  * Phase 4.2：解析失败时的结构化重试工具。input_schema 直接由
  * ComprehensiveAnalysisDataSchema 生成，保证与 Zod 校验完全一致。
- * `$refStrategy: 'none'` 内联所有引用（Anthropic tools 不解析 $ref）。
+ * `$refStrategy: 'none'` 内联所有引用（OpenAI 兼容网关的 tools 不解析 $ref）。
  */
 const COMPREHENSIVE_ANALYSIS_TOOLS = [
   {
@@ -1758,14 +1774,20 @@ export class ComprehensiveAnalystService {
     const structureResult = buildStaticContextPrompt(payload, symbol, this.structureCache);
     const marketOnly = options.marketOnly === true;
 
-    // Layer 2b: Fully-static account/strategy context (never changes per cycle)
-    // is prepended to the cacheable user layer, ahead of the bar-derived
-    // structures, so it stops being re-billed as fresh input every 30-min cycle.
+    // Layer 2b: Fully-static account/strategy context (never changes per cycle).
+    // Emitted as its OWN cacheable layer, ahead of the bar-derived structures,
+    // so it stays cached forever instead of being re-billed on every bar close.
     const staticAccountStrategyText = buildStaticAccountAndStrategyText(payload, marketOnly);
 
     // Layer 3: Real-time data (price, positions, indicators) → no cache.
-    const userLayers = [
-      { text: `${staticAccountStrategyText}\n\n${structureResult.staticContextText}`, cacheable: true },
+    //
+    // Each stability tier is its own message, ordered slow → fast:
+    //   config (never) → H4 (4h) → H1 (1h) → M30 (30m) → M15 (15m) → realtime.
+    // Providers match on token prefix, so a fast bar close only invalidates the
+    // trailing tiers and keeps the slow prefix cached.
+    const userLayers: UserLayer[] = [
+      { text: staticAccountStrategyText, cacheable: true },
+      ...structureResult.blockTexts.map((text) => ({ text, cacheable: true })),
       { text: buildRealtimeDataPrompt(payload, pendingSignal, symbol, profile, structureResult.harmonicVolatile, marketOnly), cacheable: false },
     ];
 

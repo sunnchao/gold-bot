@@ -3,13 +3,11 @@ import { getLogger } from '../utils/logger.js';
 import { AppConfigService } from '../config/app-config.service.js';
 import { recordLlmCacheUsage } from '../metrics/llm-cache-metrics.js';
 
-const ANTHROPIC_VERSION = '2023-06-01';
 const DEFAULT_MAX_TOKENS = 16384;
 const DEFAULT_TEMPERATURE = 0.1;
 const LAYER_SEPARATOR = '\n\n----------------------------------------\n\n';
 
 export type CacheStrategyType =
-  | 'anthropic_explicit'
   | 'auto_prefix'
   | 'prompt_cache_key'
   | 'auto_prefix_unstable'
@@ -17,7 +15,6 @@ export type CacheStrategyType =
 
 export interface CacheStrategy {
   type: CacheStrategyType;
-  ttl?: '5m' | '1h';
 }
 
 export interface SystemBlock {
@@ -57,10 +54,6 @@ interface ModelPattern {
 }
 
 const MODEL_CACHE_PATTERNS: ModelPattern[] = [
-  {
-    keywords: ['claude'],
-    strategy: { type: 'anthropic_explicit', ttl: '1h' },
-  },
   {
     keywords: ['deepseek'],
     strategy: { type: 'auto_prefix' },
@@ -116,10 +109,10 @@ interface ChatCompletionsStreamResult {
   content: string;
   chunks: number;
   cacheStats: CacheStats;
-  toolUse?: AnthropicToolUse;
+  toolUse?: ToolUse;
 }
 
-export interface AnthropicToolUse {
+export interface ToolUse {
   id: string;
   name: string;
   input: Record<string, unknown>;
@@ -158,23 +151,6 @@ export class LLMClient {
   constructor(config: LLMClientConfig) {
     this.config = config;
     this.cacheStrategy = detectCacheStrategy(config.model, config.enablePromptCaching);
-  }
-
-  /**
-   * @deprecated Use getCacheStrategy() and streamLayered()/invokeLayered() instead.
-   */
-  isPromptCachingSupported(): boolean {
-    return this.cacheStrategy.type === 'anthropic_explicit';
-  }
-
-  /** @deprecated OpenAI prompt caching fields are not exposed by this client. */
-  isOpenAIPromptCachingEnabled(): boolean {
-    return false;
-  }
-
-  /** @deprecated Use isPromptCachingSupported() instead. */
-  isAnthropicPromptCachingEnabled(): boolean {
-    return this.isPromptCachingSupported();
   }
 
   getCacheStrategy(): CacheStrategy {
@@ -610,7 +586,7 @@ export class LLMClient {
     systemBlocks: SystemBlock[],
     userLayers: UserLayer[],
     opts?: InvokeOpts,
-  ): Promise<{ content: string; cacheStats: CacheStats; toolUse?: AnthropicToolUse }> {
+  ): Promise<{ content: string; cacheStats: CacheStats; toolUse?: ToolUse }> {
     const logger = getLogger();
     const url = this.completionsUrl();
     const request = this.buildLayeredRequest(systemBlocks, userLayers, true, opts);
@@ -655,7 +631,7 @@ export class LLMClient {
         'streamLayered: complete (OpenAI Chat Completions)',
       );
 
-      const responseBody: { content: string; cacheStats: CacheStats; toolUse?: AnthropicToolUse } = {
+      const responseBody: { content: string; cacheStats: CacheStats; toolUse?: ToolUse } = {
         content: result.content,
         cacheStats: result.cacheStats,
       };
@@ -730,30 +706,6 @@ export class LLMClient {
     } finally {
       clearTimeout(timer);
     }
-  }
-
-  /**
-   * Compatibility wrapper retaining the legacy method name and cache shape.
-   * The request uses Chat Completions and reads cache counters from stream usage.
-   */
-  async streamInvokeLayeredAnthropic(
-    systemMessage: string,
-    userMessages: string[],
-  ): Promise<{ content: string; cacheStats: { readTokens: number; creationTokens: number } }> {
-    const result = await this.streamLayered(
-      [{ text: systemMessage, cacheable: true }],
-      userMessages.map((message, index) => ({
-        text: message,
-        cacheable: index < userMessages.length - 1,
-      })),
-    );
-    return {
-      content: result.content,
-      cacheStats: {
-        readTokens: result.cacheStats.readTokens,
-        creationTokens: result.cacheStats.creationTokens,
-      },
-    };
   }
 
   /**

@@ -13,7 +13,7 @@ describe('llm-cache-metrics', () => {
   });
 
   it('computes hit rate as max(readTokens, hitTokens) / inputTokens', async () => {
-    // Anthropic explicit: readTokens carries the cache hit.
+    // Gateway cache-read fields: readTokens carries the cache hit.
     recordLlmCacheUsage(
       { readTokens: 800, hitTokens: 0, creationTokens: 200, inputTokens: 1000 },
       'claude-opus-4-8',

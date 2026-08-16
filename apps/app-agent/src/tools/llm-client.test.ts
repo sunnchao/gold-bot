@@ -108,17 +108,13 @@ describe('LLMClient', () => {
     await expect(client.invoke('second')).resolves.toBe('');
   });
 
-  it('detects cache strategy from model name and preserves compatibility methods', () => {
+  it('detects cache strategy from model name', () => {
     const claudeViaGateway = new LLMClient({
       ...defaultConfig,
       provider: 'wochirou',
       model: 'claude-opus-4-8',
     });
-    const deepseekViaAnthropicProvider = new LLMClient({
-      ...defaultConfig,
-      provider: 'anthropic',
-      model: 'deepseek-v4-pro',
-    });
+    const deepseek = new LLMClient({ ...defaultConfig, model: 'deepseek-v4-pro' });
     const kimi = new LLMClient({ ...defaultConfig, model: 'moonshot-v1-128k' });
     const glm = new LLMClient({ ...defaultConfig, model: 'glm-4.5' });
     const minimax = new LLMClient({ ...defaultConfig, model: 'abab6.5s-chat' });
@@ -128,18 +124,17 @@ describe('LLMClient', () => {
       enablePromptCaching: false,
     });
 
-    expect(claudeViaGateway.getCacheStrategy()).toEqual({ type: 'anthropic_explicit', ttl: '1h' });
-    expect(claudeViaGateway.isPromptCachingSupported()).toBe(true);
-    expect(claudeViaGateway.isAnthropicPromptCachingEnabled()).toBe(true);
-    expect(claudeViaGateway.isOpenAIPromptCachingEnabled()).toBe(false);
-    expect(deepseekViaAnthropicProvider.getCacheStrategy()).toEqual({ type: 'auto_prefix' });
+    // Unknown models (e.g. claude served via an OpenAI-compatible gateway)
+    // fall back to automatic prefix caching.
+    expect(claudeViaGateway.getCacheStrategy()).toEqual({ type: 'auto_prefix' });
+    expect(deepseek.getCacheStrategy()).toEqual({ type: 'auto_prefix' });
     expect(kimi.getCacheStrategy()).toEqual({ type: 'prompt_cache_key' });
     expect(glm.getCacheStrategy()).toEqual({ type: 'auto_prefix_unstable' });
     expect(minimax.getCacheStrategy()).toEqual({ type: 'none' });
     expect(disabled.getCacheStrategy()).toEqual({ type: 'none' });
   });
 
-  it('builds layered messages without cache_control and includes streaming usage', async () => {
+  it('builds OpenAI layered messages and reads streaming cache usage', async () => {
     mockOpenAiStream([
       sse({ choices: [{ delta: { content: 'ok' }, finish_reason: null }] }),
       sse({
@@ -153,7 +148,7 @@ describe('LLMClient', () => {
       'data: [DONE]\n\n',
     ]);
 
-    const client = new LLMClient({ ...defaultConfig, model: 'claude-opus-4-8' });
+    const client = new LLMClient({ ...defaultConfig, model: 'deepseek-v4-pro' });
     const result = await client.streamLayered(
       [
         { text: 'common rules', cacheable: true },
@@ -423,22 +418,9 @@ describe('LLMClient', () => {
       },
     ]);
 
-    mockOpenAiStream([
-      sse({ choices: [{ delta: { content: 'cached' }, finish_reason: null }] }),
-      sse({
-        choices: [],
-        usage: { cache_read_input_tokens: 20, cache_creation_input_tokens: 10 },
-      }),
-      'data: [DONE]\n\n',
-    ]);
-    await expect(client.streamInvokeLayeredAnthropic('system', ['user'])).resolves.toEqual({
-      content: 'cached',
-      cacheStats: { readTokens: 20, creationTokens: 10 },
-    });
-
     mockOpenAiJson('fallback');
     await expect(client.invokeLayered('system', ['static', 'dynamic'])).resolves.toBe('fallback');
-    expect(bodyFromFetchCall(2).messages).toEqual([
+    expect(bodyFromFetchCall(1).messages).toEqual([
       { role: 'system', content: 'system' },
       {
         role: 'user',

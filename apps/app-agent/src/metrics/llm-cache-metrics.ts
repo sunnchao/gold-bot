@@ -8,8 +8,8 @@ import { Counter, Gauge, Registry } from 'prom-client';
  * hit-rate can be observed independently of the trading engine (prom-client is
  * shared via the pnpm workspace, no new download is required).
  *
- * Hit-rate semantics differ by cache strategy:
- *   - anthropic_explicit: cached tokens arrive via `cache_read_input_tokens`
+ * Hit-rate semantics differ by gateway cache field:
+ *   - some OpenAI-compatible gateways report `cache_read_input_tokens`
  *     (readTokens), hit rate = readTokens / inputTokens.
  *   - auto_prefix (DeepSeek/OpenAI/Kimi): cached tokens arrive via
  *     `prompt_cache_hit_tokens` / `cached_tokens` (hitTokens), hit rate =
@@ -23,7 +23,7 @@ const registry = new Registry();
 
 const cacheReadTokens = new Counter({
   name: 'goldbot_llm_cache_read_tokens_total',
-  help: 'Cumulative cache-read input tokens (Anthropic cache_read_input_tokens).',
+  help: 'Cumulative cache-read input tokens (OpenAI-compatible gateway cache_read_input_tokens).',
   labelNames: ['model'],
   registers: [registry],
 });
