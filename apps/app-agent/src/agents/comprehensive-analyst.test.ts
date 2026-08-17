@@ -398,7 +398,7 @@ describe('ComprehensiveAnalystService prompt caching integration', () => {
     expect((tradeStreamLayered.mock.contexts[0] as LLMClient).getModel()).toBe('deepseek-v4-flash-0731');
     expect(tradeStreamLayered.mock.calls[0][2]).toMatchObject({
       tools: TRADE_ACTION_TOOLS_LEGACY,
-      toolChoice: { type: 'any' },
+      toolChoice: { type: 'auto' },
     });
     expect(tradeStreamLayered.mock.calls[0][0][0].text).toContain(
       'Lots must be between 0.01 and 0.5 (typically 0.01-0.05 for XAUUSD intraday)',

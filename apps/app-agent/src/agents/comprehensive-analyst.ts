@@ -1715,7 +1715,7 @@ export class ComprehensiveAnalystService {
         [{ text: summary, cacheable: false }],
         {
           tools: TRADE_ACTION_TOOLS_LEGACY as any,
-          toolChoice: { type: 'any' },
+          toolChoice: { type: 'auto' },
         },
       );
 
@@ -2147,7 +2147,7 @@ export class ComprehensiveAnalystService {
         [{ text: prompt, cacheable: false }],
         {
           tools: TRADE_ACTION_TOOLS as any,
-          toolChoice: { type: 'any' },
+          toolChoice: { type: 'auto' },
         },
       );
 
